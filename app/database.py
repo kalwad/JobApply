@@ -271,6 +271,7 @@ class Database:
             "salary_estimate_min": "ALTER TABLE jobs ADD COLUMN salary_estimate_min INTEGER",
             "salary_estimate_max": "ALTER TABLE jobs ADD COLUMN salary_estimate_max INTEGER",
             "salary_confidence": "ALTER TABLE jobs ADD COLUMN salary_confidence TEXT",
+            "description_enriched": "ALTER TABLE jobs ADD COLUMN description_enriched INTEGER DEFAULT 0",
         }
         for col, sql in jobs_migrations.items():
             if col not in jobs_columns:
@@ -402,6 +403,27 @@ class Database:
         cursor = await self.db.execute("SELECT * FROM sources WHERE job_id = ?", (job_id,))
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+    async def get_jobs_needing_enrichment(self, limit: int = 50) -> list[dict]:
+        cursor = await self.db.execute(
+            """SELECT j.id, j.url, j.description FROM jobs j
+               INNER JOIN sources s ON s.job_id = j.id
+               WHERE j.description_enriched = 0
+               AND (j.description IS NULL OR length(j.description) < 200)
+               AND j.dismissed = 0
+               GROUP BY j.id
+               ORDER BY j.created_at DESC LIMIT ?""",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def update_job_description(self, job_id: int, description: str):
+        await self.db.execute(
+            "UPDATE jobs SET description = ?, description_enriched = 1 WHERE id = ?",
+            (description, job_id),
+        )
+        await self.db.commit()
 
     async def insert_score(self, job_id, match_score, match_reasons, concerns, suggested_keywords):
         now = datetime.now(timezone.utc).isoformat()

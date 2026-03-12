@@ -551,6 +551,21 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
             return {"active": False, "completed": 0, "total": 0, "current": None, "new_jobs": 0}
         return progress
 
+    @app.post("/api/jobs/enrich")
+    async def enrich_jobs():
+        from app.enrichment import enrich_job_description
+        db = app.state.db
+        jobs = await db.get_jobs_needing_enrichment(limit=50)
+        enriched = 0
+        for job in jobs:
+            sources = await db.get_sources(job["id"])
+            source = sources[0]["source_name"] if sources else "unknown"
+            desc = await enrich_job_description(job["url"], source)
+            if desc and len(desc) > len(job.get("description") or ""):
+                await db.update_job_description(job["id"], desc)
+                enriched += 1
+        return {"enriched": enriched, "total": len(jobs)}
+
     @app.post("/api/score")
     async def trigger_score():
         async def _run_scoring():

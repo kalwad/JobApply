@@ -44,6 +44,21 @@ async def run_scrape_cycle(db: Database, scrapers: list, search_terms: list[str]
                     total_new += 1
 
         logger.info(f"{source_name}: found {len(listings)} listings")
+
+    # Enrich jobs with short/missing descriptions
+    from app.enrichment import enrich_job_description
+    jobs_to_enrich = await db.get_jobs_needing_enrichment(limit=30)
+    enriched_count = 0
+    for job in jobs_to_enrich:
+        sources = await db.get_sources(job["id"])
+        source = sources[0]["source_name"] if sources else "unknown"
+        desc = await enrich_job_description(job["url"], source)
+        if desc and len(desc) > len(job.get("description") or ""):
+            await db.update_job_description(job["id"], desc)
+            enriched_count += 1
+    if enriched_count:
+        logger.info(f"Enriched {enriched_count}/{len(jobs_to_enrich)} job descriptions")
+
     if progress is not None:
         progress.update({"completed": total_scrapers, "total": total_scrapers, "current": None, "new_jobs": total_new, "active": False})
     logger.info(f"Scrape cycle complete. {total_new} new jobs added.")
