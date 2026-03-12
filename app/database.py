@@ -1,6 +1,7 @@
 import hashlib
 import json
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 
@@ -8,6 +9,26 @@ import aiosqlite
 def make_dedup_hash(title: str, company: str, url: str) -> str:
     normalized = f"{title.lower().strip()}|{company.lower().strip()}|{url.lower().strip().rstrip('/')}"
     return hashlib.sha256(normalized.encode()).hexdigest()
+
+
+def _normalize_company(name: str) -> str:
+    """Normalize company name for fuzzy comparison."""
+    name = name.lower().strip()
+    for suffix in [" inc.", " inc", " llc", " ltd", " ltd.", " corp", " corporation",
+                   " co.", " co", " company", " group", " technologies", " technology"]:
+        if name.endswith(suffix):
+            name = name[:-len(suffix)].strip()
+    return re.sub(r"[^a-z0-9 ]", "", name).strip()
+
+
+def _title_similarity(t1: str, t2: str) -> float:
+    """Word overlap ratio between two job titles."""
+    w1 = set(t1.lower().split())
+    w2 = set(t2.lower().split())
+    if not w1 or not w2:
+        return 0.0
+    intersection = w1 & w2
+    return len(intersection) / max(len(w1), len(w2))
 
 
 class Database:
@@ -236,6 +257,11 @@ class Database:
                 glassdoor_rating REAL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS scraper_schedule (
+                source_name TEXT PRIMARY KEY,
+                interval_hours INTEGER NOT NULL DEFAULT 6,
+                last_scraped_at TEXT
+            );
         """)
         await self._migrate()
         await self.db.commit()
@@ -271,6 +297,7 @@ class Database:
             "salary_estimate_min": "ALTER TABLE jobs ADD COLUMN salary_estimate_min INTEGER",
             "salary_estimate_max": "ALTER TABLE jobs ADD COLUMN salary_estimate_max INTEGER",
             "salary_confidence": "ALTER TABLE jobs ADD COLUMN salary_confidence TEXT",
+            "description_enriched": "ALTER TABLE jobs ADD COLUMN description_enriched INTEGER DEFAULT 0",
         }
         for col, sql in jobs_migrations.items():
             if col not in jobs_columns:
@@ -325,6 +352,18 @@ class Database:
             for col, sql in profile_migrations.items():
                 if col not in profile_columns:
                     await self.db.execute(sql)
+
+        # Applications table migrations
+        app_cursor = await self.db.execute("PRAGMA table_info(applications)")
+        app_columns = {row[1] for row in await app_cursor.fetchall()}
+        app_migrations = {
+            "rejected_at": "ALTER TABLE applications ADD COLUMN rejected_at TEXT",
+            "offered_at": "ALTER TABLE applications ADD COLUMN offered_at TEXT",
+            "withdrawn_at": "ALTER TABLE applications ADD COLUMN withdrawn_at TEXT",
+        }
+        for col, sql in app_migrations.items():
+            if col not in app_columns:
+                await self.db.execute(sql)
 
         # One-time migration: move notes from applications to app_events
         cursor = await self.db.execute(
@@ -403,6 +442,27 @@ class Database:
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
+    async def get_jobs_needing_enrichment(self, limit: int = 50) -> list[dict]:
+        cursor = await self.db.execute(
+            """SELECT j.id, j.url, j.description FROM jobs j
+               INNER JOIN sources s ON s.job_id = j.id
+               WHERE j.description_enriched = 0
+               AND (j.description IS NULL OR length(j.description) < 200)
+               AND j.dismissed = 0
+               GROUP BY j.id
+               ORDER BY j.created_at DESC LIMIT ?""",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def update_job_description(self, job_id: int, description: str):
+        await self.db.execute(
+            "UPDATE jobs SET description = ?, description_enriched = 1 WHERE id = ?",
+            (description, job_id),
+        )
+        await self.db.commit()
+
     async def insert_score(self, job_id, match_score, match_reasons, concerns, suggested_keywords):
         now = datetime.now(timezone.utc).isoformat()
         await self.db.execute(
@@ -443,6 +503,63 @@ class Database:
         cursor = await self.db.execute("SELECT * FROM applications WHERE job_id = ?", (job_id,))
         row = await cursor.fetchone()
         return dict(row) if row else None
+
+    async def upsert_application(self, job_id: int, status: str):
+        now = datetime.now(timezone.utc).isoformat()
+        existing = await self.get_application(job_id)
+        timestamp_fields = {
+            "applied": "applied_at",
+            "rejected": "rejected_at",
+            "offered": "offered_at",
+            "withdrawn": "withdrawn_at",
+        }
+        if existing:
+            sets = {"status": status}
+            ts_col = timestamp_fields.get(status)
+            if ts_col:
+                sets[ts_col] = now
+            set_clause = ", ".join(f"{k} = ?" for k in sets)
+            vals = list(sets.values()) + [existing["id"]]
+            await self.db.execute(f"UPDATE applications SET {set_clause} WHERE id = ?", vals)
+        else:
+            cols = ["job_id", "status"]
+            vals = [job_id, status]
+            ts_col = timestamp_fields.get(status)
+            if ts_col:
+                cols.append(ts_col)
+                vals.append(now)
+            placeholders = ", ".join("?" for _ in cols)
+            col_str = ", ".join(cols)
+            await self.db.execute(
+                f"INSERT INTO applications ({col_str}) VALUES ({placeholders})", vals
+            )
+        await self.db.commit()
+
+    async def get_pipeline_jobs(self, status: str) -> list[dict]:
+        cursor = await self.db.execute("""
+            SELECT j.id, j.title, j.company, j.location, j.url, j.created_at,
+                   js.match_score, a.status as app_status, a.applied_at
+            FROM jobs j
+            INNER JOIN applications a ON j.id = a.job_id
+            LEFT JOIN job_scores js ON j.id = js.job_id
+            WHERE a.status = ? AND j.dismissed = 0
+            ORDER BY COALESCE(a.applied_at, j.created_at) DESC
+        """, (status,))
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_pipeline_stats(self) -> dict:
+        cursor = await self.db.execute("""
+            SELECT a.status, COUNT(*) as count
+            FROM applications a
+            INNER JOIN jobs j ON j.id = a.job_id
+            WHERE j.dismissed = 0
+            GROUP BY a.status
+        """)
+        rows = await cursor.fetchall()
+        stats = {}
+        for row in rows:
+            stats[row["status"]] = row["count"]
+        return stats
 
     async def list_jobs(self, sort_by="score", limit=50, offset=0, min_score=None,
                         search=None, source=None, dismissed=False,
@@ -538,6 +655,24 @@ class Database:
     async def dismiss_job(self, job_id):
         await self.db.execute("UPDATE jobs SET dismissed = 1 WHERE id = ?", (job_id,))
         await self.db.commit()
+
+    async def auto_dismiss_stale(self, max_age_days: int = 30, no_date_max_days: int = 14) -> int:
+        """Auto-dismiss old jobs. Never dismisses jobs with non-interested applications."""
+        cutoff_posted = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+        cutoff_created = (datetime.now(timezone.utc) - timedelta(days=no_date_max_days)).isoformat()
+        cursor = await self.db.execute("""
+            UPDATE jobs SET dismissed = 1
+            WHERE dismissed = 0
+            AND id NOT IN (
+                SELECT job_id FROM applications WHERE status != 'interested'
+            )
+            AND (
+                (posted_date IS NOT NULL AND posted_date < ?)
+                OR (posted_date IS NULL AND created_at < ?)
+            )
+        """, (cutoff_posted, cutoff_created))
+        await self.db.commit()
+        return cursor.rowcount
 
     async def get_search_config(self):
         cursor = await self.db.execute("SELECT * FROM search_config WHERE id = 1")
@@ -642,6 +777,41 @@ class Database:
         )
         await self.db.commit()
 
+    async def update_scraper_schedule(self, source_name: str, interval_hours: int):
+        await self.db.execute(
+            """INSERT INTO scraper_schedule (source_name, interval_hours)
+               VALUES (?, ?)
+               ON CONFLICT(source_name) DO UPDATE SET interval_hours = excluded.interval_hours""",
+            (source_name, interval_hours),
+        )
+        await self.db.commit()
+
+    async def mark_scraper_ran(self, source_name: str):
+        now = datetime.now(timezone.utc).isoformat()
+        await self.db.execute(
+            """INSERT INTO scraper_schedule (source_name, interval_hours, last_scraped_at)
+               VALUES (?, 6, ?)
+               ON CONFLICT(source_name) DO UPDATE SET last_scraped_at = excluded.last_scraped_at""",
+            (source_name, now),
+        )
+        await self.db.commit()
+
+    async def should_scraper_run(self, source_name: str) -> bool:
+        cursor = await self.db.execute(
+            "SELECT interval_hours, last_scraped_at FROM scraper_schedule WHERE source_name = ?",
+            (source_name,),
+        )
+        row = await cursor.fetchone()
+        if not row or not row["last_scraped_at"]:
+            return True
+        last = datetime.fromisoformat(row["last_scraped_at"])
+        interval = timedelta(hours=row["interval_hours"])
+        return datetime.now(timezone.utc) > last + interval
+
+    async def get_all_scraper_schedules(self) -> list[dict]:
+        cursor = await self.db.execute("SELECT * FROM scraper_schedule ORDER BY source_name")
+        return [dict(r) for r in await cursor.fetchall()]
+
     async def update_job_contact(self, job_id: int, **fields):
         sets = ", ".join(f"{k} = ?" for k in fields)
         vals = list(fields.values()) + [job_id]
@@ -680,6 +850,22 @@ class Database:
         cursor = await self.db.execute(query, params)
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+    async def find_cross_source_dupes(self, exclude_id: int, title: str, company: str) -> list[dict]:
+        """Find likely duplicate jobs from other sources using fuzzy company + title matching."""
+        norm_company = _normalize_company(company)
+        cursor = await self.db.execute(
+            "SELECT id, title, company, url FROM jobs WHERE id != ? AND dismissed = 0",
+            (exclude_id,),
+        )
+        rows = await cursor.fetchall()
+        dupes = []
+        for row in rows:
+            if _normalize_company(row["company"]) != norm_company:
+                continue
+            if _title_similarity(title, row["title"]) >= 0.7:
+                dupes.append(dict(row))
+        return dupes
 
     async def get_company(self, name: str) -> dict | None:
         normalized = name.lower().strip()

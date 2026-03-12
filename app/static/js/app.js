@@ -51,6 +51,10 @@ const api = {
         return this.request('POST', `/api/jobs/${id}/email`);
     },
 
+    generateCoverLetter(id) {
+        return this.request('POST', `/api/jobs/${id}/generate-cover-letter`);
+    },
+
     addEvent(id, detail) {
         return this.request('POST', `/api/jobs/${id}/events`, { detail });
     },
@@ -186,6 +190,7 @@ function getRoute() {
         return { view: 'detail', id: parseInt(id, 10) };
     }
     if (hash === '#/stats') return { view: 'stats' };
+    if (hash === '#/pipeline') return { view: 'pipeline' };
     if (hash === '#/settings') return { view: 'settings' };
     return { view: 'feed' };
 }
@@ -201,6 +206,7 @@ function updateActiveNav() {
         link.classList.toggle('active',
             (r === 'feed' && route.view === 'feed') ||
             (r === 'stats' && route.view === 'stats') ||
+            (r === 'pipeline' && route.view === 'pipeline') ||
             (r === 'settings' && route.view === 'settings')
         );
     });
@@ -215,6 +221,8 @@ async function handleRoute() {
         await renderJobDetail(app, route.id);
     } else if (route.view === 'stats') {
         await renderStats(app);
+    } else if (route.view === 'pipeline') {
+        await renderPipeline(app);
     } else if (route.view === 'settings') {
         await renderSettings(app);
     } else {
@@ -637,7 +645,7 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
                             Prepare Application
                         </button>
                         ${job.apply_url
-                            ? `<a href="${escapeHtml(job.apply_url)}" target="_blank" class="btn btn-success" style="width:100%;text-align:center;background:#22c55e;color:white;text-decoration:none">Apply Now →</a>`
+                            ? `<button class="btn btn-success" id="apply-now-btn" style="width:100%;background:#22c55e;color:white;font-weight:600">Apply Now →</button>`
                             : `<button class="btn btn-secondary btn-sm" id="find-apply-btn" style="width:100%">Find Apply Link</button>`
                         }
                         <a href="${escapeHtml(job.url)}" target="_blank" class="btn btn-secondary">
@@ -762,6 +770,14 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
                 <div id="prepared-container">
                     ${application?.tailored_resume ? renderPreparedSection(application, job.id) : ''}
                 </div>
+                <div id="cover-letter-container">
+                    ${application?.cover_letter ? renderCoverLetterSection(application.cover_letter, job.id) : `
+                    <div class="card sidebar-section">
+                        <h3>Cover Letter</h3>
+                        <button class="btn btn-secondary" id="generate-cover-letter-btn" style="width:100%">Generate Cover Letter</button>
+                    </div>
+                    `}
+                </div>
                 <div id="email-container">
                     ${application?.email_draft ? renderEmailPreview(JSON.parse(application.email_draft)) : ''}
                 </div>
@@ -846,6 +862,25 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
         });
     }
 
+    const applyNowBtn = document.getElementById('apply-now-btn');
+    if (applyNowBtn) {
+        applyNowBtn.addEventListener('click', async () => {
+            applyNowBtn.disabled = true;
+            applyNowBtn.innerHTML = '<span class="spinner"></span> Applying...';
+            try {
+                const result = await api.request('POST', `/api/jobs/${job.id}/apply`);
+                window.open(result.url, '_blank');
+                showToast('Marked as applied!', 'success');
+                const updated = await api.getJob(job.id);
+                renderJobDetailContent(container, updated, profile);
+            } catch (err) {
+                showToast(err.message, 'error');
+                applyNowBtn.disabled = false;
+                applyNowBtn.textContent = 'Apply Now →';
+            }
+        });
+    }
+
     document.getElementById('save-status-btn').addEventListener('click', async () => {
         const status = document.getElementById('status-select').value;
         try {
@@ -920,6 +955,26 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
             }
         });
     }
+
+    const genCoverLetterBtn = document.getElementById('generate-cover-letter-btn');
+    if (genCoverLetterBtn) {
+        genCoverLetterBtn.addEventListener('click', async () => {
+            genCoverLetterBtn.disabled = true;
+            genCoverLetterBtn.innerHTML = '<span class="spinner"></span> Generating...';
+            try {
+                const result = await api.generateCoverLetter(job.id);
+                document.getElementById('cover-letter-container').innerHTML = renderCoverLetterSection(result.cover_letter, job.id);
+                attachCoverLetterListeners(job.id);
+                showToast('Cover letter generated!', 'success');
+            } catch (err) {
+                showToast(err.message, 'error');
+                genCoverLetterBtn.disabled = false;
+                genCoverLetterBtn.textContent = 'Generate Cover Letter';
+            }
+        });
+    }
+
+    attachCoverLetterListeners(job.id);
 
     document.querySelectorAll('.copy-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -1037,6 +1092,68 @@ function attachPreparedListeners() {
     }
 }
 
+function renderCoverLetterSection(coverLetterText, jobId) {
+    if (!coverLetterText) return '';
+    return `
+        <div class="card sidebar-section">
+            <h3>Cover Letter</h3>
+            <div class="prepared-section">
+                <textarea class="textarea-styled" id="standalone-cover-textarea" rows="12">${escapeHtml(coverLetterText)}</textarea>
+                <div class="prepared-actions" style="display:flex;gap:8px;margin-top:8px">
+                    <button class="btn btn-primary btn-sm" id="save-cover-letter-btn">Save Edits</button>
+                    <button class="btn btn-secondary btn-sm" id="copy-cover-letter-btn">Copy</button>
+                    <button class="btn btn-secondary btn-sm" id="regenerate-cover-letter-btn">Regenerate</button>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function attachCoverLetterListeners(jobId) {
+    const saveBtn = document.getElementById('save-cover-letter-btn');
+    if (saveBtn) {
+        saveBtn.addEventListener('click', async () => {
+            const text = document.getElementById('standalone-cover-textarea').value;
+            saveBtn.disabled = true;
+            saveBtn.innerHTML = '<span class="spinner"></span>';
+            try {
+                await api.request('PUT', `/api/jobs/${jobId}/cover-letter`, { cover_letter: text });
+                showToast('Cover letter saved', 'success');
+            } catch (err) {
+                showToast(err.message, 'error');
+            } finally {
+                saveBtn.disabled = false;
+                saveBtn.textContent = 'Save Edits';
+            }
+        });
+    }
+
+    const copyBtn = document.getElementById('copy-cover-letter-btn');
+    if (copyBtn) {
+        copyBtn.addEventListener('click', () => {
+            copyToClipboard(document.getElementById('standalone-cover-textarea').value);
+        });
+    }
+
+    const regenBtn = document.getElementById('regenerate-cover-letter-btn');
+    if (regenBtn) {
+        regenBtn.addEventListener('click', async () => {
+            regenBtn.disabled = true;
+            regenBtn.innerHTML = '<span class="spinner"></span> Regenerating...';
+            try {
+                const result = await api.generateCoverLetter(jobId);
+                document.getElementById('cover-letter-container').innerHTML = renderCoverLetterSection(result.cover_letter, jobId);
+                attachCoverLetterListeners(jobId);
+                showToast('Cover letter regenerated!', 'success');
+            } catch (err) {
+                showToast(err.message, 'error');
+                regenBtn.disabled = false;
+                regenBtn.textContent = 'Regenerate';
+            }
+        });
+    }
+}
+
 function renderEmailPreview(email) {
     if (!email) return '';
     return `
@@ -1052,6 +1169,53 @@ function renderEmailPreview(email) {
             </div>
         </div>
     `;
+}
+
+// === Pipeline View ===
+async function renderPipeline(container) {
+    container.innerHTML = `<div class="loading-container"><div class="spinner spinner-lg"></div><span>Loading pipeline...</span></div>`;
+
+    const statuses = ['interested', 'prepared', 'applied', 'interviewing', 'offered', 'rejected'];
+    const statusLabels = {
+        interested: 'Interested', prepared: 'Prepared', applied: 'Applied',
+        interviewing: 'Interviewing', offered: 'Offered', rejected: 'Rejected'
+    };
+    const statusColors = {
+        interested: 'var(--text-secondary)', prepared: 'var(--accent)',
+        applied: 'var(--score-green)', interviewing: 'var(--score-amber)',
+        offered: '#22c55e', rejected: 'var(--danger)'
+    };
+
+    try {
+        const results = await Promise.all(
+            statuses.map(s => api.request('GET', `/api/pipeline/${s}`))
+        );
+
+        container.innerHTML = `
+            <h1 style="font-size:1.5rem;font-weight:700;letter-spacing:-0.02em;margin-bottom:24px">Pipeline</h1>
+            <div class="pipeline-board">
+                ${statuses.map((status, i) => `
+                    <div class="pipeline-column">
+                        <div class="pipeline-column-header" style="border-top: 3px solid ${statusColors[status]}">
+                            <span>${statusLabels[status]}</span>
+                            <span class="pipeline-count">${results[i].count}</span>
+                        </div>
+                        <div class="pipeline-cards">
+                            ${results[i].jobs.map(job => `
+                                <div class="card pipeline-card" onclick="navigate('#/job/${job.id}')">
+                                    <div class="pipeline-card-title">${escapeHtml(job.title)}</div>
+                                    <div class="pipeline-card-company">${escapeHtml(job.company)}</div>
+                                    ${job.match_score ? `<span class="score-badge ${getScoreClass(job.match_score)}" style="font-size:0.7rem">${job.match_score}</span>` : ''}
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    } catch (err) {
+        container.innerHTML = `<div class="empty-state"><div class="empty-state-title">Failed to load pipeline</div><div class="empty-state-desc">${escapeHtml(err.message)}</div></div>`;
+    }
 }
 
 // === Stats Dashboard View ===
@@ -2241,6 +2405,12 @@ function renderTabData(container) {
             <div id="autofill-history-list"><span class="spinner"></span></div>
         </div>
 
+        <div class="card" style="padding:24px;margin-bottom:24px">
+            <h2 style="font-size:1.125rem;font-weight:600;margin-bottom:16px">Scraper Schedule</h2>
+            <p style="color:var(--text-secondary);margin-bottom:16px;font-size:0.875rem">Configure how often each scraper runs. Set interval in hours (e.g. 168 = weekly).</p>
+            <div id="scraper-schedule-list"><span class="spinner"></span></div>
+        </div>
+
         <div class="card" style="padding:24px;margin-bottom:24px;border-left:4px solid var(--danger, #ef4444)">
             <h2 style="font-size:1.125rem;font-weight:600;margin-bottom:16px;color:var(--danger, #ef4444)">Danger Zone</h2>
             <div style="display:flex;flex-direction:column;gap:16px">
@@ -2275,6 +2445,52 @@ function renderTabData(container) {
         `).join('');
     }).catch(() => {
         container.querySelector('#autofill-history-list').innerHTML = '<p style="color:var(--text-tertiary)">Could not load history.</p>';
+    });
+
+    // Load scraper schedules
+    api.request('GET', '/api/scraper-schedule').then(data => {
+        const list = container.querySelector('#scraper-schedule-list');
+        const schedules = data.schedules || [];
+        if (!schedules.length) {
+            list.innerHTML = '<p style="color:var(--text-tertiary);font-size:0.875rem">No scraper schedules configured yet. Scrapers will use the global interval. Run a scrape cycle first to populate sources.</p>';
+            return;
+        }
+        list.innerHTML = `
+            <table style="width:100%;border-collapse:collapse;font-size:0.875rem">
+                <thead>
+                    <tr style="border-bottom:2px solid var(--border);text-align:left">
+                        <th style="padding:8px 12px">Source</th>
+                        <th style="padding:8px 12px">Interval (hours)</th>
+                        <th style="padding:8px 12px">Last Ran</th>
+                        <th style="padding:8px 12px"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${schedules.map(s => `
+                        <tr style="border-bottom:1px solid var(--border)" data-source="${escapeHtml(s.source_name)}">
+                            <td style="padding:8px 12px;font-weight:600">${escapeHtml(s.source_name)}</td>
+                            <td style="padding:8px 12px"><input type="number" min="1" value="${s.interval_hours}" style="width:80px;padding:4px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-surface);color:var(--text-primary)" class="schedule-interval"></td>
+                            <td style="padding:8px 12px;color:var(--text-secondary)">${s.last_scraped_at ? formatDate(s.last_scraped_at) : 'Never'}</td>
+                            <td style="padding:8px 12px"><button class="btn btn-secondary schedule-save-btn" style="padding:4px 12px;font-size:0.8125rem">Save</button></td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+        list.querySelectorAll('.schedule-save-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const row = btn.closest('tr');
+                const source_name = row.dataset.source;
+                const interval_hours = parseInt(row.querySelector('.schedule-interval').value, 10);
+                if (!interval_hours || interval_hours < 1) { showToast('Interval must be at least 1 hour', 'error'); return; }
+                try {
+                    await api.request('POST', '/api/scraper-schedule', { source_name, interval_hours });
+                    showToast(`Schedule updated for ${source_name}`, 'success');
+                } catch (err) { showToast(err.message, 'error'); }
+            });
+        });
+    }).catch(() => {
+        container.querySelector('#scraper-schedule-list').innerHTML = '<p style="color:var(--text-tertiary)">Could not load scraper schedules.</p>';
     });
 
     document.getElementById('clear-jobs-btn').addEventListener('click', async () => {

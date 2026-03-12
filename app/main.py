@@ -437,6 +437,73 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
         await app.state.db.add_event(job_id, "note", detail)
         return {"ok": True}
 
+    @app.post("/api/jobs/{job_id}/apply")
+    async def apply_to_job(job_id: int):
+        db = app.state.db
+        job = await db.get_job(job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        apply_url = job.get("apply_url") or job["url"]
+        await db.upsert_application(job_id, status="applied")
+        await db.add_event(job_id, "applied", "Applied via CareerPulse")
+        return {"url": apply_url, "status": "applied"}
+
+    @app.post("/api/jobs/{job_id}/generate-cover-letter")
+    async def generate_cover_letter_endpoint(job_id: int):
+        db = app.state.db
+        client = app.state.ai_client
+        if not client:
+            raise HTTPException(503, "AI client not configured")
+
+        job = await db.get_job(job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+
+        config = await db.get_search_config()
+        resume_text = config["resume_text"] if config else ""
+        profile = await db.get_user_profile() or {}
+        score = await db.get_score(job_id)
+        match_reasons = score["match_reasons"] if score else []
+
+        from app.cover_letter import generate_cover_letter
+        result = await generate_cover_letter(
+            client=client,
+            job_title=job["title"],
+            company=job["company"],
+            job_description=job.get("description") or "",
+            resume_text=resume_text,
+            profile=profile,
+            match_reasons=match_reasons,
+        )
+
+        app_record = await db.get_application(job_id)
+        if app_record:
+            await db.update_application(app_record["id"], cover_letter=result["cover_letter"])
+        else:
+            app_id = await db.insert_application(job_id, status="interested")
+            await db.update_application(app_id, cover_letter=result["cover_letter"])
+
+        return result
+
+    @app.put("/api/jobs/{job_id}/cover-letter")
+    async def save_cover_letter(job_id: int, request: Request):
+        db = app.state.db
+        job = await db.get_job(job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+
+        body = await request.json()
+        cover_letter = body.get("cover_letter", "")
+
+        app_record = await db.get_application(job_id)
+        if app_record:
+            await db.update_application(app_record["id"], cover_letter=cover_letter)
+        else:
+            app_id = await db.insert_application(job_id, status="interested")
+            await db.update_application(app_id, cover_letter=cover_letter)
+
+        return {"ok": True}
+
     @app.post("/api/jobs/{job_id}/application")
     async def update_application(job_id: int, status: str = Query(...), notes: str = Query("")):
         app_row = await app.state.db.get_application(job_id)
@@ -455,6 +522,18 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
     @app.get("/api/stats")
     async def get_stats():
         return await app.state.db.get_stats()
+
+    @app.get("/api/pipeline")
+    async def get_pipeline():
+        db = app.state.db
+        stats = await db.get_pipeline_stats()
+        return {"stats": stats}
+
+    @app.get("/api/pipeline/{status}")
+    async def get_pipeline_jobs(status: str):
+        db = app.state.db
+        jobs = await db.get_pipeline_jobs(status)
+        return {"jobs": jobs, "count": len(jobs)}
 
     @app.get("/api/export/csv")
     async def export_csv(
@@ -550,6 +629,21 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
         if not progress:
             return {"active": False, "completed": 0, "total": 0, "current": None, "new_jobs": 0}
         return progress
+
+    @app.post("/api/jobs/enrich")
+    async def enrich_jobs():
+        from app.enrichment import enrich_job_description
+        db = app.state.db
+        jobs = await db.get_jobs_needing_enrichment(limit=50)
+        enriched = 0
+        for job in jobs:
+            sources = await db.get_sources(job["id"])
+            source = sources[0]["source_name"] if sources else "unknown"
+            desc = await enrich_job_description(job["url"], source)
+            if desc and len(desc) > len(job.get("description") or ""):
+                await db.update_job_description(job["id"], desc)
+                enriched += 1
+        return {"enriched": enriched, "total": len(jobs)}
 
     @app.post("/api/score")
     async def trigger_score():
@@ -913,6 +1007,23 @@ Rules:
                 else:
                     api_key = ""
             await app.state.db.save_scraper_key(name, api_key, email)
+        return {"ok": True}
+
+    @app.get("/api/scraper-schedule")
+    async def get_scraper_schedule():
+        db = app.state.db
+        schedules = await db.get_all_scraper_schedules()
+        return {"schedules": schedules}
+
+    @app.post("/api/scraper-schedule")
+    async def update_scraper_schedule(request: Request):
+        data = await request.json()
+        db = app.state.db
+        source_name = data.get("source_name")
+        interval_hours = data.get("interval_hours")
+        if not source_name or interval_hours is None:
+            raise HTTPException(400, "source_name and interval_hours required")
+        await db.update_scraper_schedule(source_name, int(interval_hours))
         return {"ok": True}
 
     @app.post("/api/resume/upload")

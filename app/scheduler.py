@@ -12,6 +12,12 @@ async def run_scrape_cycle(db: Database, scrapers: list, search_terms: list[str]
         if isinstance(scraper_instance, type):
             scraper_instance = scraper_instance(search_terms=search_terms, scraper_keys=scraper_keys or {})
         source_name = scraper_instance.source_name
+        # Check per-source schedule
+        if not await db.should_scraper_run(source_name):
+            logger.info(f"Skipping {source_name} — not yet due")
+            if progress is not None:
+                progress.update({"completed": i + 1, "total": total_scrapers, "current": source_name, "new_jobs": total_new, "active": True})
+            continue
         logger.info(f"Scraping {source_name}...")
         if progress is not None:
             progress.update({"completed": i, "total": total_scrapers, "current": source_name, "new_jobs": total_new, "active": True})
@@ -40,10 +46,39 @@ async def run_scrape_cycle(db: Database, scrapers: list, search_terms: list[str]
                     contact_email=listing.contact_email,
                 )
                 if job_id:
-                    await db.insert_source(job_id, source_name, listing.url)
-                    total_new += 1
+                    # Check for cross-source duplicates
+                    dupes = await db.find_cross_source_dupes(job_id, listing.title, listing.company)
+                    if dupes:
+                        # Merge: add source to oldest existing job, dismiss this new one
+                        oldest = dupes[0]
+                        await db.insert_source(oldest["id"], source_name, listing.url)
+                        await db.dismiss_job(job_id)
+                        logger.debug(f"Dedup: merged '{listing.title}' @ {listing.company} into job {oldest['id']}")
+                    else:
+                        await db.insert_source(job_id, source_name, listing.url)
+                        total_new += 1
 
         logger.info(f"{source_name}: found {len(listings)} listings")
+        await db.mark_scraper_ran(source_name)
+
+    # Enrich jobs with short/missing descriptions
+    from app.enrichment import enrich_job_description
+    jobs_to_enrich = await db.get_jobs_needing_enrichment(limit=30)
+    enriched_count = 0
+    for job in jobs_to_enrich:
+        sources = await db.get_sources(job["id"])
+        source = sources[0]["source_name"] if sources else "unknown"
+        desc = await enrich_job_description(job["url"], source)
+        if desc and len(desc) > len(job.get("description") or ""):
+            await db.update_job_description(job["id"], desc)
+            enriched_count += 1
+    if enriched_count:
+        logger.info(f"Enriched {enriched_count}/{len(jobs_to_enrich)} job descriptions")
+
+    dismissed = await db.auto_dismiss_stale()
+    if dismissed:
+        logger.info(f"Auto-dismissed {dismissed} stale jobs")
+
     if progress is not None:
         progress.update({"completed": total_scrapers, "total": total_scrapers, "current": None, "new_jobs": total_new, "active": False})
     logger.info(f"Scrape cycle complete. {total_new} new jobs added.")
