@@ -76,7 +76,41 @@ async def fetch_linkedin_playwright(url: str) -> str | None:
 
 
 async def enrich_job_description(url: str, source: str) -> str | None:
-    """Fetch a job detail page and extract the full description text."""
+    """Fetch a job detail page and extract the full description text.
+
+    For LinkedIn, tries strategies in order:
+    1. Guest jobs API (lightweight, no JS)
+    2. Playwright headless browser (if installed)
+    3. Direct page fetch (original behavior)
+    """
+    if source == "linkedin":
+        return await _enrich_linkedin(url)
+
+    return await _fetch_and_extract(url, source)
+
+
+async def _enrich_linkedin(url: str) -> str | None:
+    """Try multiple strategies to get LinkedIn job description."""
+    # Strategy 1: Guest API
+    job_id = extract_linkedin_job_id(url)
+    if job_id:
+        desc = await fetch_linkedin_guest_api(job_id)
+        if desc:
+            logger.debug(f"LinkedIn enrichment via guest API for job {job_id}")
+            return desc
+
+    # Strategy 2: Playwright
+    desc = await fetch_linkedin_playwright(url)
+    if desc:
+        logger.debug(f"LinkedIn enrichment via Playwright for {url}")
+        return desc
+
+    # Strategy 3: Direct fetch (original)
+    return await _fetch_and_extract(url, "linkedin")
+
+
+async def _fetch_and_extract(url: str, source: str) -> str | None:
+    """Original direct-fetch enrichment logic."""
     try:
         async with httpx.AsyncClient(headers=HEADERS, timeout=15.0, follow_redirects=True) as client:
             resp = await client.get(url)
