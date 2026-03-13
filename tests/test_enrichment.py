@@ -1,6 +1,6 @@
 import re
 import pytest
-from app.enrichment import enrich_job_description
+from app.enrichment import enrich_job_description, extract_linkedin_job_id, fetch_linkedin_guest_api
 
 MOCK_LINKEDIN_DETAIL = """
 <html><body>
@@ -100,3 +100,52 @@ async def test_update_job_description(db):
     await db.update_job_description(job_id, "Full detailed description " * 20)
     jobs = await db.get_jobs_needing_enrichment()
     assert all(j["id"] != job_id for j in jobs)
+
+
+# LinkedIn job ID extraction and guest API tests
+
+
+def test_extract_job_id_from_standard_url():
+    url = "https://www.linkedin.com/jobs/view/4567890123"
+    assert extract_linkedin_job_id(url) == "4567890123"
+
+
+def test_extract_job_id_from_url_with_slug():
+    url = "https://www.linkedin.com/jobs/view/senior-engineer-at-acme-4567890123"
+    assert extract_linkedin_job_id(url) == "4567890123"
+
+
+def test_extract_job_id_returns_none_for_non_linkedin():
+    assert extract_linkedin_job_id("https://dice.com/job/123") is None
+
+
+MOCK_GUEST_API_RESPONSE = """
+<html><body>
+<div class="description__text">
+  <p>We need a Platform Engineer with strong Kubernetes skills.</p>
+  <p>Requirements: 5+ years infrastructure experience, Terraform, AWS.</p>
+</div>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_fetch_linkedin_guest_api_success(httpx_mock):
+    httpx_mock.add_response(
+        url=re.compile(r"https://www\.linkedin\.com/jobs-guest/jobs/api/jobPosting/.*"),
+        text=MOCK_GUEST_API_RESPONSE,
+    )
+    result = await fetch_linkedin_guest_api("4567890123")
+    assert result is not None
+    assert "Platform Engineer" in result
+    assert "Kubernetes" in result
+
+
+@pytest.mark.asyncio
+async def test_fetch_linkedin_guest_api_returns_none_on_error(httpx_mock):
+    httpx_mock.add_response(
+        url=re.compile(r"https://www\.linkedin\.com/jobs-guest/jobs/api/jobPosting/.*"),
+        status_code=429,
+    )
+    result = await fetch_linkedin_guest_api("4567890123")
+    assert result is None
