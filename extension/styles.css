@@ -360,7 +360,6 @@
   color: #fff;
 }
 
-<<<<<<< HEAD
 /* ─── Auto-detection badge ──────────────────────────────────── */
 
 .cp-auto-badge {
@@ -508,4 +507,189 @@
   background: #22c55e;
   color: #fff;
   cursor: default;
+}
+
+/* ─── Job Board Overlay: Save Button & Score Badge ───────── */
+
+.cp-overlay-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0 2px;
+}
+
+.cp-overlay-save-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #3b82f6;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, opacity 0.15s;
+  line-height: 1.4;
+}
+
+.cp-overlay-save-btn:hover:not(:disabled) {
+  background: #2563eb;
+}
+
+.cp-overlay-save-btn:disabled {
+  cursor: default;
+}
+
+.cp-overlay-save-btn.cp-overlay-saving {
+  background: #52525b;
+  color: #a1a1aa;
+  cursor: wait;
+}
+
+.cp-overlay-save-btn.cp-overlay-saved {
+  background: #22c55e;
+  color: #fff;
+}
+
+.cp-overlay-save-btn.cp-overlay-error {
+  background: #ef4444;
+  color: #fff;
+}
+
+.cp-overlay-save-btn.cp-overlay-error:hover {
+  background: #dc2626;
+}
+
+/* ─── Score badge ────────────────────────────────────────── */
+
+.cp-overlay-score-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+  z-index: 10;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+.cp-overlay-score-badge.cp-overlay-score-high {
+  background: #22c55e;
+}
+
+.cp-overlay-score-badge.cp-overlay-score-mid {
+  background: #eab308;
+  color: #18181b;
+}
+
+.cp-overlay-score-badge.cp-overlay-score-low {
+  background: #71717a;
+}
+
+/* ─── Queue fill banner ─────────────────────────────────── */
+
+#cp-autofill-queue-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2147483647;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.cp-autofill-queue-banner-inner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: rgba(24, 24, 27, 0.95);
+  border-bottom: 2px solid #3b82f6;
+  color: #e4e4e7;
+  font-size: 13px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+}
+
+.cp-autofill-queue-banner-progress {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  height: 24px;
+  padding: 0 8px;
+  background: #3b82f6;
+  color: #fff;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.cp-autofill-queue-banner-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #d4d4d8;
+}
+
+.cp-autofill-queue-banner-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.cp-autofill-queue-done-btn,
+.cp-autofill-queue-skip-btn,
+.cp-autofill-queue-cancel-btn {
+  border: none;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cp-autofill-queue-done-btn {
+  background: #22c55e;
+  color: #fff;
+}
+
+.cp-autofill-queue-done-btn:hover {
+  background: #16a34a;
+}
+
+.cp-autofill-queue-skip-btn {
+  background: #52525b;
+  color: #d4d4d8;
+}
+
+.cp-autofill-queue-skip-btn:hover {
+  background: #71717a;
+  color: #fff;
+}
+
+.cp-autofill-queue-cancel-btn {
+  background: none;
+  border: 1px solid #3f3f46;
+  color: #a1a1aa;
+}
+
+.cp-autofill-queue-cancel-btn:hover {
+  background: #27272a;
+  color: #fff;
 }

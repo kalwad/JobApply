@@ -1333,3 +1333,245 @@ describe('auto-detection badge', () => {
     expect(badges.length).toBe(1);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════
+// Custom Q&A fuzzy matching
+// ═══════════════════════════════════════════════════════════════
+
+describe('fuzzyMatchQA', () => {
+  const qaEntries = [
+    { question_pattern: 'How did you hear about us', answer: 'LinkedIn', category: 'general' },
+    { question_pattern: 'desired salary', answer: '120000', category: 'compensation' },
+    { question_pattern: 'Are you authorized to work in the United States', answer: 'Yes', category: 'eligibility' },
+    { question_pattern: 'start date', answer: '2 weeks notice', category: 'availability' },
+  ];
+
+  it('returns null for empty label', () => {
+    expect(api.fuzzyMatchQA('', qaEntries)).toBeNull();
+    expect(api.fuzzyMatchQA(null, qaEntries)).toBeNull();
+  });
+
+  it('returns null for empty entries', () => {
+    expect(api.fuzzyMatchQA('some label', [])).toBeNull();
+    expect(api.fuzzyMatchQA('some label', null)).toBeNull();
+  });
+
+  it('matches exact question pattern', () => {
+    const match = api.fuzzyMatchQA('desired salary', qaEntries);
+    expect(match).not.toBeNull();
+    expect(match.answer).toBe('120000');
+  });
+
+  it('matches case-insensitively', () => {
+    const match = api.fuzzyMatchQA('Desired Salary', qaEntries);
+    expect(match).not.toBeNull();
+    expect(match.answer).toBe('120000');
+  });
+
+  it('matches when label contains the pattern', () => {
+    const match = api.fuzzyMatchQA('What is your desired salary range?', qaEntries);
+    expect(match).not.toBeNull();
+    expect(match.answer).toBe('120000');
+  });
+
+  it('matches when pattern contains the label', () => {
+    const match = api.fuzzyMatchQA('salary', qaEntries);
+    expect(match).not.toBeNull();
+    expect(match.answer).toBe('120000');
+  });
+
+  it('matches by keyword overlap', () => {
+    const match = api.fuzzyMatchQA('How did you hear about this position?', qaEntries);
+    expect(match).not.toBeNull();
+    expect(match.answer).toBe('LinkedIn');
+  });
+
+  it('matches work authorization question', () => {
+    const match = api.fuzzyMatchQA('Are you authorized to work in the US?', qaEntries);
+    expect(match).not.toBeNull();
+    expect(match.answer).toBe('Yes');
+  });
+
+  it('returns null for no match', () => {
+    const match = api.fuzzyMatchQA('Upload your portfolio', qaEntries);
+    expect(match).toBeNull();
+  });
+
+  it('skips entries with empty question_pattern', () => {
+    const entries = [{ question_pattern: '', answer: 'nope' }];
+    expect(api.fuzzyMatchQA('anything', entries)).toBeNull();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Custom Q&A application to mappings
+// ═══════════════════════════════════════════════════════════════
+
+describe('applyCustomQA', () => {
+  beforeEach(() => {
+    // Mock chrome.runtime.sendMessage for Q&A fetch
+    globalThis.chrome.runtime.sendMessage = vi.fn().mockImplementation((msg) => {
+      if (msg.type === 'getCustomQA') {
+        return Promise.resolve({
+          ok: true,
+          data: [
+            { question_pattern: 'desired salary', answer: '120000', category: 'compensation' },
+            { question_pattern: 'How did you hear about us', answer: 'LinkedIn', category: 'general' },
+          ],
+        });
+      }
+      return Promise.resolve({ ok: false });
+    });
+  });
+
+  it('fills skipped fields that match Q&A', async () => {
+    const mappings = [
+      { selector: '#name', value: 'John', action: 'fill_text', field_label: 'Full Name' },
+      { selector: '#salary', value: '', action: 'skip', field_label: 'What is your desired salary?' },
+    ];
+
+    const result = await api.applyCustomQA(mappings);
+    expect(result[0].action).toBe('fill_text');
+    expect(result[0].value).toBe('John');
+    expect(result[1].action).toBe('fill_text');
+    expect(result[1].value).toBe('120000');
+    expect(result[1].qa_matched).toBe(true);
+  });
+
+  it('does not modify non-skip fields', async () => {
+    const mappings = [
+      { selector: '#name', value: 'John', action: 'fill_text', field_label: 'Full Name' },
+    ];
+
+    const result = await api.applyCustomQA(mappings);
+    expect(result[0].action).toBe('fill_text');
+    expect(result[0].value).toBe('John');
+    expect(result[0].qa_matched).toBeUndefined();
+  });
+
+  it('leaves skip fields that do not match any Q&A', async () => {
+    const mappings = [
+      { selector: '#portfolio', value: '', action: 'skip', field_label: 'Upload your portfolio' },
+    ];
+
+    const result = await api.applyCustomQA(mappings);
+    expect(result[0].action).toBe('skip');
+  });
+
+  it('handles Q&A fetch failure gracefully', async () => {
+    globalThis.chrome.runtime.sendMessage = vi.fn().mockRejectedValue(new Error('Extension error'));
+
+    const mappings = [
+      { selector: '#salary', value: '', action: 'skip', field_label: 'Desired Salary' },
+    ];
+
+    const result = await api.applyCustomQA(mappings);
+    expect(result[0].action).toBe('skip');
+  });
+
+  it('handles empty Q&A response', async () => {
+    globalThis.chrome.runtime.sendMessage = vi.fn().mockResolvedValue({ ok: true, data: [] });
+
+    const mappings = [
+      { selector: '#salary', value: '', action: 'skip', field_label: 'Desired Salary' },
+    ];
+
+    const result = await api.applyCustomQA(mappings);
+    expect(result[0].action).toBe('skip');
+  });
+
+  it('handles invalid Q&A response', async () => {
+    globalThis.chrome.runtime.sendMessage = vi.fn().mockResolvedValue({ ok: false });
+
+    const mappings = [
+      { selector: '#salary', value: '', action: 'skip', field_label: 'Desired Salary' },
+    ];
+
+    const result = await api.applyCustomQA(mappings);
+    expect(result[0].action).toBe('skip');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Toast notifications
+// ═══════════════════════════════════════════════════════════════
+
+describe('showToast', () => {
+  it('creates a toast element in the DOM', () => {
+    api.showToast('Test message');
+    const toast = document.getElementById('cp-autofill-toast');
+    expect(toast).not.toBeNull();
+    expect(toast.textContent).toBe('Test message');
+  });
+
+  it('removes existing toast before creating new one', () => {
+    api.showToast('First');
+    api.showToast('Second');
+    const toasts = document.querySelectorAll('#cp-autofill-toast');
+    expect(toasts.length).toBe(1);
+    expect(toasts[0].textContent).toBe('Second');
+  });
+
+  it('uses green background for success type', () => {
+    const toast = api.showToast('Success!', 'success');
+    expect(toast.style.background).toContain('rgb(34, 197, 94)');
+  });
+
+  it('uses red background for error type', () => {
+    const toast = api.showToast('Error!', 'error');
+    expect(toast.style.background).toContain('rgb(239, 68, 68)');
+  });
+
+  it('has role="status" for accessibility', () => {
+    api.showToast('Accessible');
+    const toast = document.getElementById('cp-autofill-toast');
+    expect(toast.getAttribute('role')).toBe('status');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Auto-track applied jobs
+// ═══════════════════════════════════════════════════════════════
+
+describe('autoTrackApplied', () => {
+  beforeEach(() => {
+    api.autoTrackFired = false;
+    globalThis.chrome.runtime.sendMessage = vi.fn().mockResolvedValue({ ok: true, data: { job_id: 1 } });
+  });
+
+  it('calls markAppliedByUrl via background message', async () => {
+    await api.autoTrackApplied();
+    expect(globalThis.chrome.runtime.sendMessage).toHaveBeenCalledWith({
+      type: 'markAppliedByUrl',
+      url: expect.any(String),
+    });
+  });
+
+  it('shows success toast on successful track', async () => {
+    await api.autoTrackApplied();
+    const toast = document.getElementById('cp-autofill-toast');
+    expect(toast).not.toBeNull();
+    expect(toast.textContent).toContain('marked as applied');
+  });
+
+  it('only fires once per page', async () => {
+    await api.autoTrackApplied();
+    await api.autoTrackApplied();
+    expect(globalThis.chrome.runtime.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not show toast on failure', async () => {
+    globalThis.chrome.runtime.sendMessage = vi.fn().mockResolvedValue({ ok: false });
+    await api.autoTrackApplied();
+    const toast = document.getElementById('cp-autofill-toast');
+    expect(toast).toBeNull();
+  });
+
+  it('handles message send error gracefully', async () => {
+    globalThis.chrome.runtime.sendMessage = vi.fn().mockRejectedValue(new Error('No connection'));
+    await api.autoTrackApplied();
+    // Should not throw, no toast shown
+    const toast = document.getElementById('cp-autofill-toast');
+    expect(toast).toBeNull();
+  });
+});

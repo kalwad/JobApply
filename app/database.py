@@ -287,6 +287,109 @@ class Database:
                 digest_min_score INTEGER NOT NULL DEFAULT 60,
                 updated_at TEXT NOT NULL DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS saved_views (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                filters TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS resumes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                resume_text TEXT NOT NULL DEFAULT '',
+                is_default INTEGER NOT NULL DEFAULT 0,
+                search_terms TEXT NOT NULL DEFAULT '[]',
+                job_titles TEXT NOT NULL DEFAULT '[]',
+                key_skills TEXT NOT NULL DEFAULT '[]',
+                seniority TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_jobs_url ON jobs(url);
+            CREATE TABLE IF NOT EXISTS job_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                filters TEXT NOT NULL DEFAULT '{}',
+                min_score INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                notify_method TEXT NOT NULL DEFAULT 'in_app',
+                last_checked_at TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS application_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER UNIQUE NOT NULL,
+                resume_id INTEGER,
+                status TEXT NOT NULL DEFAULT 'queued',
+                priority INTEGER NOT NULL DEFAULT 0,
+                queued_at TEXT NOT NULL,
+                prepared_at TEXT,
+                FOREIGN KEY (job_id) REFERENCES jobs(id),
+                FOREIGN KEY (resume_id) REFERENCES resumes(id)
+            );
+            CREATE TABLE IF NOT EXISTS follow_up_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                days_after INTEGER NOT NULL DEFAULT 7,
+                template_text TEXT NOT NULL DEFAULT '',
+                is_default INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS contacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                email TEXT NOT NULL DEFAULT '',
+                phone TEXT NOT NULL DEFAULT '',
+                company TEXT NOT NULL DEFAULT '',
+                role TEXT NOT NULL DEFAULT '',
+                linkedin_url TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS contact_interactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                contact_id INTEGER NOT NULL,
+                type TEXT NOT NULL DEFAULT 'note',
+                notes TEXT NOT NULL DEFAULT '',
+                date TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (contact_id) REFERENCES contacts(id)
+            );
+            CREATE TABLE IF NOT EXISTS job_contacts (
+                job_id INTEGER NOT NULL,
+                contact_id INTEGER NOT NULL,
+                relationship TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (job_id, contact_id),
+                FOREIGN KEY (job_id) REFERENCES jobs(id),
+                FOREIGN KEY (contact_id) REFERENCES contacts(id)
+            );
+            CREATE TABLE IF NOT EXISTS career_suggestions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                reasoning TEXT NOT NULL DEFAULT '',
+                transferable_skills TEXT NOT NULL DEFAULT '[]',
+                gaps TEXT NOT NULL DEFAULT '[]',
+                accepted INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS offers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER,
+                base INTEGER NOT NULL DEFAULT 0,
+                equity INTEGER NOT NULL DEFAULT 0,
+                bonus INTEGER NOT NULL DEFAULT 0,
+                pto_days INTEGER NOT NULL DEFAULT 0,
+                remote_days INTEGER NOT NULL DEFAULT 0,
+                health_value INTEGER NOT NULL DEFAULT 0,
+                retirement_match REAL NOT NULL DEFAULT 0,
+                relocation INTEGER NOT NULL DEFAULT 0,
+                location TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (job_id) REFERENCES jobs(id)
+            );
         """)
         await self._migrate()
         await self.db.commit()
@@ -387,6 +490,9 @@ class Database:
             "rejected_at": "ALTER TABLE applications ADD COLUMN rejected_at TEXT",
             "offered_at": "ALTER TABLE applications ADD COLUMN offered_at TEXT",
             "withdrawn_at": "ALTER TABLE applications ADD COLUMN withdrawn_at TEXT",
+            "response_received_at": "ALTER TABLE applications ADD COLUMN response_received_at TEXT",
+            "response_type": "ALTER TABLE applications ADD COLUMN response_type TEXT",
+            "days_to_response": "ALTER TABLE applications ADD COLUMN days_to_response INTEGER",
         }
         for col, sql in app_migrations.items():
             if col not in app_columns:
@@ -440,6 +546,21 @@ class Database:
                 FOREIGN KEY (job_id) REFERENCES jobs(id)
             )
         """)
+
+        # Reminders table migrations for follow-up automation
+        rem_cursor = await self.db.execute("PRAGMA table_info(reminders)")
+        rem_columns = {row[1] for row in await rem_cursor.fetchall()}
+        if rem_columns:
+            rem_migrations = {
+                "auto_draft": "ALTER TABLE reminders ADD COLUMN auto_draft INTEGER DEFAULT 0",
+                "auto_send": "ALTER TABLE reminders ADD COLUMN auto_send INTEGER DEFAULT 0",
+                "draft_text": "ALTER TABLE reminders ADD COLUMN draft_text TEXT",
+                "sent_at": "ALTER TABLE reminders ADD COLUMN sent_at TEXT",
+            }
+            for col, sql in rem_migrations.items():
+                if col not in rem_columns:
+                    await self.db.execute(sql)
+
         await self.db.commit()
 
         # Clean HTML entities from existing job titles/companies
@@ -486,6 +607,11 @@ class Database:
 
     async def find_job_by_hash(self, dedup_hash):
         cursor = await self.db.execute("SELECT * FROM jobs WHERE dedup_hash = ?", (dedup_hash,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def find_job_by_url(self, url: str) -> dict | None:
+        cursor = await self.db.execute("SELECT * FROM jobs WHERE url = ?", (url,))
         row = await cursor.fetchone()
         return dict(row) if row else None
 
@@ -1645,3 +1771,768 @@ class Database:
             ),
         )
         await self.db.commit()
+
+    # --- Saved Views CRUD ---
+
+    async def get_saved_views(self) -> list[dict]:
+        cursor = await self.db.execute(
+            "SELECT * FROM saved_views ORDER BY updated_at DESC"
+        )
+        rows = await cursor.fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["filters"] = json.loads(d["filters"]) if d["filters"] else {}
+            results.append(d)
+        return results
+
+    async def get_saved_view(self, view_id: int) -> dict | None:
+        cursor = await self.db.execute(
+            "SELECT * FROM saved_views WHERE id = ?", (view_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["filters"] = json.loads(d["filters"]) if d["filters"] else {}
+        return d
+
+    async def create_saved_view(self, name: str, filters: dict) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.db.execute(
+            "INSERT INTO saved_views (name, filters, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (name, json.dumps(filters), now, now),
+        )
+        await self.db.commit()
+        return cursor.lastrowid
+
+    async def update_saved_view(self, view_id: int, name: str | None = None, filters: dict | None = None) -> bool:
+        existing = await self.get_saved_view(view_id)
+        if not existing:
+            return False
+        now = datetime.now(timezone.utc).isoformat()
+        new_name = name if name is not None else existing["name"]
+        new_filters = filters if filters is not None else existing["filters"]
+        await self.db.execute(
+            "UPDATE saved_views SET name = ?, filters = ?, updated_at = ? WHERE id = ?",
+            (new_name, json.dumps(new_filters), now, view_id),
+        )
+        await self.db.commit()
+        return True
+
+    async def delete_saved_view(self, view_id: int) -> bool:
+        cursor = await self.db.execute(
+            "DELETE FROM saved_views WHERE id = ?", (view_id,)
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    # --- Resumes CRUD ---
+
+    async def get_resumes(self) -> list[dict]:
+        cursor = await self.db.execute(
+            "SELECT * FROM resumes ORDER BY is_default DESC, updated_at DESC"
+        )
+        rows = await cursor.fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["is_default"] = bool(d["is_default"])
+            d["search_terms"] = json.loads(d["search_terms"]) if d["search_terms"] else []
+            d["job_titles"] = json.loads(d["job_titles"]) if d["job_titles"] else []
+            d["key_skills"] = json.loads(d["key_skills"]) if d["key_skills"] else []
+            results.append(d)
+        return results
+
+    async def get_resume(self, resume_id: int) -> dict | None:
+        cursor = await self.db.execute(
+            "SELECT * FROM resumes WHERE id = ?", (resume_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["is_default"] = bool(d["is_default"])
+        d["search_terms"] = json.loads(d["search_terms"]) if d["search_terms"] else []
+        d["job_titles"] = json.loads(d["job_titles"]) if d["job_titles"] else []
+        d["key_skills"] = json.loads(d["key_skills"]) if d["key_skills"] else []
+        return d
+
+    async def get_default_resume(self) -> dict | None:
+        cursor = await self.db.execute(
+            "SELECT * FROM resumes WHERE is_default = 1"
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["is_default"] = True
+        d["search_terms"] = json.loads(d["search_terms"]) if d["search_terms"] else []
+        d["job_titles"] = json.loads(d["job_titles"]) if d["job_titles"] else []
+        d["key_skills"] = json.loads(d["key_skills"]) if d["key_skills"] else []
+        return d
+
+    async def create_resume(self, name: str, resume_text: str, is_default: bool = False,
+                            search_terms: list | None = None, job_titles: list | None = None,
+                            key_skills: list | None = None, seniority: str = "",
+                            summary: str = "") -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        if is_default:
+            await self.db.execute("UPDATE resumes SET is_default = 0")
+        cursor = await self.db.execute(
+            """INSERT INTO resumes (name, resume_text, is_default, search_terms, job_titles,
+               key_skills, seniority, summary, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (name, resume_text, int(is_default),
+             json.dumps(search_terms or []), json.dumps(job_titles or []),
+             json.dumps(key_skills or []), seniority, summary, now, now),
+        )
+        await self.db.commit()
+        return cursor.lastrowid
+
+    async def update_resume(self, resume_id: int, **fields) -> bool:
+        existing = await self.get_resume(resume_id)
+        if not existing:
+            return False
+        now = datetime.now(timezone.utc).isoformat()
+        for key in ("search_terms", "job_titles", "key_skills"):
+            if key in fields and isinstance(fields[key], list):
+                fields[key] = json.dumps(fields[key])
+        if "is_default" in fields:
+            fields["is_default"] = int(fields["is_default"])
+        fields["updated_at"] = now
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [resume_id]
+        await self.db.execute(f"UPDATE resumes SET {sets} WHERE id = ?", vals)
+        await self.db.commit()
+        return True
+
+    async def set_default_resume(self, resume_id: int) -> bool:
+        existing = await self.get_resume(resume_id)
+        if not existing:
+            return False
+        await self.db.execute("UPDATE resumes SET is_default = 0")
+        await self.db.execute(
+            "UPDATE resumes SET is_default = 1, updated_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), resume_id),
+        )
+        await self.db.commit()
+        return True
+
+    async def delete_resume(self, resume_id: int) -> bool:
+        cursor = await self.db.execute(
+            "DELETE FROM resumes WHERE id = ?", (resume_id,)
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def migrate_resume_from_search_config(self):
+        existing = await self.get_resumes()
+        if existing:
+            return
+        config = await self.get_search_config()
+        if not config or not config.get("resume_text"):
+            return
+        await self.create_resume(
+            name="Default Resume",
+            resume_text=config["resume_text"],
+            is_default=True,
+            search_terms=config.get("search_terms", []),
+            job_titles=config.get("job_titles", []),
+            key_skills=config.get("key_skills", []),
+            seniority=config.get("seniority", ""),
+            summary=config.get("summary", ""),
+        )
+
+    # --- Response Tracking ---
+
+    async def record_response(self, job_id: int, response_type: str) -> dict:
+        now = datetime.now(timezone.utc).isoformat()
+        application = await self.get_application(job_id)
+        if not application:
+            raise ValueError(f"No application found for job {job_id}")
+
+        days_to_response = None
+        applied_at = application.get("applied_at")
+        if applied_at:
+            try:
+                applied_dt = datetime.fromisoformat(applied_at)
+                days_to_response = (datetime.now(timezone.utc) - applied_dt).days
+            except (ValueError, TypeError):
+                pass
+
+        await self.update_application(
+            application["id"],
+            response_received_at=now,
+            response_type=response_type,
+            days_to_response=days_to_response,
+        )
+        await self.add_event(job_id, "response_received", f"Response: {response_type}")
+        return {
+            "response_type": response_type,
+            "response_received_at": now,
+            "days_to_response": days_to_response,
+        }
+
+    async def get_response_analytics(self) -> dict:
+        # Total applications with responses
+        cursor = await self.db.execute(
+            "SELECT COUNT(*) FROM applications WHERE applied_at IS NOT NULL"
+        )
+        total_applied = (await cursor.fetchone())[0]
+
+        cursor = await self.db.execute(
+            "SELECT COUNT(*) FROM applications WHERE response_type IS NOT NULL"
+        )
+        total_responses = (await cursor.fetchone())[0]
+
+        response_rate = round(total_responses / total_applied * 100, 1) if total_applied > 0 else 0
+
+        # Avg days to response
+        cursor = await self.db.execute(
+            "SELECT AVG(days_to_response) FROM applications WHERE days_to_response IS NOT NULL"
+        )
+        avg_days = (await cursor.fetchone())[0]
+        avg_days_to_response = round(avg_days, 1) if avg_days else None
+
+        # Response type breakdown
+        cursor = await self.db.execute(
+            """SELECT response_type, COUNT(*) as count
+               FROM applications WHERE response_type IS NOT NULL
+               GROUP BY response_type"""
+        )
+        type_breakdown = {r[0]: r[1] for r in await cursor.fetchall()}
+
+        # Response rate by source
+        cursor = await self.db.execute(
+            """SELECT s.source_name,
+                      COUNT(DISTINCT CASE WHEN a.applied_at IS NOT NULL THEN a.job_id END) as applied,
+                      COUNT(DISTINCT CASE WHEN a.response_type IS NOT NULL THEN a.job_id END) as responded
+               FROM sources s
+               JOIN applications a ON a.job_id = s.job_id
+               GROUP BY s.source_name"""
+        )
+        by_source = []
+        for r in await cursor.fetchall():
+            applied_count = r[1]
+            responded_count = r[2]
+            rate = round(responded_count / applied_count * 100, 1) if applied_count > 0 else 0
+            by_source.append({
+                "source": r[0], "applied": applied_count,
+                "responded": responded_count, "rate": rate,
+            })
+
+        # Response rate by score range
+        cursor = await self.db.execute(
+            """SELECT
+                CASE
+                    WHEN js.match_score >= 80 THEN '80-100'
+                    WHEN js.match_score >= 60 THEN '60-79'
+                    WHEN js.match_score >= 40 THEN '40-59'
+                    ELSE '0-39'
+                END as score_range,
+                COUNT(DISTINCT CASE WHEN a.applied_at IS NOT NULL THEN a.job_id END) as applied,
+                COUNT(DISTINCT CASE WHEN a.response_type IS NOT NULL THEN a.job_id END) as responded
+               FROM applications a
+               JOIN job_scores js ON js.job_id = a.job_id
+               GROUP BY score_range
+               ORDER BY score_range DESC"""
+        )
+        by_score = []
+        for r in await cursor.fetchall():
+            applied_count = r[1]
+            responded_count = r[2]
+            rate = round(responded_count / applied_count * 100, 1) if applied_count > 0 else 0
+            by_score.append({
+                "range": r[0], "applied": applied_count,
+                "responded": responded_count, "rate": rate,
+            })
+
+        return {
+            "total_applied": total_applied,
+            "total_responses": total_responses,
+            "response_rate": response_rate,
+            "avg_days_to_response": avg_days_to_response,
+            "type_breakdown": type_breakdown,
+            "by_source": by_source,
+            "by_score_range": by_score,
+        }
+
+    # --- Job Alerts CRUD ---
+
+    async def get_job_alerts(self) -> list[dict]:
+        cursor = await self.db.execute("SELECT * FROM job_alerts ORDER BY created_at DESC")
+        rows = await cursor.fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["filters"] = json.loads(d["filters"]) if d["filters"] else {}
+            d["enabled"] = bool(d["enabled"])
+            results.append(d)
+        return results
+
+    async def get_job_alert(self, alert_id: int) -> dict | None:
+        cursor = await self.db.execute("SELECT * FROM job_alerts WHERE id = ?", (alert_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["filters"] = json.loads(d["filters"]) if d["filters"] else {}
+        d["enabled"] = bool(d["enabled"])
+        return d
+
+    async def create_job_alert(self, name: str, filters: dict, min_score: int = 0,
+                                notify_method: str = "in_app") -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.db.execute(
+            """INSERT INTO job_alerts (name, filters, min_score, enabled, notify_method, created_at)
+               VALUES (?, ?, ?, 1, ?, ?)""",
+            (name, json.dumps(filters), min_score, notify_method, now),
+        )
+        await self.db.commit()
+        return cursor.lastrowid
+
+    async def update_job_alert(self, alert_id: int, **fields) -> bool:
+        existing = await self.get_job_alert(alert_id)
+        if not existing:
+            return False
+        if "filters" in fields and isinstance(fields["filters"], dict):
+            fields["filters"] = json.dumps(fields["filters"])
+        if "enabled" in fields:
+            fields["enabled"] = int(fields["enabled"])
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [alert_id]
+        await self.db.execute(f"UPDATE job_alerts SET {sets} WHERE id = ?", vals)
+        await self.db.commit()
+        return True
+
+    async def delete_job_alert(self, alert_id: int) -> bool:
+        cursor = await self.db.execute("DELETE FROM job_alerts WHERE id = ?", (alert_id,))
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def get_new_jobs_for_alert(self, alert: dict) -> list[dict]:
+        last_checked = alert.get("last_checked_at")
+        min_score = alert.get("min_score", 0)
+        filters = alert.get("filters", {})
+
+        query = """
+            SELECT j.id, j.title, j.company, j.url, j.location, j.created_at,
+                   js.match_score
+            FROM jobs j
+            LEFT JOIN job_scores js ON j.id = js.job_id
+            WHERE j.dismissed = 0 AND COALESCE(js.match_score, 0) >= ?
+        """
+        params: list = [min_score]
+
+        if last_checked:
+            query += " AND j.created_at > ?"
+            params.append(last_checked)
+
+        if filters.get("search"):
+            query += " AND (j.title LIKE ? OR j.company LIKE ?)"
+            params.extend([f"%{filters['search']}%", f"%{filters['search']}%"])
+        if filters.get("source"):
+            query += " AND j.id IN (SELECT job_id FROM sources WHERE source_name = ?)"
+            params.append(filters["source"])
+        if filters.get("location"):
+            query += " AND j.location LIKE ?"
+            params.append(f"%{filters['location']}%")
+
+        query += " ORDER BY j.created_at DESC LIMIT 50"
+        cursor = await self.db.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def mark_alert_checked(self, alert_id: int):
+        now = datetime.now(timezone.utc).isoformat()
+        await self.db.execute(
+            "UPDATE job_alerts SET last_checked_at = ? WHERE id = ?", (now, alert_id)
+        )
+        await self.db.commit()
+
+    # --- Application Queue ---
+
+    async def add_to_queue(self, job_id: int, resume_id: int | None = None,
+                            priority: int = 0) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.db.execute(
+            """INSERT INTO application_queue (job_id, resume_id, status, priority, queued_at)
+               VALUES (?, ?, 'queued', ?, ?)
+               ON CONFLICT(job_id) DO UPDATE SET
+               resume_id=excluded.resume_id, priority=excluded.priority""",
+            (job_id, resume_id, priority, now),
+        )
+        await self.db.commit()
+        return cursor.lastrowid
+
+    async def get_queue(self, status: str | None = None) -> list[dict]:
+        query = """
+            SELECT aq.*, j.title, j.company, j.url, js.match_score
+            FROM application_queue aq
+            INNER JOIN jobs j ON aq.job_id = j.id
+            LEFT JOIN job_scores js ON aq.job_id = js.job_id
+        """
+        params = []
+        if status:
+            query += " WHERE aq.status = ?"
+            params.append(status)
+        query += " ORDER BY aq.priority DESC, aq.queued_at ASC"
+        cursor = await self.db.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_queue_item(self, queue_id: int) -> dict | None:
+        cursor = await self.db.execute(
+            "SELECT * FROM application_queue WHERE id = ?", (queue_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def update_queue_status(self, queue_id: int, status: str):
+        sets = {"status": status}
+        if status == "ready":
+            sets["prepared_at"] = datetime.now(timezone.utc).isoformat()
+        set_clause = ", ".join(f"{k} = ?" for k in sets)
+        vals = list(sets.values()) + [queue_id]
+        await self.db.execute(
+            f"UPDATE application_queue SET {set_clause} WHERE id = ?", vals
+        )
+        await self.db.commit()
+
+    async def remove_from_queue(self, queue_id: int) -> bool:
+        cursor = await self.db.execute(
+            "DELETE FROM application_queue WHERE id = ?", (queue_id,)
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def bulk_update_queue_status(self, from_status: str, to_status: str) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        prepared_at_set = ", prepared_at = ?" if to_status == "ready" else ""
+        params = [to_status]
+        if to_status == "ready":
+            params.append(now)
+        params.append(from_status)
+        cursor = await self.db.execute(
+            f"UPDATE application_queue SET status = ?{prepared_at_set} WHERE status = ?",
+            params,
+        )
+        await self.db.commit()
+        return cursor.rowcount
+
+    async def get_queue_items_by_status(self, status: str) -> list[dict]:
+        cursor = await self.db.execute(
+            """SELECT aq.*, j.title, j.company, j.url
+               FROM application_queue aq
+               INNER JOIN jobs j ON aq.job_id = j.id
+               WHERE aq.status = ?
+               ORDER BY aq.priority DESC, aq.queued_at ASC""",
+            (status,),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def update_queue_fill_status(self, queue_id: int, fill_status: str,
+                                        fill_progress: int | None = None):
+        sets = {"status": fill_status}
+        if fill_status == "submitted":
+            sets["prepared_at"] = datetime.now(timezone.utc).isoformat()
+        set_clause = ", ".join(f"{k} = ?" for k in sets)
+        vals = list(sets.values()) + [queue_id]
+        await self.db.execute(
+            f"UPDATE application_queue SET {set_clause} WHERE id = ?", vals
+        )
+        await self.db.commit()
+
+    # --- Follow-Up Templates CRUD ---
+
+    async def get_follow_up_templates(self) -> list[dict]:
+        cursor = await self.db.execute(
+            "SELECT * FROM follow_up_templates ORDER BY is_default DESC, days_after ASC"
+        )
+        rows = await cursor.fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["is_default"] = bool(d["is_default"])
+            results.append(d)
+        return results
+
+    async def get_follow_up_template(self, template_id: int) -> dict | None:
+        cursor = await self.db.execute(
+            "SELECT * FROM follow_up_templates WHERE id = ?", (template_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["is_default"] = bool(d["is_default"])
+        return d
+
+    async def create_follow_up_template(self, name: str, days_after: int,
+                                          template_text: str, is_default: bool = False) -> int:
+        if is_default:
+            await self.db.execute("UPDATE follow_up_templates SET is_default = 0")
+        cursor = await self.db.execute(
+            "INSERT INTO follow_up_templates (name, days_after, template_text, is_default) VALUES (?, ?, ?, ?)",
+            (name, days_after, template_text, int(is_default)),
+        )
+        await self.db.commit()
+        return cursor.lastrowid
+
+    async def update_follow_up_template(self, template_id: int, **fields) -> bool:
+        existing = await self.get_follow_up_template(template_id)
+        if not existing:
+            return False
+        if "is_default" in fields:
+            if fields["is_default"]:
+                await self.db.execute("UPDATE follow_up_templates SET is_default = 0")
+            fields["is_default"] = int(fields["is_default"])
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [template_id]
+        await self.db.execute(f"UPDATE follow_up_templates SET {sets} WHERE id = ?", vals)
+        await self.db.commit()
+        return True
+
+    async def delete_follow_up_template(self, template_id: int) -> bool:
+        cursor = await self.db.execute(
+            "DELETE FROM follow_up_templates WHERE id = ?", (template_id,)
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def update_reminder_draft(self, reminder_id: int, draft_text: str):
+        await self.db.execute(
+            "UPDATE reminders SET draft_text = ? WHERE id = ?",
+            (draft_text, reminder_id),
+        )
+        await self.db.commit()
+
+    async def mark_reminder_sent(self, reminder_id: int):
+        now = datetime.now(timezone.utc).isoformat()
+        await self.db.execute(
+            "UPDATE reminders SET sent_at = ?, status = 'completed', completed_at = ? WHERE id = ?",
+            (now, now, reminder_id),
+        )
+        await self.db.commit()
+
+    # --- Contacts CRM ---
+
+    async def get_contacts(self) -> list[dict]:
+        cursor = await self.db.execute("SELECT * FROM contacts ORDER BY updated_at DESC")
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_contact(self, contact_id: int) -> dict | None:
+        cursor = await self.db.execute("SELECT * FROM contacts WHERE id = ?", (contact_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def create_contact(self, name: str, **fields) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        cols = ["name", "created_at", "updated_at"]
+        vals = [name, now, now]
+        for key in ("email", "phone", "company", "role", "linkedin_url", "notes"):
+            if key in fields:
+                cols.append(key)
+                vals.append(fields[key])
+        placeholders = ", ".join("?" for _ in cols)
+        col_str = ", ".join(cols)
+        cursor = await self.db.execute(
+            f"INSERT INTO contacts ({col_str}) VALUES ({placeholders})", vals
+        )
+        await self.db.commit()
+        return cursor.lastrowid
+
+    async def update_contact(self, contact_id: int, **fields) -> bool:
+        existing = await self.get_contact(contact_id)
+        if not existing:
+            return False
+        fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [contact_id]
+        await self.db.execute(f"UPDATE contacts SET {sets} WHERE id = ?", vals)
+        await self.db.commit()
+        return True
+
+    async def delete_contact(self, contact_id: int) -> bool:
+        await self.db.execute("DELETE FROM contact_interactions WHERE contact_id = ?", (contact_id,))
+        await self.db.execute("DELETE FROM job_contacts WHERE contact_id = ?", (contact_id,))
+        cursor = await self.db.execute("DELETE FROM contacts WHERE id = ?", (contact_id,))
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def get_contact_interactions(self, contact_id: int) -> list[dict]:
+        cursor = await self.db.execute(
+            "SELECT * FROM contact_interactions WHERE contact_id = ? ORDER BY date DESC",
+            (contact_id,),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def add_contact_interaction(self, contact_id: int, type: str,
+                                       notes: str, date: str) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.db.execute(
+            "INSERT INTO contact_interactions (contact_id, type, notes, date, created_at) VALUES (?, ?, ?, ?, ?)",
+            (contact_id, type, notes, date, now),
+        )
+        await self.db.commit()
+        return cursor.lastrowid
+
+    async def get_job_contacts(self, job_id: int) -> list[dict]:
+        cursor = await self.db.execute(
+            """SELECT c.*, jc.relationship FROM contacts c
+               INNER JOIN job_contacts jc ON c.id = jc.contact_id
+               WHERE jc.job_id = ?""",
+            (job_id,),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def link_job_contact(self, job_id: int, contact_id: int, relationship: str = "") -> bool:
+        await self.db.execute(
+            """INSERT INTO job_contacts (job_id, contact_id, relationship) VALUES (?, ?, ?)
+               ON CONFLICT(job_id, contact_id) DO UPDATE SET relationship=excluded.relationship""",
+            (job_id, contact_id, relationship),
+        )
+        await self.db.commit()
+        return True
+
+    async def unlink_job_contact(self, job_id: int, contact_id: int) -> bool:
+        cursor = await self.db.execute(
+            "DELETE FROM job_contacts WHERE job_id = ? AND contact_id = ?",
+            (job_id, contact_id),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    # --- Career Suggestions ---
+
+    async def get_career_suggestions(self) -> list[dict]:
+        cursor = await self.db.execute(
+            "SELECT * FROM career_suggestions ORDER BY created_at DESC"
+        )
+        rows = await cursor.fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["transferable_skills"] = json.loads(d["transferable_skills"]) if d["transferable_skills"] else []
+            d["gaps"] = json.loads(d["gaps"]) if d["gaps"] else []
+            d["accepted"] = bool(d["accepted"])
+            results.append(d)
+        return results
+
+    async def save_career_suggestions(self, suggestions: list[dict]):
+        now = datetime.now(timezone.utc).isoformat()
+        for s in suggestions:
+            await self.db.execute(
+                """INSERT INTO career_suggestions (title, reasoning, transferable_skills, gaps, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (s.get("title", ""), s.get("reasoning", ""),
+                 json.dumps(s.get("transferable_skills", [])),
+                 json.dumps(s.get("gaps", [])), now),
+            )
+        await self.db.commit()
+
+    async def accept_career_suggestion(self, suggestion_id: int) -> dict | None:
+        cursor = await self.db.execute(
+            "SELECT * FROM career_suggestions WHERE id = ?", (suggestion_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        await self.db.execute(
+            "UPDATE career_suggestions SET accepted = 1 WHERE id = ?", (suggestion_id,)
+        )
+        await self.db.commit()
+        d = dict(row)
+        d["transferable_skills"] = json.loads(d["transferable_skills"]) if d["transferable_skills"] else []
+        d["gaps"] = json.loads(d["gaps"]) if d["gaps"] else []
+        return d
+
+    # --- Offers ---
+
+    async def get_offers(self) -> list[dict]:
+        cursor = await self.db.execute(
+            """SELECT o.*, j.title, j.company
+               FROM offers o
+               LEFT JOIN jobs j ON o.job_id = j.id
+               ORDER BY o.created_at DESC"""
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_offer(self, offer_id: int) -> dict | None:
+        cursor = await self.db.execute(
+            """SELECT o.*, j.title, j.company
+               FROM offers o
+               LEFT JOIN jobs j ON o.job_id = j.id
+               WHERE o.id = ?""",
+            (offer_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def create_offer(self, **fields) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        cols = ["created_at"]
+        vals = [now]
+        for key in ("job_id", "base", "equity", "bonus", "pto_days", "remote_days",
+                     "health_value", "retirement_match", "relocation", "location", "notes"):
+            if key in fields:
+                cols.append(key)
+                vals.append(fields[key])
+        placeholders = ", ".join("?" for _ in cols)
+        col_str = ", ".join(cols)
+        cursor = await self.db.execute(
+            f"INSERT INTO offers ({col_str}) VALUES ({placeholders})", vals
+        )
+        await self.db.commit()
+        return cursor.lastrowid
+
+    async def update_offer(self, offer_id: int, **fields) -> bool:
+        existing = await self.get_offer(offer_id)
+        if not existing:
+            return False
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        vals = list(fields.values()) + [offer_id]
+        await self.db.execute(f"UPDATE offers SET {sets} WHERE id = ?", vals)
+        await self.db.commit()
+        return True
+
+    async def delete_offer(self, offer_id: int) -> bool:
+        cursor = await self.db.execute("DELETE FROM offers WHERE id = ?", (offer_id,))
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def get_application_history_summary(self) -> str:
+        cursor = await self.db.execute("""
+            SELECT a.status, COUNT(*) as count FROM applications a
+            INNER JOIN jobs j ON j.id = a.job_id
+            GROUP BY a.status
+        """)
+        status_counts = {r[0]: r[1] for r in await cursor.fetchall()}
+
+        cursor = await self.db.execute("""
+            SELECT a.status, AVG(js.match_score) as avg_score
+            FROM applications a
+            JOIN job_scores js ON js.job_id = a.job_id
+            GROUP BY a.status
+        """)
+        score_avgs = {r[0]: round(r[1], 1) if r[1] else None for r in await cursor.fetchall()}
+
+        cursor = await self.db.execute("""
+            SELECT a.response_type, COUNT(*) as count
+            FROM applications a
+            WHERE a.response_type IS NOT NULL
+            GROUP BY a.response_type
+        """)
+        response_counts = {r[0]: r[1] for r in await cursor.fetchall()}
+
+        lines = ["Application History:"]
+        for status, count in status_counts.items():
+            avg = score_avgs.get(status)
+            line = f"- {status}: {count} applications"
+            if avg:
+                line += f" (avg score: {avg})"
+            lines.append(line)
+        if response_counts:
+            lines.append("Response breakdown:")
+            for rtype, count in response_counts.items():
+                lines.append(f"- {rtype}: {count}")
+        return "\n".join(lines) if len(lines) > 1 else "No application history yet."

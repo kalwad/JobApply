@@ -46,8 +46,9 @@ const api = {
         return this.request('POST', '/api/notifications/read-all');
     },
 
-    prepareApplication(id) {
-        return this.request('POST', `/api/jobs/${id}/prepare`);
+    prepareApplication(id, resumeId = null) {
+        const body = resumeId ? { resume_id: resumeId } : null;
+        return this.request('POST', `/api/jobs/${id}/prepare`, body);
     },
 
     updateApplication(id, status, notes = '') {
@@ -203,6 +204,8 @@ function getRoute() {
     }
     if (hash === '#/stats') return { view: 'stats' };
     if (hash === '#/pipeline') return { view: 'pipeline' };
+    if (hash === '#/queue') return { view: 'queue' };
+    if (hash === '#/network') return { view: 'network' };
     if (hash === '#/settings') return { view: 'settings' };
     return { view: 'feed' };
 }
@@ -219,6 +222,8 @@ function updateActiveNav() {
             (r === 'feed' && route.view === 'feed') ||
             (r === 'stats' && route.view === 'stats') ||
             (r === 'pipeline' && route.view === 'pipeline') ||
+            (r === 'queue' && route.view === 'queue') ||
+            (r === 'network' && route.view === 'network') ||
             (r === 'settings' && route.view === 'settings')
         );
     });
@@ -235,6 +240,10 @@ async function handleRoute() {
         await renderStats(app);
     } else if (route.view === 'pipeline') {
         await renderPipeline(app);
+    } else if (route.view === 'queue') {
+        await renderQueue(app);
+    } else if (route.view === 'network') {
+        await renderNetwork(app);
     } else if (route.view === 'settings') {
         await renderSettings(app);
     } else {
@@ -274,33 +283,57 @@ function loadSavedFilterState() {
     } catch { return null; }
 }
 
-function getSmartViews() {
+let _cachedViews = null;
+
+async function getSmartViews() {
+    if (_cachedViews) return _cachedViews;
     try {
-        const raw = localStorage.getItem(SMART_VIEWS_KEY);
-        return raw ? JSON.parse(raw) : [];
-    } catch { return []; }
+        const data = await api.request('GET', '/api/saved-views');
+        _cachedViews = data.views || [];
+        // Migrate localStorage views on first load
+        try {
+            const raw = localStorage.getItem(SMART_VIEWS_KEY);
+            if (raw) {
+                const localViews = JSON.parse(raw);
+                if (localViews.length > 0) {
+                    const existingNames = new Set(_cachedViews.map(v => v.name));
+                    for (const lv of localViews) {
+                        if (!existingNames.has(lv.name)) {
+                            await api.request('POST', '/api/saved-views', { name: lv.name, filters: lv.filters });
+                        }
+                    }
+                    localStorage.removeItem(SMART_VIEWS_KEY);
+                    _cachedViews = null;
+                    return getSmartViews();
+                }
+            }
+        } catch {}
+        return _cachedViews;
+    } catch {
+        return [];
+    }
 }
 
-function saveSmartViews(views) {
-    try { localStorage.setItem(SMART_VIEWS_KEY, JSON.stringify(views)); } catch {}
+function invalidateViewsCache() {
+    _cachedViews = null;
 }
 
-function renderSmartViewChips(reloadFn) {
+async function renderSmartViewChips(reloadFn) {
     const container = document.getElementById('smart-views');
     if (!container) return;
-    const views = getSmartViews();
-    container.innerHTML = views.map((v, i) => `
-        <button class="smart-view-chip" data-index="${i}" title="Apply: ${v.name}">
-            ${v.name}
-            <span class="smart-view-delete" data-index="${i}">&times;</span>
+    const views = await getSmartViews();
+    container.innerHTML = views.map(v => `
+        <button class="smart-view-chip" data-view-id="${v.id}" title="Apply: ${escapeHtml(v.name)}">
+            ${escapeHtml(v.name)}
+            <span class="smart-view-delete" data-view-id="${v.id}">&times;</span>
         </button>
     `).join('');
 
     container.querySelectorAll('.smart-view-chip').forEach(chip => {
         chip.addEventListener('click', (e) => {
             if (e.target.classList.contains('smart-view-delete')) return;
-            const idx = parseInt(chip.dataset.index);
-            const view = getSmartViews()[idx];
+            const viewId = parseInt(chip.dataset.viewId);
+            const view = views.find(v => v.id === viewId);
             if (view) {
                 applyFilterState(view.filters);
                 saveFilterState();
@@ -312,13 +345,16 @@ function renderSmartViewChips(reloadFn) {
     });
 
     container.querySelectorAll('.smart-view-delete').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+        btn.addEventListener('click', async (e) => {
             e.stopPropagation();
-            const idx = parseInt(btn.dataset.index);
-            const views = getSmartViews();
-            views.splice(idx, 1);
-            saveSmartViews(views);
-            renderSmartViewChips(reloadFn);
+            const viewId = parseInt(btn.dataset.viewId);
+            try {
+                await api.request('DELETE', `/api/saved-views/${viewId}`);
+                invalidateViewsCache();
+                renderSmartViewChips(reloadFn);
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
         });
     });
 }
@@ -378,10 +414,12 @@ async function renderFeed(container) {
                 <option value="only">Only clearance/visa required</option>
             </select>
             <button class="btn btn-secondary btn-sm" id="save-view-btn" style="white-space:nowrap">Save View</button>
+            <button class="btn btn-secondary btn-sm" id="create-alert-btn" style="white-space:nowrap">Create Alert</button>
             <button class="btn btn-secondary btn-sm" id="select-mode-btn" style="white-space:nowrap">Select</button>
         </div>
         <div id="batch-bar" style="display:none;position:sticky;top:0;z-index:50;background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:10px 16px;margin-bottom:12px;display:none;align-items:center;gap:12px;box-shadow:0 2px 8px rgba(0,0,0,0.15)">
             <span id="batch-count" style="font-weight:600;font-size:0.875rem">0 selected</span>
+            <button class="btn btn-primary btn-sm" id="batch-compare-btn" style="display:none">Compare</button>
             <button class="btn btn-primary btn-sm" id="batch-prepare-btn">Prepare Selected</button>
             <button class="btn btn-secondary btn-sm" id="batch-dismiss-btn">Dismiss Selected</button>
             <button class="btn btn-ghost btn-sm" id="batch-select-all-btn">Select All</button>
@@ -436,22 +474,38 @@ async function renderFeed(container) {
     postedWithinSelect.addEventListener('change', reload);
 
     // Smart views
-    renderSmartViewChips(reload);
+    await renderSmartViewChips(reload);
 
     // Save View button
-    document.getElementById('save-view-btn').addEventListener('click', () => {
+    document.getElementById('save-view-btn').addEventListener('click', async () => {
         const name = prompt('Name for this saved view:');
         if (!name || !name.trim()) return;
-        const views = getSmartViews();
-        const existing = views.findIndex(v => v.name === name.trim());
-        if (existing >= 0) {
-            views[existing].filters = getFilterState();
-        } else {
-            views.push({ name: name.trim(), filters: getFilterState() });
+        try {
+            const views = await getSmartViews();
+            const existing = views.find(v => v.name === name.trim());
+            if (existing) {
+                await api.request('PUT', `/api/saved-views/${existing.id}`, { filters: getFilterState() });
+            } else {
+                await api.request('POST', '/api/saved-views', { name: name.trim(), filters: getFilterState() });
+            }
+            invalidateViewsCache();
+            renderSmartViewChips(reload);
+            showToast(`Saved view "${name.trim()}"`, 'success');
+        } catch (err) {
+            showToast(err.message, 'error');
         }
-        saveSmartViews(views);
-        renderSmartViewChips(reload);
-        showToast(`Saved view "${name.trim()}"`, 'success');
+    });
+    document.getElementById('create-alert-btn').addEventListener('click', async () => {
+        const name = prompt('Name for this alert:');
+        if (!name || !name.trim()) return;
+        try {
+            await api.request('POST', '/api/alerts', {
+                name: name.trim(),
+                filters: getFilterState(),
+                min_score: parseInt(document.getElementById('filter-score')?.value || '0') || 0,
+            });
+            showToast(`Alert "${name.trim()}" created`, 'success');
+        } catch (err) { showToast(err.message, 'error'); }
     });
     loadMoreBtn.addEventListener('click', () => loadJobs(true));
 
@@ -467,6 +521,15 @@ async function renderFeed(container) {
         loadJobs(false);
     });
 
+    document.getElementById('batch-compare-btn').addEventListener('click', () => {
+        const ids = [...selectedJobIds];
+        if (ids.length < 2 || ids.length > 3) return;
+        selectedJobIds.clear();
+        selectMode = false;
+        const sBtn = document.getElementById('select-mode-btn');
+        if (sBtn) { sBtn.textContent = 'Select'; sBtn.classList.remove('btn-primary'); sBtn.classList.add('btn-secondary'); }
+        renderComparison(document.getElementById('app'), ids);
+    });
     document.getElementById('batch-prepare-btn').addEventListener('click', batchPrepare);
     document.getElementById('batch-dismiss-btn').addEventListener('click', batchDismiss);
     document.getElementById('batch-select-all-btn').addEventListener('click', () => {
@@ -548,6 +611,8 @@ function updateBatchBar() {
     bar.style.display = selectMode && count > 0 ? 'flex' : 'none';
     const countEl = document.getElementById('batch-count');
     if (countEl) countEl.textContent = `${count} selected`;
+    const compareBtn = document.getElementById('batch-compare-btn');
+    if (compareBtn) compareBtn.style.display = (count >= 2 && count <= 3) ? '' : 'none';
 }
 
 async function batchPrepare() {
@@ -593,6 +658,132 @@ async function batchDismiss() {
     if (selectBtn) { selectBtn.textContent = 'Select'; selectBtn.classList.remove('btn-primary'); selectBtn.classList.add('btn-secondary'); }
     updateBatchBar();
     loadJobs(false);
+}
+
+async function renderComparison(container, jobIds) {
+    container.innerHTML = `<div class="loading-container"><div class="spinner spinner-lg"></div><span>Loading comparison...</span></div>`;
+
+    try {
+        const jobs = await Promise.all(jobIds.map(id => api.getJob(id)));
+
+        const rows = [
+            {
+                label: 'Score',
+                render: job => {
+                    const s = job.score?.match_score;
+                    return `<span class="score-badge score-large ${getScoreClass(s)}">${s ?? '--'}</span>`;
+                }
+            },
+            {
+                label: 'Company',
+                render: job => escapeHtml(job.company)
+            },
+            {
+                label: 'Location',
+                render: job => escapeHtml(job.location || 'Not specified')
+            },
+            {
+                label: 'Salary',
+                render: job => {
+                    if (job.salary_min || job.salary_max) return formatSalary(job.salary_min, job.salary_max);
+                    if (job.salary_estimate_min && job.salary_estimate_max)
+                        return `<span style="opacity:0.7">~${formatSalary(job.salary_estimate_min, job.salary_estimate_max)}</span>`;
+                    return '<span style="color:var(--text-tertiary)">Not listed</span>';
+                }
+            },
+            {
+                label: 'Work Type',
+                render: job => escapeHtml(job.work_type || 'Not specified')
+            },
+            {
+                label: 'Employment',
+                render: job => escapeHtml(job.employment_type || 'Not specified')
+            },
+            {
+                label: 'Posted',
+                render: job => formatDate(job.posted_date || job.created_at)
+            },
+            {
+                label: 'Status',
+                render: job => {
+                    const s = job.application?.status;
+                    return s ? `<span class="status-badge status-${s}">${s}</span>` : '<span style="color:var(--text-tertiary)">None</span>';
+                }
+            },
+            {
+                label: 'Match Reasons',
+                render: job => {
+                    const reasons = job.score?.match_reasons || [];
+                    if (!reasons.length) return '<span style="color:var(--text-tertiary)">No score data</span>';
+                    return `<ul class="score-reasons">${reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')}</ul>`;
+                }
+            },
+            {
+                label: 'Concerns',
+                render: job => {
+                    const concerns = job.score?.concerns || [];
+                    if (!concerns.length) return '<span style="color:var(--text-tertiary)">None</span>';
+                    return `<ul class="score-concerns">${concerns.map(c => `<li>${escapeHtml(c)}</li>`).join('')}</ul>`;
+                }
+            },
+        ];
+
+        const colCount = jobs.length;
+
+        container.innerHTML = `
+            <div class="detail-header">
+                <a class="detail-back" id="compare-back-btn">&larr; Back to jobs</a>
+                <h1 class="detail-title">Compare Jobs</h1>
+            </div>
+            <div class="card comparison-table-wrap">
+                <table class="comparison-table">
+                    <thead>
+                        <tr>
+                            <th class="comparison-label-col"></th>
+                            ${jobs.map(job => `
+                                <th class="comparison-job-col">
+                                    <a href="#/job/${job.id}" class="comparison-job-title">${escapeHtml(job.title)}</a>
+                                    <div class="comparison-job-company">${escapeHtml(job.company)}</div>
+                                </th>
+                            `).join('')}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rows.map(row => `
+                            <tr>
+                                <td class="comparison-label">${row.label}</td>
+                                ${jobs.map(job => `<td class="comparison-cell">${row.render(job)}</td>`).join('')}
+                            </tr>
+                        `).join('')}
+                        <tr>
+                            <td class="comparison-label">Actions</td>
+                            ${jobs.map(job => `
+                                <td class="comparison-cell">
+                                    <div style="display:flex;flex-direction:column;gap:6px">
+                                        <a href="#/job/${job.id}" class="btn btn-primary btn-sm">View Details</a>
+                                        <a href="${escapeHtml(job.url)}" target="_blank" class="btn btn-secondary btn-sm">Open Listing</a>
+                                    </div>
+                                </td>
+                            `).join('')}
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        `;
+
+        document.getElementById('compare-back-btn').addEventListener('click', (e) => {
+            e.preventDefault();
+            navigate('#/');
+        });
+    } catch (err) {
+        showToast(err.message, 'error');
+        container.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-state-title">Comparison failed</div>
+                <div class="empty-state-desc">${escapeHtml(err.message)}</div>
+            </div>
+        `;
+    }
 }
 
 function createJobCard(job) {
@@ -683,9 +874,10 @@ async function renderJobDetail(container, jobId) {
     container.innerHTML = `<div class="loading-container"><div class="spinner spinner-lg"></div><span>Loading job details...</span></div>`;
 
     try {
-        const [job, profile] = await Promise.all([
+        const [job, profile, resumesData] = await Promise.all([
             api.getJob(jobId),
             api.request('GET', '/api/profile'),
+            api.request('GET', '/api/resumes'),
         ]);
         let companyInfo = null;
         try {
@@ -693,7 +885,7 @@ async function renderJobDetail(container, jobId) {
         } catch (e) {
             // silently ignore
         }
-        renderJobDetailContent(container, job, profile, companyInfo);
+        renderJobDetailContent(container, job, profile, companyInfo, resumesData.resumes || []);
     } catch (err) {
         showToast(err.message, 'error');
         container.innerHTML = `
@@ -705,7 +897,7 @@ async function renderJobDetail(container, jobId) {
     }
 }
 
-function renderJobDetailContent(container, job, profile = {}, companyInfo = null) {
+function renderJobDetailContent(container, job, profile = {}, companyInfo = null, resumes = []) {
     const score = job.score;
     const matchScore = score?.match_score;
     const scoreClass = getScoreClass(matchScore);
@@ -767,13 +959,24 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
                     <h3>Match Score</h3>
                     <div class="score-display">
                         <span class="score-badge score-large ${scoreClass}">${matchScore}</span>
+                        <div id="prediction-badge-container"></div>
                     </div>
                     ${reasonsHtml ? `<ul class="score-reasons">${reasonsHtml}</ul>` : ''}
                     ${concernsHtml ? `<div class="concerns-label">Concerns</div><ul class="score-concerns">${concernsHtml}</ul>` : ''}
+                    <button class="btn btn-ghost btn-sm" id="predict-success-btn" style="margin-top:8px;font-size:0.75rem">Predict Success</button>
+                    <div id="prediction-detail" style="display:none;margin-top:8px;font-size:0.8125rem;color:var(--text-secondary)"></div>
                 </div>
                 ` : ''}
                 <div class="card sidebar-section">
                     <h3>Actions</h3>
+                    ${resumes.length > 1 ? `
+                    <div style="margin-bottom:10px">
+                        <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Resume</label>
+                        <select class="filter-select" id="resume-select" style="width:100%">
+                            ${resumes.map(r => `<option value="${r.id}"${r.is_default ? ' selected' : ''}>${escapeHtml(r.name)}${r.is_default ? ' (default)' : ''}</option>`).join('')}
+                        </select>
+                    </div>
+                    ` : ''}
                     <div class="action-buttons">
                         <button class="btn btn-primary" id="prepare-btn">
                             Prepare Application
@@ -786,6 +989,7 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
                             Open Job Listing
                         </a>
                         <button class="btn btn-secondary" id="copy-listing-link-btn">Copy Listing Link</button>
+                        <button class="btn btn-secondary" id="add-to-queue-btn">Add to Queue</button>
                         ${(job.hiring_manager_email || job.contact_email) ? `<button class="btn btn-secondary" id="email-btn">Draft Email</button>` : ''}
                     </div>
                     ${application?.status !== 'applied' ? `
@@ -808,6 +1012,28 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
                     <div class="mt-16">
                         <button class="btn btn-secondary btn-sm" id="save-status-btn">Save Status</button>
                     </div>
+                    ${appStatus === 'applied' || appStatus === 'interviewing' ? `
+                    <div class="mt-16" style="padding-top:12px;border-top:1px solid var(--border)">
+                        <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Log Response</label>
+                        ${application?.response_type ? `
+                            <div style="font-size:0.8125rem;color:var(--text-secondary);padding:8px 12px;background:var(--bg-surface-secondary);border-radius:var(--radius-sm)">
+                                Response: <strong style="text-transform:capitalize">${escapeHtml(application.response_type.replace('_', ' '))}</strong>
+                                ${application.response_received_at ? ` &middot; ${formatDate(application.response_received_at)}` : ''}
+                            </div>
+                        ` : `
+                            <div style="display:flex;gap:6px">
+                                <select class="filter-select" id="response-type-select" style="flex:1">
+                                    <option value="">Select type...</option>
+                                    <option value="interview_invite">Interview Invite</option>
+                                    <option value="rejection">Rejection</option>
+                                    <option value="callback">Callback</option>
+                                    <option value="ghosted">Ghosted</option>
+                                </select>
+                                <button class="btn btn-primary btn-sm" id="log-response-btn">Log</button>
+                            </div>
+                        `}
+                    </div>
+                    ` : ''}
                 </div>
                 ${(() => {
                     const contactEmail = job.hiring_manager_email || job.contact_email || '';
@@ -939,6 +1165,36 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
         navigate('#/');
     });
 
+    const predictBtn = document.getElementById('predict-success-btn');
+    if (predictBtn) {
+        predictBtn.addEventListener('click', async () => {
+            predictBtn.disabled = true;
+            predictBtn.innerHTML = '<span class="spinner"></span> Predicting...';
+            try {
+                const pred = await api.request('GET', `/api/jobs/${job.id}/predict-success`);
+                const pct = Math.round((pred.probability || 0) * 100);
+                const color = pct >= 60 ? '#22c55e' : pct >= 40 ? '#f59e0b' : '#ef4444';
+                const badgeContainer = document.getElementById('prediction-badge-container');
+                if (badgeContainer) {
+                    badgeContainer.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:999px;font-size:0.8125rem;font-weight:600;background:${color}22;color:${color}">${pct}% likely</span>`;
+                }
+                const detail = document.getElementById('prediction-detail');
+                if (detail) {
+                    detail.style.display = '';
+                    detail.innerHTML = `
+                        <div style="font-size:0.75rem;color:var(--text-tertiary);margin-bottom:4px">Confidence: ${pred.confidence || 'N/A'}</div>
+                        ${pred.reasoning ? `<div>${escapeHtml(pred.reasoning)}</div>` : ''}
+                    `;
+                }
+                predictBtn.style.display = 'none';
+            } catch (err) {
+                showToast(err.message, 'error');
+                predictBtn.disabled = false;
+                predictBtn.textContent = 'Predict Success';
+            }
+        });
+    }
+
     const estSalaryBtn = document.getElementById('estimate-salary-btn');
     if (estSalaryBtn) {
         estSalaryBtn.addEventListener('click', async () => {
@@ -949,7 +1205,7 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
                 if (result.min && result.min > 0) {
                     showToast(`Estimated: ${formatSalary(result.min, result.max)} (${result.confidence})`, 'success');
                     const updated = await api.getJob(job.id);
-                    renderJobDetailContent(container, updated);
+                    renderJobDetailContent(container, updated, profile, companyInfo, resumes);
                 } else {
                     showToast('Could not estimate salary', 'info');
                     estSalaryBtn.disabled = false;
@@ -963,12 +1219,35 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
         });
     }
 
+    const logResponseBtn = document.getElementById('log-response-btn');
+    if (logResponseBtn) {
+        logResponseBtn.addEventListener('click', async () => {
+            const typeSelect = document.getElementById('response-type-select');
+            const responseType = typeSelect?.value;
+            if (!responseType) { showToast('Select a response type', 'error'); return; }
+            logResponseBtn.disabled = true;
+            logResponseBtn.innerHTML = '<span class="spinner"></span>';
+            try {
+                await api.request('POST', `/api/jobs/${job.id}/response`, { response_type: responseType });
+                showToast('Response logged', 'success');
+                const updated = await api.getJob(job.id);
+                renderJobDetailContent(container, updated, profile, companyInfo, resumes);
+            } catch (err) {
+                showToast(err.message, 'error');
+                logResponseBtn.disabled = false;
+                logResponseBtn.textContent = 'Log';
+            }
+        });
+    }
+
     document.getElementById('prepare-btn').addEventListener('click', async () => {
         const btn = document.getElementById('prepare-btn');
+        const resumeSelect = document.getElementById('resume-select');
+        const resumeId = resumeSelect ? parseInt(resumeSelect.value) : null;
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner"></span> Preparing...';
         try {
-            const result = await api.prepareApplication(job.id);
+            const result = await api.prepareApplication(job.id, resumeId);
             document.getElementById('prepared-container').innerHTML = renderPreparedSection(result, job.id);
             attachPreparedListeners();
             showToast('Application prepared!', 'success');
@@ -990,7 +1269,7 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
                 if (result.apply_url) {
                     showToast('Apply link found!', 'success');
                     const updated = await api.getJob(job.id);
-                    renderJobDetailContent(container, updated);
+                    renderJobDetailContent(container, updated, profile, companyInfo, resumes);
                 } else {
                     showToast('No apply link found on the page', 'info');
                     findApplyBtn.disabled = false;
@@ -1014,7 +1293,7 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
                 window.open(result.url, '_blank');
                 showToast('Marked as applied!', 'success');
                 const updated = await api.getJob(job.id);
-                renderJobDetailContent(container, updated, profile);
+                renderJobDetailContent(container, updated, profile, companyInfo, resumes);
             } catch (err) {
                 showToast(err.message, 'error');
                 applyNowBtn.disabled = false;
@@ -1045,6 +1324,23 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
         });
     }
 
+    document.getElementById('add-to-queue-btn')?.addEventListener('click', async () => {
+        const btn = document.getElementById('add-to-queue-btn');
+        const resumeSelect = document.getElementById('resume-select');
+        const resumeId = resumeSelect ? parseInt(resumeSelect.value) : null;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span>';
+        try {
+            await api.request('POST', '/api/queue/add', { job_id: job.id, resume_id: resumeId });
+            showToast('Added to queue', 'success');
+            btn.textContent = 'In Queue';
+        } catch (err) {
+            showToast(err.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Add to Queue';
+        }
+    });
+
     const markAppliedBtn = document.getElementById('mark-applied-btn');
     if (markAppliedBtn) {
         markAppliedBtn.addEventListener('click', async () => {
@@ -1053,7 +1349,7 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
                 await api.updateApplication(job.id, 'applied');
                 showToast('Marked as applied!', 'success');
                 const updated = await api.getJob(job.id);
-                renderJobDetailContent(container, updated, profile);
+                renderJobDetailContent(container, updated, profile, companyInfo, resumes);
             } catch (err) {
                 showToast(err.message, 'error');
                 markAppliedBtn.disabled = false;
@@ -1141,7 +1437,7 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
                 }
                 // Refresh the job detail
                 const updated = await api.getJob(job.id);
-                renderJobDetailContent(container, updated, profile);
+                renderJobDetailContent(container, updated, profile, companyInfo, resumes);
             } catch (err) {
                 showToast(err.message, 'error');
                 findContactBtn.disabled = false;
@@ -1232,11 +1528,19 @@ function renderPreparedSection(data, jobId) {
     return `
         <div class="card sidebar-section">
             <h3>Tailored Resume</h3>
-            <div class="pdf-download-card">
-                <a href="/api/jobs/${jobId}/resume.pdf" download class="pdf-file-link" draggable="true">
-                    <span class="pdf-icon">PDF</span>
-                    <span class="pdf-label">Resume</span>
-                </a>
+            <div class="doc-download-row">
+                <div class="pdf-download-card">
+                    <a href="/api/jobs/${jobId}/resume.pdf" download class="pdf-file-link" draggable="true">
+                        <span class="pdf-icon">PDF</span>
+                        <span class="pdf-label">Resume</span>
+                    </a>
+                </div>
+                <div class="pdf-download-card">
+                    <a href="/api/jobs/${jobId}/resume.docx" download class="pdf-file-link docx-file-link" draggable="true">
+                        <span class="pdf-icon docx-icon">DOCX</span>
+                        <span class="pdf-label">Resume</span>
+                    </a>
+                </div>
             </div>
             <div class="prepared-section">
                 <textarea class="textarea-styled" id="resume-textarea">${escapeHtml(data.tailored_resume || '')}</textarea>
@@ -1247,11 +1551,19 @@ function renderPreparedSection(data, jobId) {
         </div>
         <div class="card sidebar-section">
             <h3>Cover Letter</h3>
-            <div class="pdf-download-card">
-                <a href="/api/jobs/${jobId}/cover-letter.pdf" download class="pdf-file-link" draggable="true">
-                    <span class="pdf-icon">PDF</span>
-                    <span class="pdf-label">Cover Letter</span>
-                </a>
+            <div class="doc-download-row">
+                <div class="pdf-download-card">
+                    <a href="/api/jobs/${jobId}/cover-letter.pdf" download class="pdf-file-link" draggable="true">
+                        <span class="pdf-icon">PDF</span>
+                        <span class="pdf-label">Cover Letter</span>
+                    </a>
+                </div>
+                <div class="pdf-download-card">
+                    <a href="/api/jobs/${jobId}/cover-letter.docx" download class="pdf-file-link docx-file-link" draggable="true">
+                        <span class="pdf-icon docx-icon">DOCX</span>
+                        <span class="pdf-label">Cover Letter</span>
+                    </a>
+                </div>
             </div>
             <div class="prepared-section">
                 <textarea class="textarea-styled" id="cover-textarea">${escapeHtml(data.cover_letter || '')}</textarea>
@@ -1377,6 +1689,8 @@ function renderEmailPreview(email) {
 }
 
 // === Pipeline View ===
+let pipelineActiveTab = 'board';
+
 async function renderPipeline(container) {
     container.innerHTML = `<div class="loading-container"><div class="spinner spinner-lg"></div><span>Loading pipeline...</span></div>`;
 
@@ -1392,12 +1706,53 @@ async function renderPipeline(container) {
     };
 
     try {
-        const results = await Promise.all(
-            statuses.map(s => api.request('GET', `/api/pipeline/${s}`))
-        );
+        const [pipelineResults, offersData] = await Promise.all([
+            Promise.all(statuses.map(s => api.request('GET', `/api/pipeline/${s}`))),
+            api.request('GET', '/api/offers')
+        ]);
+        const results = pipelineResults;
+        const hasOffers = offersData.offers && offersData.offers.length > 0;
+        const offeredIdx = statuses.indexOf('offered');
+        const hasOfferedJobs = results[offeredIdx] && results[offeredIdx].count > 0;
 
         container.innerHTML = `
-            <h1 style="font-size:1.5rem;font-weight:700;letter-spacing:-0.02em;margin-bottom:24px">Pipeline</h1>
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px">
+                <h1 style="font-size:1.5rem;font-weight:700;letter-spacing:-0.02em;margin:0">Pipeline</h1>
+                <div class="tab-bar">
+                    <button class="tab-btn ${pipelineActiveTab === 'board' ? 'active' : ''}" data-pipeline-tab="board">Board</button>
+                    <button class="tab-btn ${pipelineActiveTab === 'offers' ? 'active' : ''}" data-pipeline-tab="offers">
+                        Offers${hasOffers ? ` <span class="badge badge-sm">${offersData.offers.length}</span>` : ''}
+                    </button>
+                </div>
+            </div>
+            <div id="pipeline-tab-content"></div>
+        `;
+
+        container.querySelectorAll('[data-pipeline-tab]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                pipelineActiveTab = btn.dataset.pipelineTab;
+                container.querySelectorAll('[data-pipeline-tab]').forEach(b => b.classList.toggle('active', b === btn));
+                if (pipelineActiveTab === 'board') {
+                    renderPipelineBoard(container.querySelector('#pipeline-tab-content'), results, statuses, statusLabels, statusColors, container);
+                } else {
+                    renderOffersTab(container.querySelector('#pipeline-tab-content'), offersData.offers, results[offeredIdx]?.jobs || []);
+                }
+            });
+        });
+
+        const tabContent = container.querySelector('#pipeline-tab-content');
+        if (pipelineActiveTab === 'offers') {
+            renderOffersTab(tabContent, offersData.offers, results[offeredIdx]?.jobs || []);
+        } else {
+            renderPipelineBoard(tabContent, results, statuses, statusLabels, statusColors, container);
+        }
+    } catch (err) {
+        container.innerHTML = `<div class="empty-state"><div class="empty-state-title">Failed to load pipeline</div><div class="empty-state-desc">${escapeHtml(err.message)}</div></div>`;
+    }
+}
+
+function renderPipelineBoard(tabContent, results, statuses, statusLabels, statusColors, container) {
+    tabContent.innerHTML = `
             <div class="pipeline-board">
                 ${statuses.map((status, i) => `
                     <div class="pipeline-column" data-status="${status}">
@@ -1422,7 +1777,7 @@ async function renderPipeline(container) {
         // Drag-and-drop handlers
         let draggedCard = null;
 
-        container.querySelectorAll('.pipeline-card[draggable]').forEach(card => {
+        tabContent.querySelectorAll('.pipeline-card[draggable]').forEach(card => {
             card.addEventListener('dragstart', (e) => {
                 draggedCard = card;
                 card.classList.add('pipeline-card-dragging');
@@ -1433,7 +1788,7 @@ async function renderPipeline(container) {
             card.addEventListener('dragend', () => {
                 card.classList.remove('pipeline-card-dragging');
                 draggedCard = null;
-                container.querySelectorAll('.pipeline-cards').forEach(zone => {
+                tabContent.querySelectorAll('.pipeline-cards').forEach(zone => {
                     zone.classList.remove('pipeline-drop-target');
                 });
             });
@@ -1443,7 +1798,7 @@ async function renderPipeline(container) {
             });
         });
 
-        container.querySelectorAll('.pipeline-cards').forEach(dropZone => {
+        tabContent.querySelectorAll('.pipeline-cards').forEach(dropZone => {
             dropZone.addEventListener('dragover', (e) => {
                 e.preventDefault();
                 e.dataTransfer.dropEffect = 'move';
@@ -1471,8 +1826,8 @@ async function renderPipeline(container) {
                 draggedCard.dataset.status = newStatus;
 
                 // Update column counts
-                const oldCol = container.querySelector(`.pipeline-column[data-status="${oldStatus}"] .pipeline-count`);
-                const newCol = container.querySelector(`.pipeline-column[data-status="${newStatus}"] .pipeline-count`);
+                const oldCol = tabContent.querySelector(`.pipeline-column[data-status="${oldStatus}"] .pipeline-count`);
+                const newCol = tabContent.querySelector(`.pipeline-column[data-status="${newStatus}"] .pipeline-count`);
                 if (oldCol) oldCol.textContent = parseInt(oldCol.textContent) - 1;
                 if (newCol) newCol.textContent = parseInt(newCol.textContent) + 1;
 
@@ -1485,8 +1840,338 @@ async function renderPipeline(container) {
                 }
             });
         });
+}
+
+// === Offers Tab ===
+
+function formatCurrency(val) {
+    if (!val && val !== 0) return '-';
+    return '$' + Number(val).toLocaleString();
+}
+
+async function renderOffersTab(tabContent, offers, offeredJobs) {
+    const jobMap = {};
+    offeredJobs.forEach(j => { jobMap[j.id] = j; });
+    offers.forEach(o => { if (o.title) jobMap[o.job_id] = { id: o.job_id, title: o.title, company: o.company }; });
+
+    tabContent.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+            <p style="color:var(--text-secondary);margin:0">${offers.length} offer${offers.length !== 1 ? 's' : ''} tracked</p>
+            <div style="display:flex;gap:8px">
+                ${offers.length >= 2 ? `<button id="compare-offers-btn" class="btn btn-primary btn-sm">Compare Offers</button>` : ''}
+                <button id="add-offer-btn" class="btn btn-primary btn-sm">+ Add Offer</button>
+            </div>
+        </div>
+        <div id="offers-list"></div>
+        <div id="offer-form-container" style="display:none"></div>
+        <div id="offer-comparison-container" style="display:none"></div>
+    `;
+
+    renderOffersList(tabContent, offers, jobMap);
+
+    tabContent.querySelector('#add-offer-btn')?.addEventListener('click', () => {
+        showOfferForm(tabContent, null, offeredJobs, offers, jobMap);
+    });
+
+    tabContent.querySelector('#compare-offers-btn')?.addEventListener('click', async () => {
+        await showOfferComparison(tabContent);
+    });
+}
+
+function renderOffersList(tabContent, offers, jobMap) {
+    const listEl = tabContent.querySelector('#offers-list');
+    if (!offers.length) {
+        listEl.innerHTML = `<div class="empty-state"><div class="empty-state-title">No offers yet</div><div class="empty-state-desc">Add an offer when a job reaches the "offered" stage</div></div>`;
+        return;
+    }
+
+    listEl.innerHTML = offers.map(offer => {
+        const job = jobMap[offer.job_id] || {};
+        const base = offer.base || 0;
+        const equity = offer.equity || 0;
+        const bonus = offer.bonus || 0;
+        const totalCash = base + bonus;
+        return `
+            <div class="card offer-card" style="margin-bottom:12px;padding:16px">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                    <div>
+                        <div style="font-weight:600;font-size:0.95rem">${escapeHtml(job.title || 'Unknown Position')}</div>
+                        <div style="color:var(--text-secondary);font-size:0.85rem">${escapeHtml(job.company || '')}${offer.location ? ` \u2022 ${escapeHtml(offer.location)}` : ''}</div>
+                    </div>
+                    <div style="display:flex;gap:6px">
+                        <button class="btn btn-ghost btn-sm offer-edit-btn" data-offer-id="${offer.id}" title="Edit">Edit</button>
+                        <button class="btn btn-ghost btn-sm offer-delete-btn" data-offer-id="${offer.id}" title="Delete" style="color:var(--danger)">Delete</button>
+                    </div>
+                </div>
+                <div class="offer-comp-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-top:12px">
+                    <div><div style="font-size:0.75rem;color:var(--text-secondary)">Base</div><div style="font-weight:600">${formatCurrency(base)}</div></div>
+                    <div><div style="font-size:0.75rem;color:var(--text-secondary)">Bonus</div><div style="font-weight:600">${formatCurrency(bonus)}</div></div>
+                    <div><div style="font-size:0.75rem;color:var(--text-secondary)">Equity</div><div style="font-weight:600">${formatCurrency(equity)}</div></div>
+                    <div><div style="font-size:0.75rem;color:var(--text-secondary)">Total Cash</div><div style="font-weight:600;color:var(--accent)">${formatCurrency(totalCash)}</div></div>
+                    ${offer.pto_days ? `<div><div style="font-size:0.75rem;color:var(--text-secondary)">PTO</div><div style="font-weight:600">${offer.pto_days} days</div></div>` : ''}
+                    ${offer.remote_days ? `<div><div style="font-size:0.75rem;color:var(--text-secondary)">Remote</div><div style="font-weight:600">${offer.remote_days} days/wk</div></div>` : ''}
+                </div>
+                ${offer.notes ? `<div style="margin-top:8px;font-size:0.85rem;color:var(--text-secondary)">${escapeHtml(offer.notes)}</div>` : ''}
+            </div>
+        `;
+    }).join('');
+
+    listEl.querySelectorAll('.offer-edit-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const offerId = parseInt(btn.dataset.offerId);
+            const offer = offers.find(o => o.id === offerId);
+            if (offer) showOfferForm(tabContent, offer, Object.values(jobMap), offers, jobMap);
+        });
+    });
+
+    listEl.querySelectorAll('.offer-delete-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            if (!confirm('Delete this offer?')) return;
+            try {
+                await api.request('DELETE', `/api/offers/${btn.dataset.offerId}`);
+                showToast('Offer deleted', 'success');
+                const refreshed = await api.request('GET', '/api/offers');
+                offers.length = 0;
+                refreshed.offers.forEach(o => offers.push(o));
+                renderOffersList(tabContent, offers, jobMap);
+            } catch (err) {
+                showToast(`Failed to delete: ${err.message}`, 'error');
+            }
+        });
+    });
+}
+
+function showOfferForm(tabContent, existingOffer, availableJobs, offers, jobMap) {
+    const formContainer = tabContent.querySelector('#offer-form-container');
+    formContainer.style.display = 'block';
+    const isEdit = !!existingOffer;
+
+    const jobOptions = (Array.isArray(availableJobs) ? availableJobs : []).map(j => {
+        const job = j.id ? j : { id: j.job_id, title: j.title, company: j.company };
+        const selected = existingOffer && existingOffer.job_id === job.id ? 'selected' : '';
+        return `<option value="${job.id}" ${selected}>${escapeHtml(job.title || '')} - ${escapeHtml(job.company || '')}</option>`;
+    }).join('');
+
+    formContainer.innerHTML = `
+        <div class="card" style="padding:20px;margin-bottom:16px;border:2px solid var(--accent)">
+            <h3 style="margin:0 0 16px;font-size:1rem">${isEdit ? 'Edit' : 'Add'} Offer</h3>
+            <form id="offer-form">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                    <div style="grid-column:1/-1">
+                        <label class="form-label">Job</label>
+                        <select name="job_id" class="form-input" required>${jobOptions}</select>
+                    </div>
+                    <div>
+                        <label class="form-label">Base Salary ($)</label>
+                        <input type="number" name="base" class="form-input" value="${existingOffer?.base || ''}" placeholder="120000">
+                    </div>
+                    <div>
+                        <label class="form-label">Bonus ($)</label>
+                        <input type="number" name="bonus" class="form-input" value="${existingOffer?.bonus || ''}" placeholder="15000">
+                    </div>
+                    <div>
+                        <label class="form-label">Equity ($/yr)</label>
+                        <input type="number" name="equity" class="form-input" value="${existingOffer?.equity || ''}" placeholder="25000">
+                    </div>
+                    <div>
+                        <label class="form-label">Health Value ($/yr)</label>
+                        <input type="number" name="health_value" class="form-input" value="${existingOffer?.health_value || ''}" placeholder="8000">
+                    </div>
+                    <div>
+                        <label class="form-label">Retirement Match (%)</label>
+                        <input type="number" name="retirement_match" class="form-input" step="0.1" value="${existingOffer?.retirement_match || ''}" placeholder="6">
+                    </div>
+                    <div>
+                        <label class="form-label">Relocation ($)</label>
+                        <input type="number" name="relocation" class="form-input" value="${existingOffer?.relocation || ''}" placeholder="5000">
+                    </div>
+                    <div>
+                        <label class="form-label">PTO Days</label>
+                        <input type="number" name="pto_days" class="form-input" value="${existingOffer?.pto_days || ''}" placeholder="20">
+                    </div>
+                    <div>
+                        <label class="form-label">Remote Days/Week</label>
+                        <input type="number" name="remote_days" class="form-input" value="${existingOffer?.remote_days || ''}" placeholder="3">
+                    </div>
+                    <div style="grid-column:1/-1">
+                        <label class="form-label">Location</label>
+                        <input type="text" name="location" class="form-input" value="${escapeHtml(existingOffer?.location || '')}" placeholder="City, State">
+                    </div>
+                    <div style="grid-column:1/-1">
+                        <label class="form-label">Notes</label>
+                        <textarea name="notes" class="form-input" rows="2" placeholder="Additional details...">${escapeHtml(existingOffer?.notes || '')}</textarea>
+                    </div>
+                </div>
+                <div style="display:flex;gap:8px;margin-top:16px">
+                    <button type="submit" class="btn btn-primary btn-sm">${isEdit ? 'Update' : 'Add'} Offer</button>
+                    <button type="button" id="cancel-offer-form" class="btn btn-ghost btn-sm">Cancel</button>
+                </div>
+            </form>
+        </div>
+    `;
+
+    formContainer.querySelector('#cancel-offer-form').addEventListener('click', () => {
+        formContainer.style.display = 'none';
+        formContainer.innerHTML = '';
+    });
+
+    formContainer.querySelector('#offer-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const body = {};
+        for (const [k, v] of fd.entries()) {
+            if (v === '') continue;
+            body[k] = ['job_id', 'base', 'bonus', 'equity', 'health_value', 'retirement_match', 'relocation', 'pto_days', 'remote_days'].includes(k)
+                ? Number(v) : v;
+        }
+
+        try {
+            if (isEdit) {
+                await api.request('PUT', `/api/offers/${existingOffer.id}`, body);
+                showToast('Offer updated', 'success');
+            } else {
+                await api.request('POST', '/api/offers', body);
+                showToast('Offer added', 'success');
+            }
+            formContainer.style.display = 'none';
+            formContainer.innerHTML = '';
+            const refreshed = await api.request('GET', '/api/offers');
+            offers.length = 0;
+            refreshed.offers.forEach(o => offers.push(o));
+            refreshed.offers.forEach(o => { if (o.title) jobMap[o.job_id] = { id: o.job_id, title: o.title, company: o.company }; });
+            renderOffersList(tabContent, offers, jobMap);
+            // Update compare button visibility
+            const btnArea = tabContent.querySelector('#compare-offers-btn');
+            if (!btnArea && offers.length >= 2) {
+                const addBtn = tabContent.querySelector('#add-offer-btn');
+                if (addBtn) {
+                    const cmpBtn = document.createElement('button');
+                    cmpBtn.id = 'compare-offers-btn';
+                    cmpBtn.className = 'btn btn-primary btn-sm';
+                    cmpBtn.textContent = 'Compare Offers';
+                    cmpBtn.addEventListener('click', () => showOfferComparison(tabContent));
+                    addBtn.parentElement.insertBefore(cmpBtn, addBtn);
+                }
+            }
+        } catch (err) {
+            showToast(`Failed to save offer: ${err.message}`, 'error');
+        }
+    });
+}
+
+async function showOfferComparison(tabContent) {
+    const compContainer = tabContent.querySelector('#offer-comparison-container');
+    compContainer.style.display = 'block';
+    compContainer.innerHTML = `<div class="loading-container"><div class="spinner"></div><span>Calculating...</span></div>`;
+
+    try {
+        const { comparison } = await api.request('GET', '/api/offers/compare');
+        if (!comparison || !comparison.length) {
+            compContainer.innerHTML = `<div class="empty-state"><div class="empty-state-desc">No offers to compare</div></div>`;
+            return;
+        }
+
+        const compFields = [
+            { key: 'base', label: 'Base Salary' },
+            { key: 'bonus', label: 'Bonus' },
+            { key: 'equity', label: 'Equity' },
+            { key: 'health_value', label: 'Health Benefits' },
+            { key: 'retirement_value', label: 'Retirement (calc)' },
+            { key: 'relocation', label: 'Relocation' },
+            { key: 'pto_value', label: 'PTO Value' },
+            { key: 'total_cash', label: 'Total Cash' },
+            { key: 'total_comp', label: 'Total Comp' },
+            { key: 'total_with_pto', label: 'Total + PTO Value' },
+        ];
+
+        const bestTotal = comparison[0]?.total_comp || 0;
+
+        compContainer.innerHTML = `
+            <div class="card" style="padding:20px;margin-top:16px;overflow-x:auto">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                    <h3 style="margin:0;font-size:1rem">Offer Comparison</h3>
+                    <button id="close-comparison" class="btn btn-ghost btn-sm">Close</button>
+                </div>
+                <table class="comparison-table" style="width:100%">
+                    <thead>
+                        <tr>
+                            <th style="text-align:left;padding:8px 12px;min-width:140px">Component</th>
+                            ${comparison.map((c, i) => `
+                                <th style="text-align:right;padding:8px 12px;min-width:140px">
+                                    <div style="font-weight:600">${escapeHtml(c.location || `Offer ${i + 1}`)}</div>
+                                    ${i === 0 ? '<span class="badge badge-sm" style="background:var(--score-green);color:#fff;font-size:0.65rem">Best</span>' : ''}
+                                </th>
+                            `).join('')}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${compFields.map(f => {
+                            const isTotal = f.key.startsWith('total');
+                            return `
+                                <tr style="${isTotal ? 'font-weight:600;border-top:2px solid var(--border)' : ''}">
+                                    <td style="padding:8px 12px;color:var(--text-secondary);font-size:0.85rem">${f.label}</td>
+                                    ${comparison.map(c => {
+                                        const val = c[f.key] || 0;
+                                        const isBest = isTotal && val === bestTotal && f.key === 'total_comp';
+                                        return `<td style="padding:8px 12px;text-align:right;${isBest ? 'color:var(--score-green)' : ''}">${formatCurrency(val)}</td>`;
+                                    }).join('')}
+                                </tr>
+                            `;
+                        }).join('')}
+                        <tr style="border-top:2px solid var(--border)">
+                            <td style="padding:8px 12px;color:var(--text-secondary);font-size:0.85rem">vs Best</td>
+                            ${comparison.map(c => {
+                                const diff = c.vs_best || 0;
+                                const color = diff === 0 ? 'var(--score-green)' : 'var(--danger)';
+                                return `<td style="padding:8px 12px;text-align:right;color:${color};font-weight:600">${diff === 0 ? '-' : formatCurrency(diff)}</td>`;
+                            }).join('')}
+                        </tr>
+                    </tbody>
+                </table>
+
+                ${comparison.length > 0 ? `
+                    <div style="margin-top:20px">
+                        <h4 style="font-size:0.9rem;margin-bottom:12px">Compensation Breakdown</h4>
+                        <div style="display:flex;gap:16px;flex-wrap:wrap">
+                            ${comparison.map((c, i) => {
+                                const total = c.total_comp || 1;
+                                const segments = [
+                                    { label: 'Base', val: c.base, color: 'var(--accent)' },
+                                    { label: 'Bonus', val: c.bonus, color: 'var(--score-green)' },
+                                    { label: 'Equity', val: c.equity, color: 'var(--score-amber)' },
+                                    { label: 'Benefits', val: (c.health_value || 0) + (c.retirement_value || 0) + (c.relocation || 0), color: '#8b5cf6' },
+                                ];
+                                return `
+                                    <div style="flex:1;min-width:200px">
+                                        <div style="font-size:0.8rem;font-weight:600;margin-bottom:6px">${escapeHtml(c.location || `Offer ${i + 1}`)}</div>
+                                        <div style="height:24px;display:flex;border-radius:6px;overflow:hidden;background:var(--bg-secondary)">
+                                            ${segments.filter(s => s.val > 0).map(s => `
+                                                <div title="${s.label}: ${formatCurrency(s.val)}" style="width:${(s.val / total * 100).toFixed(1)}%;background:${s.color};min-width:2px"></div>
+                                            `).join('')}
+                                        </div>
+                                        <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap">
+                                            ${segments.filter(s => s.val > 0).map(s => `
+                                                <span style="font-size:0.7rem;color:var(--text-secondary);display:flex;align-items:center;gap:3px">
+                                                    <span style="width:8px;height:8px;border-radius:50%;background:${s.color};display:inline-block"></span>
+                                                    ${s.label}
+                                                </span>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+
+        compContainer.querySelector('#close-comparison').addEventListener('click', () => {
+            compContainer.style.display = 'none';
+            compContainer.innerHTML = '';
+        });
     } catch (err) {
-        container.innerHTML = `<div class="empty-state"><div class="empty-state-title">Failed to load pipeline</div><div class="empty-state-desc">${escapeHtml(err.message)}</div></div>`;
+        compContainer.innerHTML = `<div class="empty-state"><div class="empty-state-desc">Failed to compare: ${escapeHtml(err.message)}</div></div>`;
     }
 }
 
@@ -1746,6 +2431,24 @@ async function renderStats(container) {
                     <h2 style="font-size:1.125rem;font-weight:600;margin:0">Application Analytics</h2>
                 </div>
                 <div id="analytics-container">
+                    <div class="loading-container"><span class="spinner"></span></div>
+                </div>
+            </div>
+            <div class="card" style="padding:24px;margin-top:24px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                    <h2 style="font-size:1.125rem;font-weight:600;margin:0">Response Tracking</h2>
+                </div>
+                <div id="response-analytics-container">
+                    <div class="loading-container"><span class="spinner"></span></div>
+                </div>
+            </div>
+            <div class="card" style="padding:24px;margin-top:24px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                    <h2 style="font-size:1.125rem;font-weight:600;margin:0">Career Advisor</h2>
+                    <button class="btn btn-primary btn-sm" id="career-analyze-btn">Analyze Career</button>
+                </div>
+                <p style="font-size:0.875rem;color:var(--text-secondary);margin-bottom:12px">AI-powered career trajectory analysis with actionable suggestions.</p>
+                <div id="career-advisor-container">
                     <div class="loading-container"><span class="spinner"></span></div>
                 </div>
             </div>
@@ -2038,6 +2741,133 @@ async function renderStats(container) {
         } catch {
             document.getElementById('analytics-container').innerHTML = '<div style="font-size:0.8125rem;color:var(--text-tertiary)">Could not load analytics.</div>';
         }
+
+        // Fetch response analytics
+        try {
+            const ra = await api.request('GET', '/api/analytics/response-rates');
+            const raContainer = document.getElementById('response-analytics-container');
+            if (ra.total_applied === 0) {
+                raContainer.innerHTML = '<div style="font-size:0.875rem;color:var(--text-tertiary)">No applications yet. Apply to jobs to see response analytics.</div>';
+            } else {
+                const typeLabels = { interview_invite: 'Interview Invites', rejection: 'Rejections', callback: 'Callbacks', ghosted: 'Ghosted' };
+                const typeColors = { interview_invite: '#22c55e', rejection: '#ef4444', callback: '#3b82f6', ghosted: '#94a3b8' };
+                const breakdown = ra.type_breakdown || {};
+                const maxBreakdown = Math.max(...Object.values(breakdown), 1);
+                const byScore = ra.by_score_range || [];
+                const maxScoreApplied = Math.max(...byScore.map(s => s.applied), 1);
+
+                raContainer.innerHTML = `
+                    <div class="stats-grid" style="margin-bottom:20px">
+                        <div class="card stat-card">
+                            <div class="stat-number">${ra.response_rate}%</div>
+                            <div class="stat-label">Response Rate</div>
+                        </div>
+                        <div class="card stat-card">
+                            <div class="stat-number">${ra.total_responses}/${ra.total_applied}</div>
+                            <div class="stat-label">Responses / Applied</div>
+                        </div>
+                        <div class="card stat-card">
+                            <div class="stat-number">${ra.avg_days_to_response != null ? ra.avg_days_to_response + 'd' : '--'}</div>
+                            <div class="stat-label">Avg Days to Response</div>
+                        </div>
+                    </div>
+                    ${Object.keys(breakdown).length > 0 ? `
+                        <div style="margin-bottom:20px">
+                            <div style="font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:8px">Response Types</div>
+                            <div style="display:flex;flex-direction:column;gap:6px">
+                                ${Object.entries(breakdown).map(([type, count]) => `
+                                    <div style="display:flex;align-items:center;gap:8px">
+                                        <div style="width:120px;font-size:0.8125rem;color:var(--text-secondary);text-transform:capitalize">${typeLabels[type] || type}</div>
+                                        <div style="flex:1;height:20px;background:var(--bg-surface-secondary);border-radius:var(--radius-sm);overflow:hidden">
+                                            <div style="height:100%;width:${Math.round((count / maxBreakdown) * 100)}%;background:${typeColors[type] || 'var(--accent)'};border-radius:var(--radius-sm)"></div>
+                                        </div>
+                                        <div style="width:30px;text-align:right;font-size:0.8125rem;font-weight:600">${count}</div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+                    ${byScore.length > 0 ? `
+                        <div>
+                            <div style="font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:8px">Response Rate by Score</div>
+                            <div style="display:flex;flex-direction:column;gap:6px">
+                                ${byScore.map(s => `
+                                    <div style="display:flex;align-items:center;gap:8px">
+                                        <div style="width:60px;font-size:0.8125rem;font-weight:600;color:var(--text-secondary)">${s.range}</div>
+                                        <div style="flex:1;height:20px;background:var(--bg-surface-secondary);border-radius:var(--radius-sm);overflow:hidden">
+                                            <div style="height:100%;width:${Math.round((s.applied / maxScoreApplied) * 100)}%;background:var(--accent);border-radius:var(--radius-sm);position:relative">
+                                                ${s.responded > 0 ? `<div style="position:absolute;right:0;top:0;bottom:0;width:${Math.round((s.responded / s.applied) * 100)}%;background:#22c55e;border-radius:var(--radius-sm)"></div>` : ''}
+                                            </div>
+                                        </div>
+                                        <div style="width:80px;text-align:right;font-size:0.75rem;color:var(--text-secondary)">${s.responded}/${s.applied} (${s.rate}%)</div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                            <div style="display:flex;gap:12px;margin-top:6px;font-size:0.75rem;color:var(--text-tertiary)">
+                                <span><span style="display:inline-block;width:10px;height:10px;background:var(--accent);border-radius:2px;vertical-align:middle"></span> Applied</span>
+                                <span><span style="display:inline-block;width:10px;height:10px;background:#22c55e;border-radius:2px;vertical-align:middle"></span> Responded</span>
+                            </div>
+                        </div>
+                    ` : ''}
+                `;
+            }
+        } catch {
+            document.getElementById('response-analytics-container').innerHTML = '<div style="font-size:0.8125rem;color:var(--text-tertiary)">Could not load response analytics.</div>';
+        }
+
+        // Career Advisor
+        try {
+            const careerData = await api.request('GET', '/api/career/suggestions');
+            const suggestions = careerData.suggestions || [];
+            const careerContainer = document.getElementById('career-advisor-container');
+            if (suggestions.length === 0) {
+                careerContainer.innerHTML = '<div style="font-size:0.875rem;color:var(--text-tertiary)">No suggestions yet. Click "Analyze Career" to get AI-powered recommendations.</div>';
+            } else {
+                careerContainer.innerHTML = `
+                    <div style="display:flex;flex-direction:column;gap:8px">
+                        ${suggestions.map(s => `
+                            <div style="padding:12px;background:var(--bg-surface-secondary);border-radius:var(--radius-sm);border-left:3px solid ${s.accepted ? '#22c55e' : 'var(--accent)'}">
+                                <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                                    <div style="flex:1">
+                                        <div style="font-weight:600;font-size:0.875rem">${escapeHtml(s.title || s.suggestion || '')}</div>
+                                        ${s.reasoning ? `<div style="font-size:0.8125rem;color:var(--text-secondary);margin-top:4px">${escapeHtml(s.reasoning)}</div>` : ''}
+                                        ${s.gap ? `<div style="font-size:0.75rem;color:var(--text-tertiary);margin-top:2px">Gap: ${escapeHtml(s.gap)}</div>` : ''}
+                                    </div>
+                                    ${!s.accepted ? `<button class="btn btn-primary btn-sm career-accept-btn" data-id="${s.id}" style="flex-shrink:0;margin-left:8px">Accept</button>` : `<span style="font-size:0.75rem;color:#22c55e;font-weight:600">Accepted</span>`}
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+                careerContainer.querySelectorAll('.career-accept-btn').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        try {
+                            await api.request('POST', `/api/career/suggestions/${btn.dataset.id}/accept`);
+                            showToast('Suggestion accepted — search terms updated', 'success');
+                            await renderStats(container);
+                        } catch (err) { showToast(err.message, 'error'); }
+                    });
+                });
+            }
+        } catch {
+            document.getElementById('career-advisor-container').innerHTML = '<div style="font-size:0.8125rem;color:var(--text-tertiary)">Could not load career suggestions.</div>';
+        }
+
+        // Career analyze button
+        document.getElementById('career-analyze-btn')?.addEventListener('click', async () => {
+            const btn = document.getElementById('career-analyze-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> Analyzing...';
+            try {
+                await api.request('POST', '/api/career/analyze');
+                showToast('Career analysis complete', 'success');
+                await renderStats(container);
+            } catch (err) {
+                showToast(err.message, 'error');
+                btn.disabled = false;
+                btn.textContent = 'Analyze Career';
+            }
+        });
     } catch (err) {
         showToast(err.message, 'error');
         container.innerHTML = `
@@ -2095,6 +2925,455 @@ async function handleScrape() {
     }
 }
 
+// === Network View ===
+async function renderNetwork(container) {
+    container.innerHTML = `<div class="loading-container"><div class="spinner spinner-lg"></div><span>Loading contacts...</span></div>`;
+
+    try {
+        const data = await api.request('GET', '/api/contacts');
+        const contacts = data.contacts || [];
+
+        container.innerHTML = `
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px">
+                <h1 style="font-size:1.5rem;font-weight:700;letter-spacing:-0.02em">Network</h1>
+                <button class="btn btn-primary btn-sm" id="add-contact-btn">Add Contact</button>
+            </div>
+            <div style="margin-bottom:16px">
+                <input type="text" class="search-input" id="contact-search" placeholder="Search contacts..." style="width:100%;max-width:400px">
+            </div>
+            <div id="contacts-list">
+                ${contacts.length === 0 ? `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">&#128101;</div>
+                        <div class="empty-state-title">No contacts yet</div>
+                        <div class="empty-state-desc">Add contacts to track your professional network and link them to job applications.</div>
+                    </div>
+                ` : `
+                    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px">
+                        ${contacts.map(c => `
+                            <div class="card card-interactive contact-card" style="padding:16px;cursor:pointer" data-contact-id="${c.id}" data-name="${escapeHtml(c.name).toLowerCase()}" data-company="${escapeHtml(c.company || '').toLowerCase()}">
+                                <div style="font-weight:600;font-size:0.9375rem">${escapeHtml(c.name)}</div>
+                                ${c.role ? `<div style="font-size:0.8125rem;color:var(--text-secondary)">${escapeHtml(c.role)}</div>` : ''}
+                                ${c.company ? `<div style="font-size:0.8125rem;color:var(--text-tertiary)">${escapeHtml(c.company)}</div>` : ''}
+                                <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+                                    ${c.email ? `<span style="font-size:0.75rem;color:var(--accent)">${escapeHtml(c.email)}</span>` : ''}
+                                    ${c.linkedin_url ? `<a href="${escapeHtml(c.linkedin_url)}" target="_blank" style="font-size:0.75rem">LinkedIn</a>` : ''}
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `}
+            </div>
+            <div id="contact-detail-panel" style="display:none"></div>
+            <div id="contact-form-panel" style="display:none">
+                <div class="card" style="padding:24px;margin-top:16px">
+                    <h3 style="font-size:1rem;font-weight:600;margin-bottom:12px" id="contact-form-title">Add Contact</h3>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                        <div><label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Name *</label><input type="text" class="search-input" id="contact-name" style="width:100%"></div>
+                        <div><label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Email</label><input type="email" class="search-input" id="contact-email" style="width:100%"></div>
+                        <div><label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Company</label><input type="text" class="search-input" id="contact-company" style="width:100%"></div>
+                        <div><label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Role</label><input type="text" class="search-input" id="contact-role" style="width:100%"></div>
+                        <div><label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Phone</label><input type="text" class="search-input" id="contact-phone" style="width:100%"></div>
+                        <div><label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">LinkedIn URL</label><input type="text" class="search-input" id="contact-linkedin" style="width:100%"></div>
+                    </div>
+                    <div style="margin-top:12px"><label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Notes</label><textarea class="textarea-styled textarea-notes" id="contact-notes"></textarea></div>
+                    <div style="display:flex;gap:8px;margin-top:12px">
+                        <button class="btn btn-primary btn-sm" id="contact-save-btn">Save</button>
+                        <button class="btn btn-secondary btn-sm" id="contact-cancel-btn">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        let editingContactId = null;
+
+        // Search filter
+        document.getElementById('contact-search').addEventListener('input', (e) => {
+            const q = e.target.value.toLowerCase();
+            document.querySelectorAll('.contact-card').forEach(card => {
+                const name = card.dataset.name || '';
+                const company = card.dataset.company || '';
+                card.style.display = (name.includes(q) || company.includes(q)) ? '' : 'none';
+            });
+        });
+
+        // Add contact
+        document.getElementById('add-contact-btn').addEventListener('click', () => {
+            editingContactId = null;
+            document.getElementById('contact-form-title').textContent = 'Add Contact';
+            ['contact-name', 'contact-email', 'contact-company', 'contact-role', 'contact-phone', 'contact-linkedin', 'contact-notes'].forEach(id => { document.getElementById(id).value = ''; });
+            document.getElementById('contact-form-panel').style.display = '';
+            document.getElementById('contact-detail-panel').style.display = 'none';
+        });
+
+        document.getElementById('contact-cancel-btn').addEventListener('click', () => {
+            document.getElementById('contact-form-panel').style.display = 'none';
+        });
+
+        document.getElementById('contact-save-btn').addEventListener('click', async () => {
+            const name = document.getElementById('contact-name').value.trim();
+            if (!name) { showToast('Name is required', 'error'); return; }
+            const body = { name, email: document.getElementById('contact-email').value.trim(), company: document.getElementById('contact-company').value.trim(), role: document.getElementById('contact-role').value.trim(), phone: document.getElementById('contact-phone').value.trim(), linkedin_url: document.getElementById('contact-linkedin').value.trim(), notes: document.getElementById('contact-notes').value };
+            try {
+                if (editingContactId) {
+                    await api.request('PUT', `/api/contacts/${editingContactId}`, body);
+                    showToast('Contact updated', 'success');
+                } else {
+                    await api.request('POST', '/api/contacts', body);
+                    showToast('Contact added', 'success');
+                }
+                await renderNetwork(container);
+            } catch (err) { showToast(err.message, 'error'); }
+        });
+
+        // Click contact card to see detail + interactions
+        container.querySelectorAll('.contact-card').forEach(card => {
+            card.addEventListener('click', async () => {
+                const contactId = parseInt(card.dataset.contactId);
+                const contact = contacts.find(c => c.id === contactId);
+                if (!contact) return;
+                document.getElementById('contact-form-panel').style.display = 'none';
+                const detailPanel = document.getElementById('contact-detail-panel');
+                detailPanel.style.display = '';
+                detailPanel.innerHTML = '<div class="loading-container"><span class="spinner"></span></div>';
+
+                try {
+                    const intData = await api.request('GET', `/api/contacts/${contactId}/interactions`);
+                    const interactions = intData.interactions || [];
+                    detailPanel.innerHTML = `
+                        <div class="card" style="padding:24px;margin-top:16px">
+                            <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px">
+                                <div>
+                                    <h2 style="font-size:1.25rem;font-weight:700">${escapeHtml(contact.name)}</h2>
+                                    ${contact.role ? `<div style="color:var(--text-secondary)">${escapeHtml(contact.role)}${contact.company ? ` at ${escapeHtml(contact.company)}` : ''}</div>` : ''}
+                                    <div style="display:flex;gap:12px;margin-top:8px;font-size:0.8125rem">
+                                        ${contact.email ? `<span>${escapeHtml(contact.email)}</span>` : ''}
+                                        ${contact.phone ? `<span>${escapeHtml(contact.phone)}</span>` : ''}
+                                        ${contact.linkedin_url ? `<a href="${escapeHtml(contact.linkedin_url)}" target="_blank">LinkedIn</a>` : ''}
+                                    </div>
+                                    ${contact.notes ? `<div style="margin-top:8px;font-size:0.8125rem;color:var(--text-secondary)">${escapeHtml(contact.notes)}</div>` : ''}
+                                </div>
+                                <div style="display:flex;gap:6px">
+                                    <button class="btn btn-secondary btn-sm" id="edit-contact-btn">Edit</button>
+                                    <button class="btn btn-danger btn-sm" id="delete-contact-btn">Delete</button>
+                                </div>
+                            </div>
+                            <h3 style="font-size:0.875rem;font-weight:600;color:var(--text-tertiary);margin-bottom:8px">Interactions</h3>
+                            <div style="display:flex;gap:6px;margin-bottom:12px">
+                                <input type="text" class="search-input" id="interaction-notes" placeholder="Add interaction note..." style="flex:1">
+                                <select class="filter-select" id="interaction-type" style="width:auto">
+                                    <option value="note">Note</option>
+                                    <option value="email">Email</option>
+                                    <option value="call">Call</option>
+                                    <option value="meeting">Meeting</option>
+                                    <option value="linkedin">LinkedIn</option>
+                                </select>
+                                <button class="btn btn-primary btn-sm" id="add-interaction-btn">Add</button>
+                            </div>
+                            <div class="timeline">
+                                ${interactions.length === 0 ? '<div style="font-size:0.875rem;color:var(--text-tertiary);padding:8px 0">No interactions yet.</div>' :
+                                interactions.map(i => `
+                                    <div class="timeline-event">
+                                        <div>
+                                            <div class="timeline-detail">${escapeHtml(i.notes || i.type)}</div>
+                                            <div class="timeline-time">${escapeHtml(i.type)} &middot; ${formatDate(i.date || i.created_at)}</div>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    `;
+
+                    document.getElementById('edit-contact-btn').addEventListener('click', () => {
+                        editingContactId = contactId;
+                        document.getElementById('contact-form-title').textContent = 'Edit Contact';
+                        document.getElementById('contact-name').value = contact.name || '';
+                        document.getElementById('contact-email').value = contact.email || '';
+                        document.getElementById('contact-company').value = contact.company || '';
+                        document.getElementById('contact-role').value = contact.role || '';
+                        document.getElementById('contact-phone').value = contact.phone || '';
+                        document.getElementById('contact-linkedin').value = contact.linkedin_url || '';
+                        document.getElementById('contact-notes').value = contact.notes || '';
+                        document.getElementById('contact-form-panel').style.display = '';
+                        detailPanel.style.display = 'none';
+                    });
+
+                    document.getElementById('delete-contact-btn').addEventListener('click', async () => {
+                        if (!confirm(`Delete ${contact.name}?`)) return;
+                        try {
+                            await api.request('DELETE', `/api/contacts/${contactId}`);
+                            showToast('Contact deleted', 'success');
+                            await renderNetwork(container);
+                        } catch (err) { showToast(err.message, 'error'); }
+                    });
+
+                    document.getElementById('add-interaction-btn').addEventListener('click', async () => {
+                        const notes = document.getElementById('interaction-notes').value.trim();
+                        if (!notes) return;
+                        try {
+                            await api.request('POST', `/api/contacts/${contactId}/interactions`, {
+                                type: document.getElementById('interaction-type').value,
+                                notes,
+                            });
+                            showToast('Interaction added', 'success');
+                            card.click(); // refresh detail
+                        } catch (err) { showToast(err.message, 'error'); }
+                    });
+                } catch (err) {
+                    detailPanel.innerHTML = `<div style="color:var(--danger);padding:16px">${escapeHtml(err.message)}</div>`;
+                }
+            });
+        });
+    } catch (err) {
+        showToast(err.message, 'error');
+        container.innerHTML = `<div class="empty-state"><div class="empty-state-title">Could not load contacts</div></div>`;
+    }
+}
+
+// === Queue View ===
+let queueEventSource = null;
+
+async function renderQueue(container) {
+    container.innerHTML = `<div class="loading-container"><div class="spinner spinner-lg"></div><span>Loading queue...</span></div>`;
+
+    // Clean up any existing SSE connection
+    if (queueEventSource) { queueEventSource.close(); queueEventSource = null; }
+
+    try {
+        const [queueData, resumesData] = await Promise.all([
+            api.request('GET', '/api/queue'),
+            api.request('GET', '/api/resumes'),
+        ]);
+        const queue = queueData.queue || [];
+        const resumes = resumesData.resumes || [];
+
+        const statusLabels = {
+            queued: 'Queued', preparing: 'Preparing', ready: 'Ready',
+            review: 'In Review', approved: 'Approved', filling: 'Filling',
+            submitted: 'Submitted', rejected: 'Rejected',
+            done: 'Done', failed: 'Failed'
+        };
+        const statusColors = {
+            queued: 'var(--accent)', preparing: '#f59e0b', ready: '#22c55e',
+            review: '#8b5cf6', approved: '#22c55e', filling: '#3b82f6',
+            submitted: 'var(--score-green)', rejected: 'var(--danger)',
+            done: 'var(--text-tertiary)', failed: 'var(--danger)'
+        };
+
+        const reviewCount = queue.filter(q => q.status === 'review').length;
+        const queuedCount = queue.filter(q => q.status === 'queued').length;
+        const approvedCount = queue.filter(q => q.status === 'approved').length;
+        const fillingCount = queue.filter(q => q.status === 'filling').length;
+
+        container.innerHTML = `
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+                <h1 style="font-size:1.5rem;font-weight:700;letter-spacing:-0.02em">Application Queue</h1>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <button class="btn btn-primary btn-sm" id="queue-prepare-all-btn"${queuedCount === 0 ? ' disabled' : ''}>Prepare All</button>
+                    ${reviewCount > 0 ? `
+                        <button class="btn btn-sm" id="queue-approve-all-btn" style="background:#22c55e;color:#fff">Approve All (${reviewCount})</button>
+                        <button class="btn btn-danger btn-sm" id="queue-reject-all-btn">Reject All</button>
+                    ` : ''}
+                </div>
+            </div>
+            ${queue.length > 0 ? `
+                <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+                    ${Object.entries(statusLabels).map(([s, label]) => {
+                        const count = queue.filter(q => q.status === s).length;
+                        if (!count) return '';
+                        return `<span style="font-size:0.8rem;color:${statusColors[s]};font-weight:600">${label}: ${count}</span>`;
+                    }).join('')}
+                </div>
+            ` : ''}
+            ${queue.length === 0 ? `
+                <div class="empty-state">
+                    <div class="empty-state-icon">&#128203;</div>
+                    <div class="empty-state-title">Queue is empty</div>
+                    <div class="empty-state-desc">Add jobs to the queue from the job detail page to batch-prepare applications.</div>
+                </div>
+            ` : `
+                <div style="display:flex;flex-direction:column;gap:8px" id="queue-items">
+                    ${queue.map(item => renderQueueItem(item, statusLabels, statusColors)).join('')}
+                </div>
+            `}
+        `;
+
+        // Prepare All
+        document.getElementById('queue-prepare-all-btn')?.addEventListener('click', async () => {
+            const btn = document.getElementById('queue-prepare-all-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> Preparing...';
+            try {
+                const result = await api.request('POST', '/api/queue/prepare-all');
+                showToast(`Prepared ${result.prepared}/${result.total}${result.failed ? `, ${result.failed} failed` : ''}`, result.failed ? 'error' : 'success');
+                await renderQueue(container);
+            } catch (err) {
+                showToast(err.message, 'error');
+                btn.disabled = false;
+                btn.textContent = 'Prepare All';
+            }
+        });
+
+        // Batch Approve All
+        document.getElementById('queue-approve-all-btn')?.addEventListener('click', async () => {
+            try {
+                const result = await api.request('POST', '/api/queue/approve-all');
+                showToast(`Approved ${result.approved} items`, 'success');
+                await renderQueue(container);
+            } catch (err) { showToast(err.message, 'error'); }
+        });
+
+        // Batch Reject All
+        document.getElementById('queue-reject-all-btn')?.addEventListener('click', async () => {
+            if (!confirm('Reject all items in review?')) return;
+            try {
+                const result = await api.request('POST', '/api/queue/reject-all');
+                showToast(`Rejected ${result.rejected} items`, 'success');
+                await renderQueue(container);
+            } catch (err) { showToast(err.message, 'error'); }
+        });
+
+        // Per-item: Submit for Review
+        container.querySelectorAll('.queue-submit-review-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                try {
+                    await api.request('POST', `/api/queue/${btn.dataset.id}/submit-for-review`);
+                    showToast('Submitted for review', 'success');
+                    await renderQueue(container);
+                } catch (err) { showToast(err.message, 'error'); }
+            });
+        });
+
+        // Per-item: Approve
+        container.querySelectorAll('.queue-approve-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                try {
+                    await api.request('POST', `/api/queue/${btn.dataset.id}/approve`);
+                    showToast('Application approved', 'success');
+                    await renderQueue(container);
+                } catch (err) { showToast(err.message, 'error'); }
+            });
+        });
+
+        // Per-item: Reject
+        container.querySelectorAll('.queue-reject-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                try {
+                    await api.request('POST', `/api/queue/${btn.dataset.id}/reject`);
+                    showToast('Application rejected', 'info');
+                    await renderQueue(container);
+                } catch (err) { showToast(err.message, 'error'); }
+            });
+        });
+
+        // Per-item: Remove
+        container.querySelectorAll('.queue-remove-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                try {
+                    await api.request('DELETE', `/api/queue/${btn.dataset.id}`);
+                    showToast('Removed from queue', 'success');
+                    await renderQueue(container);
+                } catch (err) { showToast(err.message, 'error'); }
+            });
+        });
+
+        // SSE for fill progress (only if items are filling)
+        if (fillingCount > 0 || approvedCount > 0) {
+            connectQueueSSE(container);
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+        container.innerHTML = `<div class="empty-state"><div class="empty-state-title">Could not load queue</div></div>`;
+    }
+}
+
+function renderQueueItem(item, statusLabels, statusColors) {
+    const status = item.status || 'queued';
+    const label = statusLabels[status] || status;
+    const color = statusColors[status] || 'var(--text-tertiary)';
+
+    const actionButtons = [];
+    if (status === 'ready') {
+        actionButtons.push(`<button class="btn btn-sm queue-submit-review-btn" data-id="${item.id}" style="background:#8b5cf6;color:#fff">Submit for Review</button>`);
+    }
+    if (status === 'review') {
+        actionButtons.push(`<button class="btn btn-sm queue-approve-btn" data-id="${item.id}" style="background:#22c55e;color:#fff">Approve</button>`);
+        actionButtons.push(`<button class="btn btn-danger btn-sm queue-reject-btn" data-id="${item.id}">Reject</button>`);
+    }
+    actionButtons.push(`<a href="#/job/${item.job_id}" class="btn btn-secondary btn-sm">Review</a>`);
+    if (!['filling', 'submitted'].includes(status)) {
+        actionButtons.push(`<button class="btn btn-danger btn-sm queue-remove-btn" data-id="${item.id}">Remove</button>`);
+    }
+
+    const progressBar = status === 'filling' && item.fill_progress != null
+        ? `<div style="margin-top:8px">
+            <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--text-secondary);margin-bottom:4px">
+                <span>Filling application...</span>
+                <span class="queue-progress-text" data-queue-id="${item.id}">${item.fill_progress || 0}%</span>
+            </div>
+            <div style="height:6px;background:var(--bg-secondary);border-radius:3px;overflow:hidden">
+                <div class="queue-progress-bar" data-queue-id="${item.id}" style="height:100%;width:${item.fill_progress || 0}%;background:var(--accent);border-radius:3px;transition:width 0.3s"></div>
+            </div>
+          </div>`
+        : '';
+
+    return `
+        <div class="card queue-item" style="padding:16px" data-queue-id="${item.id}" data-queue-status="${status}">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+                <div style="flex:1;min-width:0">
+                    <a href="#/job/${item.job_id}" style="font-weight:600;font-size:0.9375rem">${escapeHtml(item.title || 'Job #' + item.job_id)}</a>
+                    <div style="font-size:0.8125rem;color:var(--text-secondary)">${escapeHtml(item.company || '')}</div>
+                    <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+                        <span class="queue-status-badge" style="font-size:0.75rem;font-weight:600;color:#fff;background:${color};padding:2px 8px;border-radius:10px">${label}</span>
+                        ${item.match_score != null ? `<span class="score-badge ${getScoreClass(item.match_score)}" style="font-size:0.75rem">${item.match_score}</span>` : ''}
+                    </div>
+                    ${progressBar}
+                </div>
+                <div style="display:flex;gap:6px;flex-shrink:0">
+                    ${actionButtons.join('')}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function connectQueueSSE(container) {
+    if (queueEventSource) queueEventSource.close();
+    queueEventSource = new EventSource('/api/queue/events');
+
+    queueEventSource.addEventListener('fill_progress', (e) => {
+        try {
+            const data = JSON.parse(e.data);
+            const queueId = data.queue_id;
+            const progressBar = container.querySelector(`.queue-progress-bar[data-queue-id="${queueId}"]`);
+            const progressText = container.querySelector(`.queue-progress-text[data-queue-id="${queueId}"]`);
+            if (progressBar) progressBar.style.width = `${data.progress || 0}%`;
+            if (progressText) progressText.textContent = `${data.progress || 0}%`;
+
+            if (data.status === 'submitted') {
+                showToast('Application submitted!', 'success');
+                renderQueue(container);
+            } else if (data.status === 'failed') {
+                showToast('Fill failed', 'error');
+                renderQueue(container);
+            }
+        } catch {}
+    });
+
+    queueEventSource.addEventListener('status_change', (e) => {
+        try {
+            const data = JSON.parse(e.data);
+            const card = container.querySelector(`.queue-item[data-queue-id="${data.queue_id}"]`);
+            if (card) renderQueue(container);
+        } catch {}
+    });
+
+    queueEventSource.onerror = () => {
+        queueEventSource.close();
+        queueEventSource = null;
+    };
+}
+
 // === Settings View ===
 let settingsActiveTab = 'profile';
 let settingsData = {};
@@ -2103,7 +3382,7 @@ async function renderSettings(container) {
     container.innerHTML = `<div class="loading-container"><div class="spinner spinner-lg"></div><span>Loading settings...</span></div>`;
 
     try {
-        const [config, aiSettings, profile, fullProfile, scraperKeys, customQA, emailSettings] = await Promise.all([
+        const [config, aiSettings, profile, fullProfile, scraperKeys, customQA, emailSettings, resumesData] = await Promise.all([
             api.getSearchConfig(),
             api.getAISettings(),
             api.request('GET', '/api/profile'),
@@ -2111,8 +3390,9 @@ async function renderSettings(container) {
             api.request('GET', '/api/scraper-keys'),
             api.request('GET', '/api/custom-qa'),
             api.request('GET', '/api/settings/email'),
+            api.request('GET', '/api/resumes'),
         ]);
-        settingsData = { config, aiSettings, profile, fullProfile, scraperKeys, customQA: customQA.items || [], emailSettings };
+        settingsData = { config, aiSettings, profile, fullProfile, scraperKeys, customQA: customQA.items || [], emailSettings, resumes: resumesData.resumes || [] };
         renderSettingsShell(container);
     } catch (err) {
         showToast(err.message, 'error');
@@ -2123,8 +3403,11 @@ async function renderSettings(container) {
 function renderSettingsShell(container) {
     const tabs = [
         { id: 'profile', label: 'Profile' },
+        { id: 'resumes', label: 'Resumes' },
         { id: 'work-history', label: 'Work History' },
         { id: 'job-search', label: 'Job Search' },
+        { id: 'alerts', label: 'Alerts' },
+        { id: 'follow-ups', label: 'Follow-Ups' },
         { id: 'integrations', label: 'AI & Integrations' },
         { id: 'data', label: 'Data Management' },
     ];
@@ -2154,11 +3437,331 @@ function renderActiveTab(shell) {
     const d = settingsData;
     switch (settingsActiveTab) {
         case 'profile': renderTabProfile(content, d.fullProfile || d.profile || {}); break;
+        case 'resumes': renderTabResumes(content, d.resumes || []); break;
         case 'work-history': renderTabWorkHistory(content, d.fullProfile || {}); break;
         case 'job-search': renderTabJobSearch(content, d.config || {}, d.fullProfile || d.profile || {}, d.customQA || []); break;
+        case 'alerts': renderTabAlerts(content); break;
+        case 'follow-ups': renderTabFollowUps(content); break;
         case 'integrations': renderTabAI(content, d.aiSettings || {}, d.scraperKeys || {}, d.emailSettings || {}); break;
         case 'data': renderTabData(content); break;
     }
+}
+
+async function renderTabAlerts(content) {
+    content.innerHTML = '<div class="loading-container"><span class="spinner"></span></div>';
+    try {
+        const data = await api.request('GET', '/api/alerts');
+        const alerts = data.alerts || [];
+        content.innerHTML = `
+            <h2 style="font-size:1.125rem;font-weight:600;margin-bottom:16px">Job Alerts</h2>
+            <p style="font-size:0.875rem;color:var(--text-secondary);margin-bottom:16px">Alerts notify you when new jobs match your saved filters. Create alerts from the filter bar on the Jobs page.</p>
+            ${alerts.length === 0 ? `
+                <div class="empty-state" style="padding:32px">
+                    <div class="empty-state-title">No alerts yet</div>
+                    <div class="empty-state-desc">Use "Create Alert" on the Jobs page to save your current filters as an alert.</div>
+                </div>
+            ` : `
+                <div style="display:flex;flex-direction:column;gap:8px">
+                    ${alerts.map(a => `
+                        <div class="card" style="padding:16px" data-alert-id="${a.id}">
+                            <div style="display:flex;justify-content:space-between;align-items:center">
+                                <div>
+                                    <span style="font-weight:600;font-size:0.9375rem">${escapeHtml(a.name)}</span>
+                                    ${a.enabled ? '<span class="status-badge status-applied" style="margin-left:8px">Active</span>' : '<span class="status-badge" style="margin-left:8px;background:var(--bg-surface-secondary);color:var(--text-tertiary)">Paused</span>'}
+                                </div>
+                                <div style="display:flex;gap:6px">
+                                    <button class="btn btn-secondary btn-sm alert-toggle-btn" data-id="${a.id}" data-enabled="${a.enabled}">${a.enabled ? 'Pause' : 'Enable'}</button>
+                                    <button class="btn btn-danger btn-sm alert-delete-btn" data-id="${a.id}">Delete</button>
+                                </div>
+                            </div>
+                            ${a.min_score ? `<div style="font-size:0.75rem;color:var(--text-tertiary);margin-top:4px">Min score: ${a.min_score}</div>` : ''}
+                        </div>
+                    `).join('')}
+                </div>
+            `}
+        `;
+
+        content.querySelectorAll('.alert-toggle-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const enabled = btn.dataset.enabled === 'true';
+                try {
+                    await api.request('PUT', `/api/alerts/${btn.dataset.id}`, { enabled: !enabled });
+                    showToast(enabled ? 'Alert paused' : 'Alert enabled', 'success');
+                    renderTabAlerts(content);
+                } catch (err) { showToast(err.message, 'error'); }
+            });
+        });
+
+        content.querySelectorAll('.alert-delete-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                if (!confirm('Delete this alert?')) return;
+                try {
+                    await api.request('DELETE', `/api/alerts/${btn.dataset.id}`);
+                    showToast('Alert deleted', 'success');
+                    renderTabAlerts(content);
+                } catch (err) { showToast(err.message, 'error'); }
+            });
+        });
+    } catch (err) {
+        content.innerHTML = `<div style="color:var(--danger);font-size:0.875rem">${escapeHtml(err.message)}</div>`;
+    }
+}
+
+async function renderTabFollowUps(content) {
+    content.innerHTML = '<div class="loading-container"><span class="spinner"></span></div>';
+    try {
+        const data = await api.request('GET', '/api/follow-up-templates');
+        const templates = data.templates || [];
+        content.innerHTML = `
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                <h2 style="font-size:1.125rem;font-weight:600">Follow-Up Templates</h2>
+                <button class="btn btn-primary btn-sm" id="add-followup-btn">Add Template</button>
+            </div>
+            <p style="font-size:0.875rem;color:var(--text-secondary);margin-bottom:16px">Templates are used to auto-generate follow-up emails after applying.</p>
+            <div id="followup-list">
+                ${templates.length === 0 ? `
+                    <div class="empty-state" style="padding:32px">
+                        <div class="empty-state-title">No templates yet</div>
+                        <div class="empty-state-desc">Add a follow-up template to automate reminders.</div>
+                    </div>
+                ` : templates.map(t => `
+                    <div class="card" style="padding:16px;margin-bottom:8px" data-template-id="${t.id}">
+                        <div style="display:flex;justify-content:space-between;align-items:center">
+                            <div>
+                                <span style="font-weight:600;font-size:0.9375rem">${escapeHtml(t.name)}</span>
+                                ${t.is_default ? '<span class="status-badge status-applied" style="margin-left:8px">Default</span>' : ''}
+                                <span style="font-size:0.75rem;color:var(--text-tertiary);margin-left:8px">${t.days_after} days after apply</span>
+                            </div>
+                            <div style="display:flex;gap:6px">
+                                <button class="btn btn-secondary btn-sm followup-edit-btn" data-id="${t.id}">Edit</button>
+                                <button class="btn btn-danger btn-sm followup-delete-btn" data-id="${t.id}">Delete</button>
+                            </div>
+                        </div>
+                        ${t.template_text ? `<div style="font-size:0.8125rem;color:var(--text-secondary);margin-top:6px;white-space:pre-wrap;max-height:60px;overflow:hidden">${escapeHtml(t.template_text.slice(0, 150))}${t.template_text.length > 150 ? '...' : ''}</div>` : ''}
+                    </div>
+                `).join('')}
+            </div>
+            <div id="followup-form-container" style="display:none">
+                <div class="card" style="padding:20px;margin-top:16px">
+                    <h3 style="font-size:1rem;font-weight:600;margin-bottom:12px" id="followup-form-title">Add Template</h3>
+                    <div style="display:flex;flex-direction:column;gap:12px">
+                        <div>
+                            <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Name</label>
+                            <input type="text" class="search-input" id="followup-name-input" placeholder="e.g. 1 Week Follow-Up" style="width:100%">
+                        </div>
+                        <div>
+                            <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Days After Application</label>
+                            <input type="number" class="search-input" id="followup-days-input" value="7" min="1" max="90" style="width:120px">
+                        </div>
+                        <div>
+                            <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Template Text</label>
+                            <textarea class="textarea-styled textarea-notes" id="followup-text-input" placeholder="Follow-up email template..."></textarea>
+                        </div>
+                        <div style="display:flex;gap:8px">
+                            <button class="btn btn-primary btn-sm" id="followup-save-btn">Save</button>
+                            <button class="btn btn-secondary btn-sm" id="followup-cancel-btn">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        let editingId = null;
+
+        document.getElementById('add-followup-btn').addEventListener('click', () => {
+            editingId = null;
+            document.getElementById('followup-form-title').textContent = 'Add Template';
+            document.getElementById('followup-name-input').value = '';
+            document.getElementById('followup-days-input').value = '7';
+            document.getElementById('followup-text-input').value = '';
+            document.getElementById('followup-form-container').style.display = '';
+        });
+
+        document.getElementById('followup-cancel-btn').addEventListener('click', () => {
+            document.getElementById('followup-form-container').style.display = 'none';
+        });
+
+        document.getElementById('followup-save-btn').addEventListener('click', async () => {
+            const name = document.getElementById('followup-name-input').value.trim();
+            if (!name) { showToast('Name is required', 'error'); return; }
+            const body = {
+                name,
+                days_after: parseInt(document.getElementById('followup-days-input').value) || 7,
+                template_text: document.getElementById('followup-text-input').value,
+            };
+            try {
+                if (editingId) {
+                    await api.request('PUT', `/api/follow-up-templates/${editingId}`, body);
+                    showToast('Template updated', 'success');
+                } else {
+                    await api.request('POST', '/api/follow-up-templates', body);
+                    showToast('Template added', 'success');
+                }
+                renderTabFollowUps(content);
+            } catch (err) { showToast(err.message, 'error'); }
+        });
+
+        content.querySelectorAll('.followup-edit-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const id = parseInt(btn.dataset.id);
+                const t = templates.find(x => x.id === id);
+                if (!t) return;
+                editingId = id;
+                document.getElementById('followup-form-title').textContent = 'Edit Template';
+                document.getElementById('followup-name-input').value = t.name || '';
+                document.getElementById('followup-days-input').value = t.days_after || 7;
+                document.getElementById('followup-text-input').value = t.template_text || '';
+                document.getElementById('followup-form-container').style.display = '';
+            });
+        });
+
+        content.querySelectorAll('.followup-delete-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                if (!confirm('Delete this template?')) return;
+                try {
+                    await api.request('DELETE', `/api/follow-up-templates/${btn.dataset.id}`);
+                    showToast('Template deleted', 'success');
+                    renderTabFollowUps(content);
+                } catch (err) { showToast(err.message, 'error'); }
+            });
+        });
+    } catch (err) {
+        content.innerHTML = `<div style="color:var(--danger);font-size:0.875rem">${escapeHtml(err.message)}</div>`;
+    }
+}
+
+function renderTabResumes(content, resumes) {
+    content.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+            <h2 style="font-size:1.125rem;font-weight:600">Manage Resumes</h2>
+            <button class="btn btn-primary btn-sm" id="add-resume-btn">Add Resume</button>
+        </div>
+        <div id="resumes-list">
+            ${resumes.length === 0 ? `
+                <div class="empty-state" style="padding:32px">
+                    <div class="empty-state-title">No resumes yet</div>
+                    <div class="empty-state-desc">Add a resume to use when preparing applications.</div>
+                </div>
+            ` : resumes.map(r => `
+                <div class="card" style="padding:16px;margin-bottom:8px" data-resume-id="${r.id}">
+                    <div style="display:flex;justify-content:space-between;align-items:center">
+                        <div>
+                            <span style="font-weight:600;font-size:0.9375rem">${escapeHtml(r.name)}</span>
+                            ${r.is_default ? '<span class="status-badge status-applied" style="margin-left:8px">Default</span>' : ''}
+                        </div>
+                        <div style="display:flex;gap:6px">
+                            ${!r.is_default ? `<button class="btn btn-secondary btn-sm resume-default-btn" data-id="${r.id}">Set Default</button>` : ''}
+                            <button class="btn btn-secondary btn-sm resume-edit-btn" data-id="${r.id}">Edit</button>
+                            <button class="btn btn-danger btn-sm resume-delete-btn" data-id="${r.id}">Delete</button>
+                        </div>
+                    </div>
+                    ${r.summary ? `<div style="font-size:0.8125rem;color:var(--text-secondary);margin-top:6px">${escapeHtml(r.summary)}</div>` : ''}
+                    <div style="font-size:0.75rem;color:var(--text-tertiary);margin-top:4px">${r.resume_text ? `${r.resume_text.length} chars` : 'No content'}</div>
+                </div>
+            `).join('')}
+        </div>
+        <div id="resume-form-container" style="display:none">
+            <div class="card" style="padding:20px;margin-top:16px">
+                <h3 style="font-size:1rem;font-weight:600;margin-bottom:12px" id="resume-form-title">Add Resume</h3>
+                <div style="display:flex;flex-direction:column;gap:12px">
+                    <div>
+                        <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Name</label>
+                        <input type="text" class="search-input" id="resume-name-input" placeholder="e.g. Full-Stack Developer Resume" style="width:100%">
+                    </div>
+                    <div>
+                        <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Summary (optional)</label>
+                        <input type="text" class="search-input" id="resume-summary-input" placeholder="Brief description" style="width:100%">
+                    </div>
+                    <div>
+                        <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Resume Text</label>
+                        <textarea class="textarea-styled" id="resume-text-input" style="min-height:200px" placeholder="Paste your resume text here..."></textarea>
+                    </div>
+                    <div style="display:flex;gap:8px">
+                        <button class="btn btn-primary btn-sm" id="resume-save-btn">Save</button>
+                        <button class="btn btn-secondary btn-sm" id="resume-cancel-btn">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    let editingId = null;
+
+    document.getElementById('add-resume-btn').addEventListener('click', () => {
+        editingId = null;
+        document.getElementById('resume-form-title').textContent = 'Add Resume';
+        document.getElementById('resume-name-input').value = '';
+        document.getElementById('resume-summary-input').value = '';
+        document.getElementById('resume-text-input').value = '';
+        document.getElementById('resume-form-container').style.display = '';
+    });
+
+    document.getElementById('resume-cancel-btn').addEventListener('click', () => {
+        document.getElementById('resume-form-container').style.display = 'none';
+    });
+
+    document.getElementById('resume-save-btn').addEventListener('click', async () => {
+        const name = document.getElementById('resume-name-input').value.trim();
+        if (!name) { showToast('Name is required', 'error'); return; }
+        const body = {
+            name,
+            summary: document.getElementById('resume-summary-input').value.trim(),
+            resume_text: document.getElementById('resume-text-input').value,
+        };
+        try {
+            if (editingId) {
+                await api.request('PUT', `/api/resumes/${editingId}`, body);
+                showToast('Resume updated', 'success');
+            } else {
+                await api.request('POST', '/api/resumes', body);
+                showToast('Resume added', 'success');
+            }
+            const data = await api.request('GET', '/api/resumes');
+            settingsData.resumes = data.resumes || [];
+            renderTabResumes(content, settingsData.resumes);
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    });
+
+    content.querySelectorAll('.resume-edit-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const id = parseInt(btn.dataset.id);
+            const r = resumes.find(x => x.id === id);
+            if (!r) return;
+            editingId = id;
+            document.getElementById('resume-form-title').textContent = 'Edit Resume';
+            document.getElementById('resume-name-input').value = r.name || '';
+            document.getElementById('resume-summary-input').value = r.summary || '';
+            document.getElementById('resume-text-input').value = r.resume_text || '';
+            document.getElementById('resume-form-container').style.display = '';
+        });
+    });
+
+    content.querySelectorAll('.resume-default-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            try {
+                await api.request('POST', `/api/resumes/${btn.dataset.id}/set-default`);
+                showToast('Default resume updated', 'success');
+                const data = await api.request('GET', '/api/resumes');
+                settingsData.resumes = data.resumes || [];
+                renderTabResumes(content, settingsData.resumes);
+            } catch (err) { showToast(err.message, 'error'); }
+        });
+    });
+
+    content.querySelectorAll('.resume-delete-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            if (!confirm('Delete this resume?')) return;
+            try {
+                await api.request('DELETE', `/api/resumes/${btn.dataset.id}`);
+                showToast('Resume deleted', 'success');
+                const data = await api.request('GET', '/api/resumes');
+                settingsData.resumes = data.resumes || [];
+                renderTabResumes(content, settingsData.resumes);
+            } catch (err) { showToast(err.message, 'error'); }
+        });
+    });
 }
 
 function settingsField(label, id, value, type = 'text', opts = {}) {

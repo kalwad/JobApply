@@ -35,10 +35,11 @@ class Tailor:
         job_description: str,
         match_reasons: list,
         suggested_keywords: list,
+        resume_text: str | None = None,
     ) -> dict:
         try:
             prompt = TAILORING_PROMPT.format(
-                resume=self.resume_text,
+                resume=resume_text or self.resume_text,
                 job_description=job_description,
                 match_reasons="\n".join(match_reasons),
                 keywords=", ".join(suggested_keywords),

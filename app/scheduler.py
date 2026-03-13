@@ -111,11 +111,66 @@ async def run_maintenance_cycle(db: Database) -> int:
     return dismissed
 
 
+async def run_alert_check(db: Database) -> int:
+    """Check enabled job alerts for new matching jobs. Creates notifications."""
+    alerts = await db.get_job_alerts()
+    total_notifications = 0
+    for alert in alerts:
+        if not alert.get("enabled"):
+            continue
+        new_jobs = await db.get_new_jobs_for_alert(alert)
+        for job in new_jobs:
+            title = f"Alert: {alert['name']}"
+            message = f"{job['title']} at {job['company']}"
+            score = job.get("match_score")
+            if score:
+                message += f" (Score: {score})"
+            await db.insert_notification(job["id"], "alert", title, message)
+            total_notifications += 1
+        await db.mark_alert_checked(alert["id"])
+    if total_notifications:
+        logger.info(f"Job alerts: {total_notifications} notifications created")
+    return total_notifications
+
+
 async def run_reminder_check(db: Database) -> list[dict]:
-    """Check for due follow-up reminders. Returns list of due reminders."""
+    """Check for due follow-up reminders. Auto-drafts if configured. Returns list of due reminders."""
     due = await db.get_due_reminders()
     if due:
         logger.info(f"Found {len(due)} due follow-up reminders")
+    for reminder in due:
+        if reminder.get("auto_draft") and not reminder.get("draft_text"):
+            try:
+                from app.follow_up import draft_follow_up
+                ai_settings = await db.get_ai_settings()
+                if ai_settings and ai_settings.get("provider"):
+                    from app.ai_client import AIClient
+                    client = AIClient(
+                        ai_settings["provider"],
+                        api_key=ai_settings.get("api_key", ""),
+                        model=ai_settings.get("model", ""),
+                    )
+                    app_data = await db.get_application(reminder["job_id"])
+                    applied_at = app_data.get("applied_at", "") if app_data else ""
+                    days = 0
+                    if applied_at:
+                        from datetime import datetime, timezone
+                        try:
+                            days = (datetime.now(timezone.utc) - datetime.fromisoformat(applied_at)).days
+                        except (ValueError, TypeError):
+                            pass
+                    draft = await draft_follow_up(
+                        client,
+                        title=reminder.get("title", ""),
+                        company=reminder.get("company", ""),
+                        applied_at=applied_at,
+                        days_since=days,
+                    )
+                    if draft:
+                        await db.update_reminder_draft(reminder["id"], draft)
+                        logger.info(f"Auto-drafted follow-up for reminder {reminder['id']}")
+            except Exception as e:
+                logger.error(f"Auto-draft failed for reminder {reminder['id']}: {e}")
     return due
 
 

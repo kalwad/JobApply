@@ -41,11 +41,12 @@ async def lifespan(app: FastAPI):
     os.makedirs(os.path.dirname(db_path) or "data", exist_ok=True)
     app.state.db = Database(db_path)
     await app.state.db.init()
+    await app.state.db.migrate_resume_from_search_config()
 
     if not testing:
         from app.config import Settings
         from app.scrapers import ALL_SCRAPERS
-        from app.scheduler import run_scrape_cycle, run_enrichment_cycle, run_maintenance_cycle, run_reminder_check, run_digest_cycle
+        from app.scheduler import run_scrape_cycle, run_enrichment_cycle, run_maintenance_cycle, run_reminder_check, run_digest_cycle, run_alert_check
 
         settings = Settings()
 
@@ -110,6 +111,9 @@ async def lifespan(app: FastAPI):
         async def scheduled_digest():
             await run_digest_cycle(app.state.db)
 
+        async def scheduled_alert_check():
+            await run_alert_check(app.state.db)
+
         scheduler.add_job(
             scheduled_scrape, "interval",
             hours=settings.scrape_interval_hours,
@@ -139,6 +143,11 @@ async def lifespan(app: FastAPI):
             scheduled_digest, "cron",
             hour=8,
             id="digest_cycle",
+        )
+        scheduler.add_job(
+            scheduled_alert_check, "interval",
+            hours=1,
+            id="alert_check",
         )
         scheduler.start()
         app.state.scheduler = scheduler
@@ -301,12 +310,20 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
     app.state.scoring_progress = None
     app.state.scrape_progress = None
     app.state.notification_subscribers: list[asyncio.Queue] = []
+    app.state.queue_subscribers: list[asyncio.Queue] = []
     app.state.alert_threshold = 80
 
     async def _broadcast_notification(notification: dict):
         for queue in list(app.state.notification_subscribers):
             try:
                 queue.put_nowait(notification)
+            except asyncio.QueueFull:
+                pass
+
+    async def _broadcast_queue_event(event: dict):
+        for queue in list(app.state.queue_subscribers):
+            try:
+                queue.put_nowait(event)
             except asyncio.QueueFull:
                 pass
 
@@ -493,6 +510,46 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
         )
         return {"jobs": jobs}
 
+    # --- Save External Jobs + Lookup (before {job_id} routes) ---
+
+    @app.post("/api/jobs/save-external")
+    async def save_external_job(request: Request):
+        body = await request.json()
+        title = body.get("title", "").strip()
+        company = body.get("company", "").strip()
+        url = body.get("url", "").strip()
+        if not title or not company or not url:
+            raise HTTPException(400, "title, company, and url are required")
+        description = body.get("description", "")
+        source = body.get("source", "external")
+        job_id = await app.state.db.insert_job(
+            title=title, company=company, location=body.get("location", ""),
+            salary_min=body.get("salary_min"), salary_max=body.get("salary_max"),
+            description=description, url=url, posted_date=body.get("posted_date"),
+            application_method=body.get("application_method", "url"),
+            contact_email=body.get("contact_email"),
+        )
+        if job_id:
+            await app.state.db.insert_source(job_id, source, url)
+            await app.state.db.add_event(job_id, "saved_external", f"Saved from {source}")
+        return {"ok": True, "job_id": job_id}
+
+    @app.get("/api/jobs/lookup")
+    async def lookup_job_by_url(url: str = Query(...)):
+        job = await app.state.db.find_job_by_url(url)
+        if not job:
+            return {"found": False}
+        score = await app.state.db.get_score(job["id"])
+        application = await app.state.db.get_application(job["id"])
+        return {
+            "found": True,
+            "job_id": job["id"],
+            "title": job["title"],
+            "company": job["company"],
+            "score": score["match_score"] if score else None,
+            "status": application["status"] if application else None,
+        }
+
     @app.get("/api/jobs/{job_id}")
     async def get_job(job_id: int):
         job = await app.state.db.get_job(job_id)
@@ -512,7 +569,7 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
         return {"ok": True}
 
     @app.post("/api/jobs/{job_id}/prepare")
-    async def prepare_application(job_id: int):
+    async def prepare_application(job_id: int, request: Request):
         job = await app.state.db.get_job(job_id)
         if not job:
             raise HTTPException(404, "Job not found")
@@ -520,6 +577,19 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
         tailor = app.state.tailor
         if not tailor:
             raise HTTPException(503, "Tailor not available (no AI provider configured or no resume)")
+
+        # Optional resume_id override
+        resume_text_override = None
+        try:
+            body = await request.json()
+            resume_id = body.get("resume_id")
+            if resume_id:
+                resume = await app.state.db.get_resume(resume_id)
+                if not resume:
+                    raise HTTPException(404, "Resume not found")
+                resume_text_override = resume["resume_text"]
+        except Exception:
+            pass
 
         score = await app.state.db.get_score(job_id)
         match_reasons = score["match_reasons"] if score else []
@@ -529,6 +599,7 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
             job_description=job["description"] or "",
             match_reasons=match_reasons,
             suggested_keywords=suggested_keywords,
+            resume_text=resume_text_override,
         )
 
         application = await app.state.db.get_application(job_id)
@@ -651,6 +722,625 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
             media_type="application/pdf",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+    @app.get("/api/jobs/{job_id}/resume.docx")
+    async def download_resume_docx(job_id: int):
+        from app.docx_generator import generate_resume_docx
+        job = await app.state.db.get_job(job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        application = await app.state.db.get_application(job_id)
+        if not application or not application.get("tailored_resume"):
+            raise HTTPException(404, "No tailored resume prepared for this job")
+        docx_bytes = generate_resume_docx(application["tailored_resume"])
+        await app.state.db.add_event(job_id, "docx_downloaded", "Resume DOCX downloaded")
+        filename = f"Resume - {job['company']} - {job['title']}.docx".replace("/", "-")
+        return Response(
+            content=docx_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/api/jobs/{job_id}/cover-letter.docx")
+    async def download_cover_letter_docx(job_id: int):
+        from app.docx_generator import generate_cover_letter_docx
+        job = await app.state.db.get_job(job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        application = await app.state.db.get_application(job_id)
+        if not application or not application.get("cover_letter"):
+            raise HTTPException(404, "No cover letter prepared for this job")
+        docx_bytes = generate_cover_letter_docx(
+            application["cover_letter"],
+            company=job.get("company", ""),
+            position=job.get("title", ""),
+        )
+        await app.state.db.add_event(job_id, "docx_downloaded", "Cover letter DOCX downloaded")
+        filename = f"Cover Letter - {job['company']} - {job['title']}.docx".replace("/", "-")
+        return Response(
+            content=docx_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    # --- Saved Views ---
+
+    @app.get("/api/saved-views")
+    async def list_saved_views():
+        views = await app.state.db.get_saved_views()
+        return {"views": views}
+
+    @app.post("/api/saved-views")
+    async def create_saved_view(request: Request):
+        body = await request.json()
+        name = body.get("name", "").strip()
+        if not name:
+            raise HTTPException(400, "View name is required")
+        filters = body.get("filters", {})
+        view_id = await app.state.db.create_saved_view(name, filters)
+        view = await app.state.db.get_saved_view(view_id)
+        return {"ok": True, "view": view}
+
+    @app.put("/api/saved-views/{view_id}")
+    async def update_saved_view(view_id: int, request: Request):
+        body = await request.json()
+        name = body.get("name")
+        filters = body.get("filters")
+        if name is not None and not name.strip():
+            raise HTTPException(400, "View name cannot be empty")
+        updated = await app.state.db.update_saved_view(
+            view_id, name=name.strip() if name else name, filters=filters
+        )
+        if not updated:
+            raise HTTPException(404, "View not found")
+        view = await app.state.db.get_saved_view(view_id)
+        return {"ok": True, "view": view}
+
+    @app.delete("/api/saved-views/{view_id}")
+    async def delete_saved_view(view_id: int):
+        deleted = await app.state.db.delete_saved_view(view_id)
+        if not deleted:
+            raise HTTPException(404, "View not found")
+        return {"ok": True}
+
+    # --- Multiple Resumes ---
+
+    @app.get("/api/resumes")
+    async def list_resumes():
+        resumes = await app.state.db.get_resumes()
+        return {"resumes": resumes}
+
+    @app.post("/api/resumes")
+    async def create_resume(request: Request):
+        body = await request.json()
+        name = body.get("name", "").strip()
+        if not name:
+            raise HTTPException(400, "Resume name is required")
+        resume_id = await app.state.db.create_resume(
+            name=name,
+            resume_text=body.get("resume_text", ""),
+            is_default=body.get("is_default", False),
+            search_terms=body.get("search_terms"),
+            job_titles=body.get("job_titles"),
+            key_skills=body.get("key_skills"),
+            seniority=body.get("seniority", ""),
+            summary=body.get("summary", ""),
+        )
+        resume = await app.state.db.get_resume(resume_id)
+        return {"ok": True, "resume": resume}
+
+    @app.put("/api/resumes/{resume_id}")
+    async def update_resume(resume_id: int, request: Request):
+        body = await request.json()
+        if "name" in body and not body["name"].strip():
+            raise HTTPException(400, "Resume name cannot be empty")
+        fields = {}
+        for key in ("name", "resume_text", "is_default", "search_terms",
+                     "job_titles", "key_skills", "seniority", "summary"):
+            if key in body:
+                fields[key] = body[key].strip() if isinstance(body[key], str) else body[key]
+        if not fields:
+            raise HTTPException(400, "No fields to update")
+        updated = await app.state.db.update_resume(resume_id, **fields)
+        if not updated:
+            raise HTTPException(404, "Resume not found")
+        resume = await app.state.db.get_resume(resume_id)
+        return {"ok": True, "resume": resume}
+
+    @app.delete("/api/resumes/{resume_id}")
+    async def delete_resume(resume_id: int):
+        deleted = await app.state.db.delete_resume(resume_id)
+        if not deleted:
+            raise HTTPException(404, "Resume not found")
+        return {"ok": True}
+
+    @app.post("/api/resumes/{resume_id}/set-default")
+    async def set_default_resume(resume_id: int):
+        result = await app.state.db.set_default_resume(resume_id)
+        if not result:
+            raise HTTPException(404, "Resume not found")
+        return {"ok": True}
+
+    # --- Response Tracking ---
+
+    @app.post("/api/jobs/{job_id}/response")
+    async def record_job_response(job_id: int, request: Request):
+        body = await request.json()
+        response_type = body.get("response_type", "").strip()
+        valid_types = ("interview_invite", "rejection", "ghosted", "callback")
+        if response_type not in valid_types:
+            raise HTTPException(400, f"response_type must be one of: {', '.join(valid_types)}")
+        job = await app.state.db.get_job(job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        try:
+            result = await app.state.db.record_response(job_id, response_type)
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+        return {"ok": True, **result}
+
+    @app.get("/api/analytics/response-rates")
+    async def get_response_rates():
+        return await app.state.db.get_response_analytics()
+
+    # --- Auto-Track Applied Jobs ---
+
+    @app.post("/api/jobs/mark-applied-by-url")
+    async def mark_applied_by_url(request: Request):
+        body = await request.json()
+        url = body.get("url", "").strip()
+        if not url:
+            raise HTTPException(400, "url is required")
+        job = await app.state.db.find_job_by_url(url)
+        if not job:
+            return {"found": False, "message": "Job not tracked"}
+        await app.state.db.upsert_application(job["id"], "applied")
+        await app.state.db.add_event(job["id"], "auto_applied", "Auto-tracked as applied")
+        return {"found": True, "job_id": job["id"], "status": "applied"}
+
+    # --- Job Alerts ---
+
+    @app.get("/api/alerts")
+    async def list_alerts():
+        alerts = await app.state.db.get_job_alerts()
+        return {"alerts": alerts}
+
+    @app.post("/api/alerts")
+    async def create_alert(request: Request):
+        body = await request.json()
+        name = body.get("name", "").strip()
+        if not name:
+            raise HTTPException(400, "Alert name is required")
+        alert_id = await app.state.db.create_job_alert(
+            name=name,
+            filters=body.get("filters", {}),
+            min_score=body.get("min_score", 0),
+            notify_method=body.get("notify_method", "in_app"),
+        )
+        alert = await app.state.db.get_job_alert(alert_id)
+        return {"ok": True, "alert": alert}
+
+    @app.put("/api/alerts/{alert_id}")
+    async def update_alert(alert_id: int, request: Request):
+        body = await request.json()
+        fields = {}
+        for key in ("name", "filters", "min_score", "enabled", "notify_method"):
+            if key in body:
+                fields[key] = body[key]
+        if not fields:
+            raise HTTPException(400, "No fields to update")
+        updated = await app.state.db.update_job_alert(alert_id, **fields)
+        if not updated:
+            raise HTTPException(404, "Alert not found")
+        alert = await app.state.db.get_job_alert(alert_id)
+        return {"ok": True, "alert": alert}
+
+    @app.delete("/api/alerts/{alert_id}")
+    async def delete_alert(alert_id: int):
+        deleted = await app.state.db.delete_job_alert(alert_id)
+        if not deleted:
+            raise HTTPException(404, "Alert not found")
+        return {"ok": True}
+
+    # --- Application Queue ---
+
+    @app.post("/api/queue/add")
+    async def add_to_queue(request: Request):
+        body = await request.json()
+        job_id = body.get("job_id")
+        if not job_id:
+            raise HTTPException(400, "job_id is required")
+        job = await app.state.db.get_job(job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        queue_id = await app.state.db.add_to_queue(
+            job_id=job_id,
+            resume_id=body.get("resume_id"),
+            priority=body.get("priority", 0),
+        )
+        return {"ok": True, "queue_id": queue_id}
+
+    @app.get("/api/queue")
+    async def get_queue(status: str | None = Query(None)):
+        items = await app.state.db.get_queue(status=status)
+        return {"queue": items}
+
+    @app.post("/api/queue/prepare-all")
+    async def prepare_all_queued():
+        tailor = app.state.tailor
+        if not tailor:
+            raise HTTPException(503, "Tailor not available")
+        queued = await app.state.db.get_queue(status="queued")
+        prepared = 0
+        failed = 0
+        for item in queued:
+            await app.state.db.update_queue_status(item["id"], "preparing")
+            try:
+                job = await app.state.db.get_job(item["job_id"])
+                score = await app.state.db.get_score(item["job_id"])
+                reasons = score["match_reasons"] if score else []
+                keywords = score["suggested_keywords"] if score else []
+
+                resume_override = None
+                if item.get("resume_id"):
+                    resume = await app.state.db.get_resume(item["resume_id"])
+                    if resume:
+                        resume_override = resume["resume_text"]
+
+                result = await tailor.prepare(
+                    job_description=job["description"] or "",
+                    match_reasons=reasons,
+                    suggested_keywords=keywords,
+                    resume_text=resume_override,
+                )
+
+                application = await app.state.db.get_application(item["job_id"])
+                if not application:
+                    app_id = await app.state.db.insert_application(item["job_id"], "prepared")
+                else:
+                    app_id = application["id"]
+                await app.state.db.update_application(
+                    app_id,
+                    status="prepared",
+                    tailored_resume=result.get("tailored_resume", ""),
+                    cover_letter=result.get("cover_letter", ""),
+                )
+                await app.state.db.update_queue_status(item["id"], "ready")
+                prepared += 1
+            except Exception as e:
+                logger.error(f"Queue prepare failed for job {item['job_id']}: {e}")
+                await app.state.db.update_queue_status(item["id"], "failed")
+                failed += 1
+        return {"ok": True, "prepared": prepared, "failed": failed, "total": len(queued)}
+
+    @app.post("/api/queue/{queue_id}/submit-for-review")
+    async def submit_queue_for_review(queue_id: int):
+        item = await app.state.db.get_queue_item(queue_id)
+        if not item:
+            raise HTTPException(404, "Queue item not found")
+        await app.state.db.update_queue_status(queue_id, "review")
+        return {"ok": True}
+
+    @app.post("/api/queue/{queue_id}/approve")
+    async def approve_queue_item(queue_id: int):
+        item = await app.state.db.get_queue_item(queue_id)
+        if not item:
+            raise HTTPException(404, "Queue item not found")
+        await app.state.db.update_queue_status(queue_id, "approved")
+        await app.state.db.add_event(item["job_id"], "queue_approved", "Approved from queue")
+        return {"ok": True}
+
+    @app.post("/api/queue/{queue_id}/reject")
+    async def reject_queue_item(queue_id: int):
+        item = await app.state.db.get_queue_item(queue_id)
+        if not item:
+            raise HTTPException(404, "Queue item not found")
+        await app.state.db.update_queue_status(queue_id, "rejected")
+        await app.state.db.add_event(item["job_id"], "queue_rejected", "Rejected from queue")
+        return {"ok": True}
+
+    @app.post("/api/queue/{queue_id}/fill-status")
+    async def update_fill_status(queue_id: int, request: Request):
+        item = await app.state.db.get_queue_item(queue_id)
+        if not item:
+            raise HTTPException(404, "Queue item not found")
+        body = await request.json()
+        status = body.get("status", "filling")
+        progress = body.get("progress")
+        await app.state.db.update_queue_fill_status(queue_id, status, progress)
+        # Broadcast to SSE subscribers
+        await _broadcast_queue_event({
+            "queue_id": queue_id, "job_id": item["job_id"],
+            "status": status, "progress": progress,
+        })
+        if status == "submitted":
+            await app.state.db.upsert_application(item["job_id"], "applied")
+            await app.state.db.add_event(item["job_id"], "auto_applied", "Submitted via queue")
+        return {"ok": True}
+
+    @app.post("/api/queue/approve-all")
+    async def approve_all_queue():
+        count = await app.state.db.bulk_update_queue_status("review", "approved")
+        return {"ok": True, "approved": count}
+
+    @app.post("/api/queue/reject-all")
+    async def reject_all_queue():
+        count = await app.state.db.bulk_update_queue_status("review", "rejected")
+        return {"ok": True, "rejected": count}
+
+    @app.get("/api/queue/events")
+    async def queue_events():
+        queue = asyncio.Queue(maxsize=50)
+        app.state.queue_subscribers.append(queue)
+
+        async def event_generator():
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=30)
+                        yield f"data: {json.dumps(event)}\n\n"
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+            except asyncio.CancelledError:
+                pass
+            finally:
+                if queue in app.state.queue_subscribers:
+                    app.state.queue_subscribers.remove(queue)
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    @app.delete("/api/queue/{queue_id}")
+    async def remove_queue_item(queue_id: int):
+        removed = await app.state.db.remove_from_queue(queue_id)
+        if not removed:
+            raise HTTPException(404, "Queue item not found")
+        return {"ok": True}
+
+    # --- Follow-Up Templates ---
+
+    @app.get("/api/follow-up-templates")
+    async def list_follow_up_templates():
+        templates = await app.state.db.get_follow_up_templates()
+        return {"templates": templates}
+
+    @app.post("/api/follow-up-templates")
+    async def create_follow_up_template(request: Request):
+        body = await request.json()
+        name = body.get("name", "").strip()
+        if not name:
+            raise HTTPException(400, "Template name is required")
+        template_id = await app.state.db.create_follow_up_template(
+            name=name,
+            days_after=body.get("days_after", 7),
+            template_text=body.get("template_text", ""),
+            is_default=body.get("is_default", False),
+        )
+        template = await app.state.db.get_follow_up_template(template_id)
+        return {"ok": True, "template": template}
+
+    @app.put("/api/follow-up-templates/{template_id}")
+    async def update_follow_up_template(template_id: int, request: Request):
+        body = await request.json()
+        fields = {}
+        for key in ("name", "days_after", "template_text", "is_default"):
+            if key in body:
+                fields[key] = body[key]
+        if not fields:
+            raise HTTPException(400, "No fields to update")
+        updated = await app.state.db.update_follow_up_template(template_id, **fields)
+        if not updated:
+            raise HTTPException(404, "Template not found")
+        template = await app.state.db.get_follow_up_template(template_id)
+        return {"ok": True, "template": template}
+
+    @app.delete("/api/follow-up-templates/{template_id}")
+    async def delete_follow_up_template(template_id: int):
+        deleted = await app.state.db.delete_follow_up_template(template_id)
+        if not deleted:
+            raise HTTPException(404, "Template not found")
+        return {"ok": True}
+
+    # --- Application Success Prediction ---
+
+    @app.get("/api/jobs/{job_id}/predict-success")
+    async def predict_success(job_id: int):
+        from app.predictor import predict_success as _predict
+        client = getattr(app.state, "ai_client", None)
+        if not client:
+            raise HTTPException(503, "AI client not configured")
+        job = await app.state.db.get_job(job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        history = await app.state.db.get_application_history_summary()
+        result = await _predict(
+            client, history=history,
+            title=job["title"], company=job["company"],
+            description=job.get("description") or "",
+        )
+        return result
+
+    # --- Contacts CRM ---
+
+    @app.get("/api/contacts")
+    async def list_contacts():
+        contacts = await app.state.db.get_contacts()
+        return {"contacts": contacts}
+
+    @app.post("/api/contacts")
+    async def create_contact(request: Request):
+        body = await request.json()
+        name = body.get("name", "").strip()
+        if not name:
+            raise HTTPException(400, "Contact name is required")
+        fields = {}
+        for key in ("email", "phone", "company", "role", "linkedin_url", "notes"):
+            if key in body:
+                fields[key] = body[key]
+        contact_id = await app.state.db.create_contact(name, **fields)
+        contact = await app.state.db.get_contact(contact_id)
+        return {"ok": True, "contact": contact}
+
+    @app.put("/api/contacts/{contact_id}")
+    async def update_contact(contact_id: int, request: Request):
+        body = await request.json()
+        fields = {}
+        for key in ("name", "email", "phone", "company", "role", "linkedin_url", "notes"):
+            if key in body:
+                fields[key] = body[key]
+        if not fields:
+            raise HTTPException(400, "No fields to update")
+        updated = await app.state.db.update_contact(contact_id, **fields)
+        if not updated:
+            raise HTTPException(404, "Contact not found")
+        contact = await app.state.db.get_contact(contact_id)
+        return {"ok": True, "contact": contact}
+
+    @app.delete("/api/contacts/{contact_id}")
+    async def delete_contact(contact_id: int):
+        deleted = await app.state.db.delete_contact(contact_id)
+        if not deleted:
+            raise HTTPException(404, "Contact not found")
+        return {"ok": True}
+
+    @app.get("/api/contacts/{contact_id}/interactions")
+    async def get_contact_interactions(contact_id: int):
+        contact = await app.state.db.get_contact(contact_id)
+        if not contact:
+            raise HTTPException(404, "Contact not found")
+        interactions = await app.state.db.get_contact_interactions(contact_id)
+        return {"interactions": interactions}
+
+    @app.post("/api/contacts/{contact_id}/interactions")
+    async def add_contact_interaction(contact_id: int, request: Request):
+        contact = await app.state.db.get_contact(contact_id)
+        if not contact:
+            raise HTTPException(404, "Contact not found")
+        body = await request.json()
+        interaction_id = await app.state.db.add_contact_interaction(
+            contact_id,
+            type=body.get("type", "note"),
+            notes=body.get("notes", ""),
+            date=body.get("date", datetime.now(timezone.utc).isoformat()),
+        )
+        return {"ok": True, "interaction_id": interaction_id}
+
+    @app.get("/api/jobs/{job_id}/contacts")
+    async def get_job_contacts(job_id: int):
+        job = await app.state.db.get_job(job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        contacts = await app.state.db.get_job_contacts(job_id)
+        return {"contacts": contacts}
+
+    @app.post("/api/jobs/{job_id}/contacts")
+    async def link_job_contact(job_id: int, request: Request):
+        body = await request.json()
+        contact_id = body.get("contact_id")
+        if not contact_id:
+            raise HTTPException(400, "contact_id is required")
+        await app.state.db.link_job_contact(
+            job_id, contact_id, relationship=body.get("relationship", "")
+        )
+        return {"ok": True}
+
+    @app.delete("/api/jobs/{job_id}/contacts/{contact_id}")
+    async def unlink_job_contact(job_id: int, contact_id: int):
+        removed = await app.state.db.unlink_job_contact(job_id, contact_id)
+        if not removed:
+            raise HTTPException(404, "Link not found")
+        return {"ok": True}
+
+    # --- Career Trajectory ---
+
+    @app.post("/api/career/analyze")
+    async def analyze_career(request: Request):
+        from app.career_advisor import analyze_career as _analyze
+        client = getattr(app.state, "ai_client", None)
+        if not client:
+            raise HTTPException(503, "AI client not configured")
+        db = app.state.db
+        profile = await db.get_full_profile()
+        work = profile.get("work_history", [])
+        skills_list = profile.get("skills", [])
+        config = await db.get_search_config()
+        work_text = "\n".join(
+            f"- {w.get('job_title', '')} at {w.get('company', '')} ({w.get('start_year', '')}-{w.get('end_year', 'present')})"
+            for w in work
+        ) or "No work history provided"
+        skills_text = ", ".join(s.get("name", "") for s in skills_list) or "No skills listed"
+        terms = ", ".join(config.get("search_terms", [])) if config else ""
+        suggestions = await _analyze(client, work_text, skills_text, terms)
+        if suggestions:
+            await db.save_career_suggestions(suggestions)
+        return {"ok": True, "suggestions": suggestions}
+
+    @app.get("/api/career/suggestions")
+    async def get_career_suggestions():
+        suggestions = await app.state.db.get_career_suggestions()
+        return {"suggestions": suggestions}
+
+    @app.post("/api/career/suggestions/{suggestion_id}/accept")
+    async def accept_career_suggestion(suggestion_id: int):
+        suggestion = await app.state.db.accept_career_suggestion(suggestion_id)
+        if not suggestion:
+            raise HTTPException(404, "Suggestion not found")
+        config = await app.state.db.get_search_config()
+        if config:
+            terms = config.get("search_terms", [])
+            title = suggestion.get("title", "")
+            if title and title not in terms:
+                terms.append(title)
+                await app.state.db.update_search_terms(terms)
+        return {"ok": True, "suggestion": suggestion}
+
+    # --- Offers ---
+
+    @app.get("/api/offers")
+    async def list_offers():
+        offers = await app.state.db.get_offers()
+        return {"offers": offers}
+
+    @app.get("/api/offers/compare")
+    async def compare_offers():
+        from app.offer_calculator import compare_offers as _compare
+        offers = await app.state.db.get_offers()
+        comparison = _compare(offers)
+        return {"comparison": comparison}
+
+    @app.post("/api/offers")
+    async def create_offer(request: Request):
+        body = await request.json()
+        fields = {}
+        for key in ("job_id", "base", "equity", "bonus", "pto_days", "remote_days",
+                     "health_value", "retirement_match", "relocation", "location", "notes"):
+            if key in body:
+                fields[key] = body[key]
+        offer_id = await app.state.db.create_offer(**fields)
+        offer = await app.state.db.get_offer(offer_id)
+        return {"ok": True, "offer": offer}
+
+    @app.put("/api/offers/{offer_id}")
+    async def update_offer(offer_id: int, request: Request):
+        body = await request.json()
+        fields = {}
+        for key in ("job_id", "base", "equity", "bonus", "pto_days", "remote_days",
+                     "health_value", "retirement_match", "relocation", "location", "notes"):
+            if key in body:
+                fields[key] = body[key]
+        if not fields:
+            raise HTTPException(400, "No fields to update")
+        updated = await app.state.db.update_offer(offer_id, **fields)
+        if not updated:
+            raise HTTPException(404, "Offer not found")
+        offer = await app.state.db.get_offer(offer_id)
+        return {"ok": True, "offer": offer}
+
+    @app.delete("/api/offers/{offer_id}")
+    async def delete_offer(offer_id: int):
+        deleted = await app.state.db.delete_offer(offer_id)
+        if not deleted:
+            raise HTTPException(404, "Offer not found")
+        return {"ok": True}
 
     @app.post("/api/jobs/{job_id}/email")
     async def draft_email(job_id: int):

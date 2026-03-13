@@ -127,6 +127,7 @@ async def test_prepare_with_mock_tailor(client, app):
         job_description="Build things",
         match_reasons=["Good skills match"],
         suggested_keywords=["Python", "AWS"],
+        resume_text=None,
     )
 
     application = await db.get_application(job_id)

@@ -6,8 +6,10 @@
   window.__cpAutofillLoaded = true;
 
   const PREFIX = 'cp-autofill';
+  const OVERLAY_PREFIX = 'cp-overlay';
   const FIELD_TIMEOUT_MS = 8000;  // Max time per field fill
   const API_TIMEOUT_MS = 30000;   // Max time for API analyze call
+  const SCAN_DEBOUNCE_MS = 1500;  // Debounce for MutationObserver re-scans
   let currentState = 'idle'; // idle | analyzing | filling | done | error
 
   // Track original field values for undo support
@@ -1743,6 +1745,62 @@
     return div.innerHTML;
   }
 
+  // ─── Toast notifications ─────────────────────────────────────
+
+  function showToast(message, type = 'success') {
+    const existing = document.getElementById(`${PREFIX}-toast`);
+    if (existing) existing.remove();
+
+    const toast = document.createElement('div');
+    toast.id = `${PREFIX}-toast`;
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', 'polite');
+
+    const bgColor = type === 'success' ? '#22c55e' : type === 'error' ? '#ef4444' : '#3b82f6';
+    toast.style.cssText = `
+      position: fixed; bottom: 24px; right: 24px; z-index: 2147483647;
+      background: ${bgColor}; color: white; padding: 12px 20px;
+      border-radius: 8px; font: 14px/1.4 system-ui, sans-serif;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-width: 360px;
+      opacity: 0; transform: translateY(12px);
+      transition: opacity 0.3s, transform 0.3s;
+    `;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+
+    requestAnimationFrame(() => {
+      toast.style.opacity = '1';
+      toast.style.transform = 'translateY(0)';
+    });
+
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(12px)';
+      setTimeout(() => toast.remove(), 300);
+    }, 4000);
+
+    return toast;
+  }
+
+  // ─── Auto-track applied jobs ────────────────────────────────
+
+  let autoTrackFired = false;
+
+  async function autoTrackApplied() {
+    if (autoTrackFired) return;
+    autoTrackFired = true;
+
+    try {
+      const pageUrl = location.href;
+      const result = await chrome.runtime.sendMessage({ type: 'markAppliedByUrl', url: pageUrl });
+      if (result && result.ok) {
+        showToast('Job marked as applied in CareerPulse', 'success');
+      }
+    } catch {
+      // Backend may not be available — fail silently
+    }
+  }
+
   // ─── Submission detection ─────────────────────────────────────
 
   function detectSubmission() {
@@ -1762,6 +1820,37 @@
         }
       } catch { /* skip */ }
     }, true);
+
+    // MutationObserver: detect form removal or "thank you" confirmation pages
+    const observer = new MutationObserver((mutations) => {
+      try {
+        for (const mutation of mutations) {
+          // Check removed nodes for form elements
+          for (const node of mutation.removedNodes) {
+            if (node.nodeType !== 1) continue;
+            if (node.tagName === 'FORM' || node.querySelector?.('form')) {
+              setTimeout(handleSubmission, 500);
+              return;
+            }
+          }
+
+          // Check added nodes for success/confirmation indicators
+          for (const node of mutation.addedNodes) {
+            if (node.nodeType !== 1) continue;
+            const text = (node.textContent || '').toLowerCase();
+            if (text.includes('application submitted') ||
+                text.includes('thank you for applying') ||
+                text.includes('application received') ||
+                text.includes('successfully submitted')) {
+              handleSubmission();
+              return;
+            }
+          }
+        }
+      } catch { /* skip */ }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   function handleSubmission() {
@@ -1789,7 +1878,75 @@
       if (newData.length > 0) {
         showLearnPrompt(newData);
       }
+
+      // Auto-track this job as applied
+      autoTrackApplied();
     } catch { /* skip */ }
+  }
+
+  // ─── Custom Q&A matching ─────────────────────────────────────
+
+  function fuzzyMatchQA(fieldLabel, qaEntries) {
+    if (!fieldLabel || !qaEntries || !qaEntries.length) return null;
+    const label = fieldLabel.toLowerCase().trim();
+    if (!label) return null;
+
+    const labelWords = label.split(/\s+/).filter(w => w.length > 2);
+
+    let bestMatch = null;
+    let bestScore = 0;
+
+    for (const qa of qaEntries) {
+      const pattern = (qa.question_pattern || '').toLowerCase().trim();
+      if (!pattern) continue;
+
+      // Exact match
+      if (label === pattern) return qa;
+
+      // Substring: label contains pattern or pattern contains label
+      if (label.includes(pattern) || pattern.includes(label)) {
+        const score = 3;
+        if (score > bestScore) { bestScore = score; bestMatch = qa; }
+        continue;
+      }
+
+      // Keyword overlap: count shared words
+      const patternWords = pattern.split(/\s+/).filter(w => w.length > 2);
+      if (patternWords.length > 0 && labelWords.length > 0) {
+        const shared = patternWords.filter(pw => labelWords.some(lw => lw.includes(pw) || pw.includes(lw)));
+        const score = shared.length / Math.max(patternWords.length, labelWords.length);
+        if (score >= 0.5 && score > bestScore) {
+          bestScore = score;
+          bestMatch = qa;
+        }
+      }
+    }
+
+    return bestMatch;
+  }
+
+  async function applyCustomQA(mappings) {
+    let qaEntries;
+    try {
+      const qaResult = await chrome.runtime.sendMessage({ type: 'getCustomQA' });
+      if (!qaResult || !qaResult.ok || !Array.isArray(qaResult.data)) return mappings;
+      qaEntries = qaResult.data;
+    } catch {
+      return mappings;
+    }
+
+    if (!qaEntries.length) return mappings;
+
+    return mappings.map(mapping => {
+      if (mapping.action !== 'skip') return mapping;
+
+      const label = mapping.field_label || '';
+      const match = fuzzyMatchQA(label, qaEntries);
+      if (match && match.answer) {
+        return { ...mapping, action: 'fill_text', value: match.answer, qa_matched: true };
+      }
+      return mapping;
+    });
   }
 
   // ─── Main fill flow ──────────────────────────────────────────
@@ -1843,11 +2000,14 @@
         return;
       }
 
-      const mappings = response.data?.mappings || [];
+      let mappings = response.data?.mappings || [];
       if (!mappings.length) {
         updateOverlay('done', 'No fillable fields found');
         return;
       }
+
+      // Post-process: fill skipped fields that match custom Q&A
+      mappings = await applyCustomQA(mappings);
 
       currentState = 'filling';
       const result = await fillForm(mappings, atsAdapter);
@@ -2136,6 +2296,102 @@
     updateOverlay('done', `Filled ${total} fields across ${pages} page${pages > 1 ? 's' : ''}.`);
   }
 
+  // ─── Queue fill orchestration (content side) ─────────────────
+
+  let queueContext = null; // { queueItemId, jobId, jobTitle, company, position, total }
+  let queueBannerEl = null;
+
+  function showQueueBanner(position, total, jobTitle, company) {
+    removeQueueBanner();
+
+    queueBannerEl = document.createElement('div');
+    queueBannerEl.id = `${PREFIX}-queue-banner`;
+
+    const label = jobTitle
+      ? `${jobTitle}${company ? ' at ' + company : ''}`
+      : `Application ${position} of ${total}`;
+
+    queueBannerEl.innerHTML = `
+      <div class="${PREFIX}-queue-banner-inner">
+        <span class="${PREFIX}-queue-banner-progress">${position}/${total}</span>
+        <span class="${PREFIX}-queue-banner-label">${escapeHtml(label)}</span>
+        <div class="${PREFIX}-queue-banner-actions">
+          <button class="${PREFIX}-queue-done-btn" title="Mark as submitted and move to next">Done</button>
+          <button class="${PREFIX}-queue-skip-btn" title="Skip this job and move to next">Skip</button>
+          <button class="${PREFIX}-queue-cancel-btn" title="Cancel the entire queue">Cancel</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(queueBannerEl);
+
+    queueBannerEl.querySelector(`.${PREFIX}-queue-done-btn`).addEventListener('click', () => {
+      handleQueueAction('submitted');
+    });
+
+    queueBannerEl.querySelector(`.${PREFIX}-queue-skip-btn`).addEventListener('click', () => {
+      handleQueueAction('skipped');
+    });
+
+    queueBannerEl.querySelector(`.${PREFIX}-queue-cancel-btn`).addEventListener('click', () => {
+      chrome.runtime.sendMessage({ type: 'cancelQueue' });
+      removeQueueBanner();
+      queueContext = null;
+    });
+  }
+
+  function removeQueueBanner() {
+    if (queueBannerEl) {
+      queueBannerEl.remove();
+      queueBannerEl = null;
+    }
+  }
+
+  function handleQueueAction(action) {
+    if (!queueContext) return;
+
+    chrome.runtime.sendMessage({
+      type: 'queueUserAction',
+      queueItemId: queueContext.queueItemId,
+      action,
+    });
+
+    removeQueueBanner();
+    queueContext = null;
+  }
+
+  async function startQueueFill(message) {
+    queueContext = {
+      queueItemId: message.queueItemId,
+      jobId: message.jobId,
+      jobTitle: message.jobTitle || '',
+      company: message.company || '',
+      position: message.queuePosition,
+      total: message.queueTotal,
+    };
+
+    showQueueBanner(
+      queueContext.position,
+      queueContext.total,
+      queueContext.jobTitle,
+      queueContext.company
+    );
+
+    // Set jobId and trigger the normal fill flow
+    if (message.jobId) currentJobId = message.jobId;
+    await startFillFlow();
+
+    // Report fill completed (NOT submitted — user must explicitly submit)
+    try {
+      await chrome.runtime.sendMessage({
+        type: 'reportFillStatus',
+        queueItemId: queueContext.queueItemId,
+        status: 'filled',
+        details: { state: currentState },
+      });
+    } catch { /* skip */ }
+  }
+
   // ─── Message handler ──────────────────────────────────────────
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -2150,8 +2406,16 @@
           });
           return true;
 
+        case 'queueFill':
+          startQueueFill(message).then(() => {
+            sendResponse({ ok: true, state: currentState });
+          }).catch(err => {
+            sendResponse({ ok: false, error: err.message });
+          });
+          return true;
+
         case 'getStatus':
-          sendResponse({ ok: true, state: currentState });
+          sendResponse({ ok: true, state: currentState, queueActive: !!queueContext });
           return false;
 
         default:
@@ -2182,6 +2446,248 @@
       currentState = 'idle';
     }
   });
+
+  // ─── Job Board Detection & Overlay ──────────────────────────────
+
+  const JOB_BOARD_CONFIGS = {
+    'linkedin.com': {
+      name: 'LinkedIn',
+      listingSelector: '.job-card-container, .jobs-search-results__list-item, .scaffold-layout__list-item',
+      titleSelector: '.job-card-list__title, .job-card-container__link, a.job-card-list__title--link',
+      companySelector: '.job-card-container__primary-description, .artdeco-entity-lockup__subtitle',
+      locationSelector: '.job-card-container__metadata-item, .artdeco-entity-lockup__caption',
+      getJobUrl: (card) => {
+        const link = card.querySelector('a[href*="/jobs/view/"], a[href*="/jobs/collections/"]');
+        if (!link) return null;
+        try {
+          const url = new URL(link.href, window.location.origin);
+          url.search = '';
+          url.hash = '';
+          return url.href;
+        } catch { return null; }
+      },
+    },
+    'indeed.com': {
+      name: 'Indeed',
+      listingSelector: '.job_seen_beacon, .jobsearch-ResultsList .result, .tapItem',
+      titleSelector: '.jobTitle a, h2.jobTitle span, .jcs-JobTitle span',
+      companySelector: '.companyName, [data-testid="company-name"], .company_location .companyName',
+      locationSelector: '.companyLocation, [data-testid="text-location"]',
+      getJobUrl: (card) => {
+        const link = card.querySelector('a[href*="/viewjob"], a[href*="/rc/clk"], a.jcs-JobTitle');
+        if (!link) return null;
+        try {
+          const url = new URL(link.href, window.location.origin);
+          url.search = '';
+          url.hash = '';
+          return url.href;
+        } catch { return null; }
+      },
+    },
+    'dice.com': {
+      name: 'Dice',
+      listingSelector: '[data-cy="search-card"], .card-content, dhi-search-card',
+      titleSelector: 'a.card-title-link, [data-cy="card-title-link"]',
+      companySelector: 'a[data-cy="search-result-company-name"], .card-company a',
+      locationSelector: 'span[data-cy="search-result-location"], .card-posted-date',
+      getJobUrl: (card) => {
+        const link = card.querySelector('a[href*="/job-detail/"], a.card-title-link');
+        if (!link) return null;
+        try {
+          const url = new URL(link.href, window.location.origin);
+          url.search = '';
+          url.hash = '';
+          return url.href;
+        } catch { return null; }
+      },
+    },
+    'glassdoor.com': {
+      name: 'Glassdoor',
+      listingSelector: '.JobsList_jobListItem__wjTHv, li[data-test="jobListing"]',
+      titleSelector: 'a[data-test="job-title"], .JobCard_jobTitle__GLyJ1',
+      companySelector: '.EmployerProfile_compactEmployerName__9MGiV, .JobCard_companyName__N1YM5',
+      locationSelector: '.JobCard_location__N_iYE, [data-test="emp-location"]',
+      getJobUrl: (card) => {
+        const link = card.querySelector('a[href*="/job-listing/"], a[data-test="job-title"]');
+        if (!link) return null;
+        try {
+          const url = new URL(link.href, window.location.origin);
+          url.search = '';
+          url.hash = '';
+          return url.href;
+        } catch { return null; }
+      },
+    },
+  };
+
+  function detectJobBoard() {
+    const hostname = window.location.hostname;
+    for (const [domain, config] of Object.entries(JOB_BOARD_CONFIGS)) {
+      if (hostname.includes(domain)) {
+        return config;
+      }
+    }
+    return null;
+  }
+
+  function parseJobCard(card, config) {
+    const titleEl = card.querySelector(config.titleSelector);
+    const companyEl = card.querySelector(config.companySelector);
+    const locationEl = card.querySelector(config.locationSelector);
+    const url = config.getJobUrl(card);
+
+    if (!titleEl || !url) return null;
+
+    return {
+      title: titleEl.textContent.trim(),
+      company: companyEl ? companyEl.textContent.trim() : '',
+      location: locationEl ? locationEl.textContent.trim() : '',
+      url,
+      source: config.name,
+    };
+  }
+
+  function createSaveButton(jobData, card) {
+    const existing = card.querySelector(`.${OVERLAY_PREFIX}-save-btn`);
+    if (existing) return existing;
+
+    const btn = document.createElement('button');
+    btn.className = `${OVERLAY_PREFIX}-save-btn`;
+    btn.textContent = 'Save to CareerPulse';
+    btn.title = 'Save this job to CareerPulse';
+
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      btn.disabled = true;
+      btn.textContent = 'Saving...';
+      btn.classList.add(`${OVERLAY_PREFIX}-saving`);
+
+      try {
+        const response = await chrome.runtime.sendMessage({
+          type: 'saveJob',
+          jobData,
+        });
+
+        if (response && response.ok) {
+          btn.textContent = 'Saved';
+          btn.classList.remove(`${OVERLAY_PREFIX}-saving`);
+          btn.classList.add(`${OVERLAY_PREFIX}-saved`);
+          btn.disabled = true;
+
+          if (response.data?.score != null) {
+            showScoreBadge(card, response.data.score);
+          }
+        } else {
+          btn.textContent = 'Error — Retry';
+          btn.classList.remove(`${OVERLAY_PREFIX}-saving`);
+          btn.classList.add(`${OVERLAY_PREFIX}-error`);
+          btn.disabled = false;
+        }
+      } catch {
+        btn.textContent = 'Error — Retry';
+        btn.classList.remove(`${OVERLAY_PREFIX}-saving`);
+        btn.classList.add(`${OVERLAY_PREFIX}-error`);
+        btn.disabled = false;
+      }
+    });
+
+    const wrapper = document.createElement('div');
+    wrapper.className = `${OVERLAY_PREFIX}-actions`;
+    wrapper.appendChild(btn);
+    card.style.position = card.style.position || 'relative';
+    card.appendChild(wrapper);
+
+    return btn;
+  }
+
+  function showScoreBadge(card, score) {
+    let badge = card.querySelector(`.${OVERLAY_PREFIX}-score-badge`);
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = `${OVERLAY_PREFIX}-score-badge`;
+      card.style.position = card.style.position || 'relative';
+      card.appendChild(badge);
+    }
+
+    const numScore = Math.round(Number(score));
+    badge.textContent = `${numScore}%`;
+    badge.title = `CareerPulse match score: ${numScore}%`;
+
+    badge.classList.remove(
+      `${OVERLAY_PREFIX}-score-high`,
+      `${OVERLAY_PREFIX}-score-mid`,
+      `${OVERLAY_PREFIX}-score-low`
+    );
+
+    if (numScore >= 75) {
+      badge.classList.add(`${OVERLAY_PREFIX}-score-high`);
+    } else if (numScore >= 50) {
+      badge.classList.add(`${OVERLAY_PREFIX}-score-mid`);
+    } else {
+      badge.classList.add(`${OVERLAY_PREFIX}-score-low`);
+    }
+  }
+
+  async function processJobCards(config) {
+    const cards = document.querySelectorAll(config.listingSelector);
+    if (!cards.length) return;
+
+    for (const card of cards) {
+      if (card.dataset.cpProcessed) continue;
+      card.dataset.cpProcessed = 'true';
+
+      const jobData = parseJobCard(card, config);
+      if (!jobData) continue;
+
+      try {
+        const lookupResp = await chrome.runtime.sendMessage({
+          type: 'getScoreForUrl',
+          url: jobData.url,
+        });
+
+        if (lookupResp && lookupResp.ok && lookupResp.data) {
+          const btn = createSaveButton(jobData, card);
+          btn.textContent = 'Saved';
+          btn.classList.add(`${OVERLAY_PREFIX}-saved`);
+          btn.disabled = true;
+
+          if (lookupResp.data.score != null) {
+            showScoreBadge(card, lookupResp.data.score);
+          }
+        } else {
+          createSaveButton(jobData, card);
+        }
+      } catch {
+        createSaveButton(jobData, card);
+      }
+    }
+  }
+
+  let scanTimer = null;
+
+  function scheduleScan(config) {
+    if (scanTimer) clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => processJobCards(config), SCAN_DEBOUNCE_MS);
+  }
+
+  function initJobBoardOverlay() {
+    const config = detectJobBoard();
+    if (!config) return;
+
+    processJobCards(config);
+
+    const observer = new MutationObserver(() => scheduleScan(config));
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  // Run job board overlay detection (separate from the auto-fill badge)
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initJobBoardOverlay);
+  } else {
+    setTimeout(initJobBoardOverlay, 300);
+  }
 
   // ─── Export for testing ────────────────────────────────────────
 
@@ -2217,6 +2723,8 @@
       clickOption,
       serializeFormHtml,
       fillForm,
+      fuzzyMatchQA,
+      applyCustomQA,
       detectApplicationForm,
       showBadge,
       removeBadge,
@@ -2229,6 +2737,29 @@
 
       startMultiPageTracking,
       stopMultiPageTracking,
+
+      // Auto-track API
+      showToast,
+      autoTrackApplied,
+      get autoTrackFired() { return autoTrackFired; },
+      set autoTrackFired(v) { autoTrackFired = v; },
+
+      // Job board overlay API
+      detectJobBoard,
+      parseJobCard,
+      createSaveButton,
+      showScoreBadge,
+      processJobCards,
+      initJobBoardOverlay,
+      JOB_BOARD_CONFIGS,
+
+      // Queue fill API
+      showQueueBanner,
+      removeQueueBanner,
+      handleQueueAction,
+      startQueueFill,
+      get queueContext() { return queueContext; },
+      set queueContext(v) { queueContext = v; },
     };
   }
 

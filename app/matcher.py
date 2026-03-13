@@ -58,10 +58,10 @@ class JobMatcher:
         self.client = client
         self.resume_text = resume_text
 
-    async def score_job(self, job_description: str) -> dict:
+    async def score_job(self, job_description: str, resume_text: str | None = None) -> dict:
         try:
             prompt = SCORING_PROMPT.format(
-                resume=self.resume_text,
+                resume=resume_text or self.resume_text,
                 job_description=job_description,
             )
             raw = await self.client.chat(prompt, max_tokens=1024)

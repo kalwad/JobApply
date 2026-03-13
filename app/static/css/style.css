@@ -1536,6 +1536,20 @@ a:hover {
     font-weight: 600;
 }
 
+.doc-download-row {
+    display: flex;
+    gap: 8px;
+}
+
+.doc-download-row .pdf-download-card {
+    flex: 1;
+}
+
+.docx-icon {
+    background: #2b579a !important;
+    font-size: 0.5625rem !important;
+}
+
 /* === Footer === */
 .site-footer {
     text-align: center;
@@ -1667,6 +1681,94 @@ kbd {
     border-bottom-color: var(--accent);
 }
 
+/* === Job Comparison Table === */
+.comparison-table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.comparison-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+.comparison-label-col {
+    width: 140px;
+}
+
+.comparison-job-col {
+    padding: 20px 16px;
+    text-align: center;
+    border-bottom: 2px solid var(--border);
+    vertical-align: bottom;
+}
+
+.comparison-job-title {
+    display: block;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 4px;
+    line-height: 1.3;
+}
+
+.comparison-job-title:hover {
+    color: var(--accent-hover);
+}
+
+.comparison-job-company {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+}
+
+.comparison-label {
+    padding: 14px 16px;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-tertiary);
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+    white-space: nowrap;
+}
+
+.comparison-cell {
+    padding: 14px 16px;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+    text-align: center;
+}
+
+.comparison-cell .score-badge {
+    margin: 0 auto;
+}
+
+.comparison-cell .score-reasons,
+.comparison-cell .score-concerns {
+    text-align: left;
+}
+
+.comparison-table tr:last-child td {
+    border-bottom: none;
+}
+
+@media (max-width: 768px) {
+    .comparison-label-col {
+        width: 100px;
+    }
+
+    .comparison-label,
+    .comparison-cell,
+    .comparison-job-col {
+        padding: 10px 8px;
+        font-size: 0.8125rem;
+    }
+}
+
 .mt-16 { margin-top: 16px; }
 .mb-8 { margin-bottom: 8px; }
 .mb-16 { margin-bottom: 16px; }
@@ -1674,3 +1776,14 @@ kbd {
 .flex { display: flex; }
 .flex-wrap { flex-wrap: wrap; }
 .items-center { align-items: center; }
+
+/* Offer cards */
+.offer-card { transition: box-shadow 0.15s; }
+.offer-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+
+/* Offer comparison responsive */
+@media (max-width: 768px) {
+    #offer-comparison-container .comparison-table { font-size: 0.8rem; }
+    #offer-comparison-container .comparison-table th,
+    #offer-comparison-container .comparison-table td { padding: 6px 8px; min-width: 100px; }
+}
