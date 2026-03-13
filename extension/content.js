@@ -417,18 +417,76 @@
     }
   }
 
+  // ─── Field hints and phone detection ────────────────────────
+
+  function getFieldHints(el) {
+    if (!el) return { label: '', name: '', id: '', placeholder: '' };
+    try {
+      return {
+        label: findLabel(el),
+        name: el.getAttribute('name') || '',
+        id: el.id || '',
+        placeholder: el.getAttribute('placeholder') || '',
+      };
+    } catch {
+      return { label: '', name: '', id: '', placeholder: '' };
+    }
+  }
+
+  function isPhoneField(el) {
+    if (!el) return false;
+    try {
+      if ((el.type || '').toLowerCase() === 'tel') return true;
+      const hints = getFieldHints(el);
+      const combined = `${hints.label} ${hints.name} ${hints.id} ${hints.placeholder}`;
+      return /phone|tel|mobile|cell/i.test(combined);
+    } catch {
+      return false;
+    }
+  }
+
   // ─── Dropdown / listbox detection ──────────────────────────
 
-  function fuzzyMatchOption(options, targetValue) {
+  function fuzzyMatchOption(options, targetValue, fieldHints) {
     if (!options || !options.length) return -1;
     const target = targetValue.toLowerCase().trim();
 
+    // Pass 1: exact match on value
     for (let i = 0; i < options.length; i++) {
       if (options[i].value.toLowerCase() === target) return i;
     }
+    // Pass 2: exact match on text
     for (let i = 0; i < options.length; i++) {
       if (options[i].text.toLowerCase().trim() === target) return i;
     }
+
+    // Pass 3: normalization via lookup tables
+    if (window.__cpNormalize) {
+      try {
+        const norm = window.__cpNormalize;
+        const hints = fieldHints || {};
+        const hintValues = [hints.label, hints.name, hints.id, hints.placeholder].filter(Boolean);
+        const tables = norm.detectFieldCategory(hintValues);
+
+        // Try normalizedMatch against option text values
+        const optionTexts = options.map(o => o.text.trim());
+        const normIdx = norm.normalizedMatch(optionTexts, targetValue, tables.length ? tables : undefined);
+        if (normIdx >= 0) return normIdx;
+
+        // Try normalizedMatch against option value attributes
+        const optionValues = options.map(o => o.value);
+        const normValIdx = norm.normalizedMatch(optionValues, targetValue, tables.length ? tables : undefined);
+        if (normValIdx >= 0) return normValIdx;
+
+        // Boolean equivalence (yes/true/1, no/false/0)
+        const boolIdx = norm.normalizedMatch(optionTexts, targetValue, [norm.BOOLEAN_YES_NO]);
+        if (boolIdx >= 0) return boolIdx;
+        const boolValIdx = norm.normalizedMatch(optionValues, targetValue, [norm.BOOLEAN_YES_NO]);
+        if (boolValIdx >= 0) return boolValIdx;
+      } catch { /* normalization unavailable, continue */ }
+    }
+
+    // Pass 4: contains / substring match
     for (let i = 0; i < options.length; i++) {
       if (options[i].value.toLowerCase().includes(target) || options[i].text.toLowerCase().includes(target)) return i;
       if (target.includes(options[i].value.toLowerCase()) || target.includes(options[i].text.toLowerCase().trim())) return i;
@@ -577,33 +635,51 @@
     return [];
   }
 
-  function fuzzyMatchDropdownOption(options, targetValue) {
+  function fuzzyMatchDropdownOption(options, targetValue, fieldHints) {
     if (!options.length) return null;
     const target = targetValue.toLowerCase().trim();
 
-    // Exact text match
+    // Pass 1: Exact text match
     for (const opt of options) {
       if (opt.textContent.trim().toLowerCase() === target) return opt;
     }
 
-    // Text starts with target
+    // Pass 2: Text starts with target
     for (const opt of options) {
       if (opt.textContent.trim().toLowerCase().startsWith(target)) return opt;
     }
 
-    // Target starts with option text
+    // Pass 2b: Target starts with option text
     for (const opt of options) {
       const text = opt.textContent.trim().toLowerCase();
       if (text.startsWith(target) || target.startsWith(text)) return opt;
     }
 
-    // Contains match
+    // Pass 3: Normalization via lookup tables
+    if (window.__cpNormalize) {
+      try {
+        const norm = window.__cpNormalize;
+        const hints = fieldHints || {};
+        const hintValues = [hints.label, hints.name, hints.id, hints.placeholder].filter(Boolean);
+        const tables = norm.detectFieldCategory(hintValues);
+
+        const optionTexts = options.map(o => o.textContent.trim());
+        const normIdx = norm.normalizedMatch(optionTexts, targetValue, tables.length ? tables : undefined);
+        if (normIdx >= 0) return options[normIdx];
+
+        // Boolean equivalence
+        const boolIdx = norm.normalizedMatch(optionTexts, targetValue, [norm.BOOLEAN_YES_NO]);
+        if (boolIdx >= 0) return options[boolIdx];
+      } catch { /* normalization unavailable, continue */ }
+    }
+
+    // Pass 4: Contains match
     for (const opt of options) {
       const text = opt.textContent.trim().toLowerCase();
       if (text.includes(target) || target.includes(text)) return opt;
     }
 
-    // Word-level overlap (for "Animas, Hidalgo, NM" matching "Animas")
+    // Pass 5: Word-level overlap (for "Animas, Hidalgo, NM" matching "Animas")
     const targetWords = target.split(/[\s,]+/).filter(Boolean);
     let bestMatch = null;
     let bestScore = 0;
@@ -647,7 +723,7 @@
     return false;
   }
 
-  async function handleCustomDropdown(el, value) {
+  async function handleCustomDropdown(el, value, fieldHints) {
     // Click to open the dropdown
     el.click();
     dispatchEvents(el, ['click', 'focus']);
@@ -680,7 +756,7 @@
 
       // Re-fetch filtered options
       const filteredOptions = getDropdownOptions(dd);
-      const match = fuzzyMatchDropdownOption(filteredOptions.length ? filteredOptions : options, value);
+      const match = fuzzyMatchDropdownOption(filteredOptions.length ? filteredOptions : options, value, fieldHints);
       if (match) {
         clickOption(match);
         return { success: true, selectedText: match.textContent.trim() };
@@ -688,7 +764,7 @@
     }
 
     // Direct option match without filtering
-    const match = fuzzyMatchDropdownOption(options, value);
+    const match = fuzzyMatchDropdownOption(options, value, fieldHints);
     if (match) {
       clickOption(match);
       return { success: true, selectedText: match.textContent.trim() };
@@ -713,7 +789,7 @@
 
   // ─── Typeahead handling ────────────────────────────────────
 
-  async function typeAndSelectDropdown(el, value) {
+  async function typeAndSelectDropdown(el, value, fieldHints) {
     // Clear existing value first
     setNativeValue(el, '');
     dispatchEvents(el, ['input']);
@@ -732,7 +808,7 @@
       const options = getDropdownOptions(dropdown);
       if (!options.length) continue;
 
-      const match = fuzzyMatchDropdownOption(options, value);
+      const match = fuzzyMatchDropdownOption(options, value, fieldHints);
       if (match) {
         clickOption(match);
         await sleep(100);
@@ -750,7 +826,7 @@
         const retryDropdown = findTypeaheadDropdown(el);
         if (retryDropdown) {
           const retryOptions = getDropdownOptions(retryDropdown);
-          const retryMatch = fuzzyMatchDropdownOption(retryOptions, value);
+          const retryMatch = fuzzyMatchDropdownOption(retryOptions, value, fieldHints);
           if (retryMatch) {
             clickOption(retryMatch);
             await sleep(100);
@@ -949,6 +1025,9 @@
         return { selector, success: false, reason: 'element not found' };
       }
 
+      // Compute field hints once for normalization throughout this fill
+      const fieldHints = getFieldHints(el);
+
       // Scroll element into view so it's interactable
       try {
         el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
@@ -976,13 +1055,24 @@
             if (filled) return { selector, success: true, action, dateField: true };
           }
 
-          // 3. Check if this is a custom click-to-open dropdown (not a typeahead)
+          // 3. Phone formatting — normalize and format before text fill
+          let fillValue = value;
+          if (isPhoneField(el) && window.__cpNormalize) {
+            try {
+              const digits = window.__cpNormalize.normalizePhone(value);
+              if (digits) {
+                fillValue = window.__cpNormalize.formatPhoneLike(digits, fieldHints.placeholder);
+              }
+            } catch { /* skip, use original value */ }
+          }
+
+          // 4. Check if this is a custom click-to-open dropdown (not a typeahead)
           if (isCustomDropdownTrigger(el) && el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') {
-            const result = await handleCustomDropdown(el, value);
+            const result = await handleCustomDropdown(el, fillValue, fieldHints);
             if (result.success) return { selector, success: true, action, selectedText: result.selectedText };
           }
 
-          // 4. Check if this is a typeahead/autocomplete field (has ARIA hints)
+          // 5. Check if this is a typeahead/autocomplete field (has ARIA hints)
           const isTypeahead = el.getAttribute('role') === 'combobox'
             || el.getAttribute('aria-autocomplete')
             || el.getAttribute('aria-owns')
@@ -993,23 +1083,23 @@
             || el.closest('[class*="combobox"]');
 
           if (isTypeahead) {
-            const result = await typeAndSelectDropdown(el, value);
+            const result = await typeAndSelectDropdown(el, fillValue, fieldHints);
             if (result.success) {
               return { selector, success: true, action, selectedText: result.selectedText };
             }
           }
 
-          // 5. Normal text fill
-          setNativeValue(el, value);
+          // 6. Normal text fill
+          setNativeValue(el, fillValue);
           dispatchEvents(el, ['input', 'change']);
 
-          // 6. After setting value, check if a dropdown appeared anyway
+          // 7. After setting value, check if a dropdown appeared anyway
           await sleep(300);
           const dropdown = findTypeaheadDropdown(el);
           if (dropdown) {
             const options = getDropdownOptions(dropdown);
             if (options.length > 0) {
-              const match = fuzzyMatchDropdownOption(options, value);
+              const match = fuzzyMatchDropdownOption(options, fillValue, fieldHints);
               if (match) {
                 clickOption(match);
                 await sleep(100);
@@ -1026,7 +1116,7 @@
           // Handle native <select>
           if (el.tagName === 'SELECT') {
             const options = Array.from(el.options || []).map(o => ({ value: o.value, text: o.textContent }));
-            const idx = fuzzyMatchOption(options, value);
+            const idx = fuzzyMatchOption(options, value, fieldHints);
             if (idx >= 0) {
               el.selectedIndex = idx;
               dispatchEvents(el, ['change', 'blur']);
@@ -1036,7 +1126,7 @@
           }
 
           // Handle custom dropdown (div-based)
-          const customResult = await handleCustomDropdown(el, value);
+          const customResult = await handleCustomDropdown(el, value, fieldHints);
           if (customResult.success) {
             return { selector, success: true, action, selectedText: customResult.selectedText };
           }
@@ -1471,6 +1561,8 @@
       getDropdownOptions,
       fuzzyMatchDropdownOption,
       fuzzyMatchOption,
+      getFieldHints,
+      isPhoneField,
       isDateField,
       parseFlexibleDate,
       fillDateField,
