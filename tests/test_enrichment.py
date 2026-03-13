@@ -1,6 +1,8 @@
 import re
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from app.enrichment import enrich_job_description
+from app.enrichment import enrich_job_description, extract_linkedin_job_id, fetch_linkedin_guest_api, fetch_linkedin_playwright
 
 MOCK_LINKEDIN_DETAIL = """
 <html><body>
@@ -27,7 +29,8 @@ async def test_enrich_linkedin(httpx_mock):
         url=re.compile(r"https://www\.linkedin\.com/jobs/view/.*"),
         text=MOCK_LINKEDIN_DETAIL,
     )
-    result = await enrich_job_description("https://www.linkedin.com/jobs/view/test-123", "linkedin")
+    with patch("app.enrichment.fetch_linkedin_playwright", new_callable=AsyncMock, return_value=None):
+        result = await enrich_job_description("https://www.linkedin.com/jobs/view/test-123", "linkedin")
     assert "Senior DevOps Engineer" in result
     assert "Kubernetes" in result
 
@@ -59,6 +62,61 @@ async def test_enrich_generic_fallback(httpx_mock):
     result = await enrich_job_description("https://example.com/job", "unknown")
     assert result is not None
     assert "Job details here" in result
+
+
+@pytest.mark.asyncio
+async def test_linkedin_enrichment_uses_guest_api_first(httpx_mock):
+    """Guest API is tried before falling back to direct fetch."""
+    guest_response = """
+    <html><body>
+    <div class="description__text">
+      <p>Guest API description with enough content to be valid and pass length checks.</p>
+    </div>
+    </body></html>
+    """
+    httpx_mock.add_response(
+        url=re.compile(r"https://www\.linkedin\.com/jobs-guest/jobs/api/jobPosting/.*"),
+        text=guest_response,
+    )
+    result = await enrich_job_description(
+        "https://www.linkedin.com/jobs/view/senior-engineer-at-acme-4567890123", "linkedin"
+    )
+    assert result is not None
+    assert "Guest API description" in result
+
+
+@pytest.mark.asyncio
+async def test_linkedin_falls_back_to_direct_when_guest_api_fails(httpx_mock):
+    """When guest API returns 429, fall back to direct page fetch."""
+    httpx_mock.add_response(
+        url=re.compile(r"https://www\.linkedin\.com/jobs-guest/jobs/api/jobPosting/.*"),
+        status_code=429,
+    )
+    httpx_mock.add_response(
+        url=re.compile(r"https://www\.linkedin\.com/jobs/view/.*"),
+        text=MOCK_LINKEDIN_DETAIL,
+    )
+    with patch("app.enrichment.fetch_linkedin_playwright", new_callable=AsyncMock, return_value=None):
+        result = await enrich_job_description(
+            "https://www.linkedin.com/jobs/view/senior-engineer-at-acme-4567890123", "linkedin"
+        )
+    assert result is not None
+    assert "Senior DevOps Engineer" in result
+
+
+@pytest.mark.asyncio
+async def test_linkedin_falls_back_to_playwright_when_guest_api_fails(httpx_mock):
+    """When guest API fails, Playwright is tried before direct fetch."""
+    httpx_mock.add_response(
+        url=re.compile(r"https://www\.linkedin\.com/jobs-guest/jobs/api/jobPosting/.*"),
+        status_code=429,
+    )
+    with patch("app.enrichment.fetch_linkedin_playwright", new_callable=AsyncMock,
+               return_value="Description from Playwright strategy"):
+        result = await enrich_job_description(
+            "https://www.linkedin.com/jobs/view/senior-engineer-at-acme-4567890123", "linkedin"
+        )
+    assert result == "Description from Playwright strategy"
 
 
 # Database integration tests
@@ -100,3 +158,101 @@ async def test_update_job_description(db):
     await db.update_job_description(job_id, "Full detailed description " * 20)
     jobs = await db.get_jobs_needing_enrichment()
     assert all(j["id"] != job_id for j in jobs)
+
+
+# LinkedIn job ID extraction and guest API tests
+
+
+def test_extract_job_id_from_standard_url():
+    url = "https://www.linkedin.com/jobs/view/4567890123"
+    assert extract_linkedin_job_id(url) == "4567890123"
+
+
+def test_extract_job_id_from_url_with_slug():
+    url = "https://www.linkedin.com/jobs/view/senior-engineer-at-acme-4567890123"
+    assert extract_linkedin_job_id(url) == "4567890123"
+
+
+def test_extract_job_id_returns_none_for_non_linkedin():
+    assert extract_linkedin_job_id("https://dice.com/job/123") is None
+
+
+MOCK_GUEST_API_RESPONSE = """
+<html><body>
+<div class="description__text">
+  <p>We need a Platform Engineer with strong Kubernetes skills.</p>
+  <p>Requirements: 5+ years infrastructure experience, Terraform, AWS.</p>
+</div>
+</body></html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_fetch_linkedin_guest_api_success(httpx_mock):
+    httpx_mock.add_response(
+        url=re.compile(r"https://www\.linkedin\.com/jobs-guest/jobs/api/jobPosting/.*"),
+        text=MOCK_GUEST_API_RESPONSE,
+    )
+    result = await fetch_linkedin_guest_api("4567890123")
+    assert result is not None
+    assert "Platform Engineer" in result
+    assert "Kubernetes" in result
+
+
+@pytest.mark.asyncio
+async def test_fetch_linkedin_guest_api_returns_none_on_error(httpx_mock):
+    httpx_mock.add_response(
+        url=re.compile(r"https://www\.linkedin\.com/jobs-guest/jobs/api/jobPosting/.*"),
+        status_code=429,
+    )
+    result = await fetch_linkedin_guest_api("4567890123")
+    assert result is None
+
+
+# Playwright fallback tests
+
+
+@pytest.mark.asyncio
+async def test_fetch_linkedin_playwright_success():
+    """Test Playwright fetcher with mocked browser."""
+    from app.enrichment import fetch_linkedin_playwright
+
+    mock_page = AsyncMock()
+    mock_page.goto = AsyncMock()
+    mock_page.wait_for_selector = AsyncMock()
+    mock_page.query_selector = AsyncMock()
+
+    mock_element = AsyncMock()
+    mock_element.inner_text = AsyncMock(return_value="Full job description from Playwright with enough content to pass the length check easily")
+    mock_page.query_selector.return_value = mock_element
+
+    mock_context = AsyncMock()
+    mock_context.new_page = AsyncMock(return_value=mock_page)
+    mock_context.__aenter__ = AsyncMock(return_value=mock_context)
+    mock_context.__aexit__ = AsyncMock(return_value=False)
+
+    mock_browser = AsyncMock()
+    mock_browser.new_context = AsyncMock(return_value=mock_context)
+
+    mock_pw_instance = AsyncMock()
+    mock_pw_instance.chromium.launch = AsyncMock(return_value=mock_browser)
+
+    mock_pw = AsyncMock()
+    mock_pw.__aenter__ = AsyncMock(return_value=mock_pw_instance)
+    mock_pw.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("app.enrichment.async_playwright", return_value=mock_pw):
+        result = await fetch_linkedin_playwright("https://www.linkedin.com/jobs/view/123456789")
+
+    assert result is not None
+    assert "Full job description" in result
+
+
+@pytest.mark.asyncio
+async def test_fetch_linkedin_playwright_not_installed():
+    """Returns None when playwright is not installed."""
+    from app.enrichment import fetch_linkedin_playwright
+
+    with patch("app.enrichment.PLAYWRIGHT_AVAILABLE", False):
+        result = await fetch_linkedin_playwright("https://www.linkedin.com/jobs/view/123456789")
+    assert result is None
