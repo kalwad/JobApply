@@ -228,8 +228,8 @@
         if (type === 'hidden' || type === 'submit' || type === 'button' || type === 'image') continue;
         if (el.disabled) continue;
 
-        // Skip our own overlay elements
-        if (el.closest(`#${PREFIX}-overlay`) || el.closest(`#${PREFIX}-learn-prompt`)) continue;
+        // Skip our own overlay/badge elements
+        if (el.closest(`#${PREFIX}-overlay`) || el.closest(`#${PREFIX}-learn-prompt`) || el.closest('.cp-auto-badge')) continue;
 
         const selector = buildSelector(el);
         if (!selector || seen.has(selector)) continue;
@@ -1455,6 +1455,9 @@
 
   async function startFillFlow() {
     try {
+      // Remove the auto-detection badge if present
+      removeBadge();
+
       currentState = 'analyzing';
       showOverlay('Analyzing form...');
 
@@ -1503,6 +1506,150 @@
       updateOverlay('error', `Error: ${err.message}`);
     }
   }
+
+  // ─── Application form auto-detection ────────────────────────
+
+  function detectApplicationForm() {
+    const url = window.location.href;
+    let confidence = 'none';
+
+    // URL patterns (high confidence)
+    const highConfidenceUrls = [
+      /myworkdayjobs\.com\/.*\/job\//i,
+      /boards\.greenhouse\.io\/.*\/jobs\//i,
+      /jobs\.lever\.co\/.*\/apply/i,
+      /icims\.com\/.*\/job\//i,
+      /taleo\.net\/.*\/apply/i,
+      /\/careers?\/.*(apply|application)/i,
+    ];
+
+    for (const pattern of highConfidenceUrls) {
+      if (pattern.test(url)) {
+        confidence = 'high';
+        break;
+      }
+    }
+
+    // Form field signals
+    if (confidence !== 'high') {
+      const fieldPatterns = /first.?name|last.?name|email|phone|resume/i;
+      let fieldMatches = 0;
+
+      const inputs = document.querySelectorAll('input, select, textarea, [role="textbox"]');
+      for (const el of inputs) {
+        const name = el.name || '';
+        const id = el.id || '';
+        const label = findLabel(el);
+        const placeholder = el.placeholder || '';
+        const combined = `${name} ${id} ${label} ${placeholder}`;
+
+        if (fieldPatterns.test(combined)) {
+          fieldMatches++;
+        }
+
+        // Resume file input
+        if (el.type === 'file' && /resume|cv/i.test(combined)) {
+          fieldMatches++;
+        }
+      }
+
+      const titleMatch = /apply|application|job.application/i.test(document.title);
+
+      if (fieldMatches >= 3) {
+        confidence = 'high';
+      } else if (fieldMatches >= 1 && titleMatch) {
+        confidence = 'medium';
+      }
+    }
+
+    return confidence;
+  }
+
+  // ─── Auto-detection badge ──────────────────────────────────────
+
+  let badgeEl = null;
+
+  function removeBadge() {
+    if (badgeEl) {
+      badgeEl.remove();
+      badgeEl = null;
+    }
+  }
+
+  function showBadge(confidence) {
+    if (badgeEl) return;
+
+    badgeEl = document.createElement('div');
+    badgeEl.className = 'cp-auto-badge' + (confidence === 'medium' ? ' cp-badge-medium' : '');
+    badgeEl.innerHTML = `
+      <span class="cp-auto-badge-main">
+        <svg class="cp-auto-badge-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+          <polyline points="10 9 9 9 8 9"/>
+        </svg>
+        Fill with CareerPulse
+      </span>
+      <button class="cp-auto-badge-dismiss" title="Dismiss">\u00d7</button>
+    `;
+
+    document.body.appendChild(badgeEl);
+
+    // Click main area to start fill
+    badgeEl.querySelector('.cp-auto-badge-main').addEventListener('click', () => {
+      removeBadge();
+      startFillFlow();
+    });
+
+    // Dismiss button: suppress for this hostname
+    badgeEl.querySelector('.cp-auto-badge-dismiss').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const host = window.location.hostname;
+      chrome.storage.local.get({ dismissedHosts: [] }, (result) => {
+        const hosts = result.dismissedHosts;
+        if (!hosts.includes(host)) {
+          hosts.push(host);
+          chrome.storage.local.set({ dismissedHosts: hosts });
+        }
+      });
+      removeBadge();
+    });
+  }
+
+  function tryShowBadge() {
+    const confidence = detectApplicationForm();
+    if (confidence === 'none') return;
+
+    chrome.storage.local.get({ dismissedHosts: [] }, (result) => {
+      const host = window.location.hostname;
+      if (result.dismissedHosts.includes(host)) return;
+      showBadge(confidence);
+    });
+  }
+
+  // Run detection after page load (with delay for SPA content)
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(tryShowBadge, 500));
+  } else {
+    setTimeout(tryShowBadge, 500);
+  }
+
+  // Watch for SPA navigation via debounced DOM mutations
+  let badgeObserverTimeout = null;
+  const badgeObserver = new MutationObserver(() => {
+    if (badgeObserverTimeout) clearTimeout(badgeObserverTimeout);
+    badgeObserverTimeout = setTimeout(() => {
+      if (!badgeEl && currentState === 'idle') {
+        tryShowBadge();
+      }
+    }, 1000);
+  });
+  badgeObserver.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
 
   // ─── Message handler ──────────────────────────────────────────
 
@@ -1584,6 +1731,10 @@
       clickOption,
       serializeFormHtml,
       fillForm,
+      detectApplicationForm,
+      showBadge,
+      removeBadge,
+      tryShowBadge,
     };
   }
 
