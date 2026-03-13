@@ -206,14 +206,15 @@
     }
   }
 
-  function extractFormData() {
+  function extractFormData(formRoot) {
+    const root = formRoot || document;
     const fields = [];
     const seen = new Set();
 
     const selectors = 'input, select, textarea, [contenteditable="true"], [role="combobox"], [role="textbox"], [role="spinbutton"]';
 
     // Search both light DOM and shadow DOM
-    const elements = deepQuerySelectorAll(document, selectors);
+    const elements = deepQuerySelectorAll(root, selectors);
 
     // Also check iframes we can access
     try {
@@ -1324,11 +1325,12 @@
 
   // ─── Iterative form fill ──────────────────────────────────────
 
-  async function fillForm(mappings) {
+  async function fillForm(mappings, atsAdapter) {
     const results = [];
     let filledCount = 0;
     const totalMappable = mappings.filter(m => m.action !== 'skip').length;
     const failedSelectors = new Set();
+    const atsFormRoot = atsAdapter?.getFormRoot?.(document) || null;
 
     for (let iteration = 0; iteration < 5; iteration++) {
       const currentMappings = iteration === 0 ? mappings : await getNewMappings();
@@ -1370,8 +1372,8 @@
       // Wait for dynamic fields
       await sleep(500);
 
-      // Check if new fields appeared
-      const newFields = extractFormData();
+      // Check if new fields appeared (use ATS form root if available)
+      const newFields = extractFormData(atsFormRoot);
       const previousSelectors = new Set(currentMappings.map(m => m.selector));
       const newUnmapped = newFields.filter(f => !previousSelectors.has(f.selector) && !f.currentValue);
 
@@ -1798,16 +1800,36 @@
       removeBadge();
 
       currentState = 'analyzing';
-      showOverlay('Analyzing form...');
+
+      // Detect ATS-specific adapter
+      const atsAdapter = window.__cpAtsAdapters
+        ? window.__cpAtsAdapters.detectATS(location.href, document)
+        : null;
+
+      if (atsAdapter) {
+        showOverlay(`Detected ${atsAdapter.name} \u2014 analyzing form...`);
+      } else {
+        showOverlay('Analyzing form...');
+      }
 
       preSubmitValues = captureFormValues();
 
+      // Use ATS adapter's form root if available
+      const formRoot = atsAdapter?.getFormRoot?.(document) || null;
+
       const formHtml = serializeFormHtml();
+
+      // Include ATS metadata in the analysis request
+      const analyzePayload = { type: 'analyzeForm', formHtml };
+      if (atsAdapter) {
+        analyzePayload.atsName = atsAdapter.name;
+        analyzePayload.atsFieldMap = atsAdapter.getFieldMap?.() || {};
+      }
 
       let response;
       try {
         response = await withTimeout(
-          chrome.runtime.sendMessage({ type: 'analyzeForm', formHtml }),
+          chrome.runtime.sendMessage(analyzePayload),
           API_TIMEOUT_MS,
           'Form analysis'
         );
@@ -1828,7 +1850,7 @@
       }
 
       currentState = 'filling';
-      const result = await fillForm(mappings);
+      const result = await fillForm(mappings, atsAdapter);
 
       const failedCount = result.results.filter(r => !r.success).length;
       let statusMsg = `Filled ${result.filledCount}/${result.total} fields.`;

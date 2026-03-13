@@ -16,7 +16,7 @@
     {
       "matches": ["<all_urls>"],
       "exclude_matches": ["http://localhost:8001/*", "http://127.0.0.1:8001/*"],
-      "js": ["normalize.js", "content.js"],
+      "js": ["normalize.js", "ats-adapters.js", "content.js"],
       "css": ["styles.css"],
       "run_at": "document_idle",
       "all_frames": true
