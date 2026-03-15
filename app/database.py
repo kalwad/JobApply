@@ -1,9 +1,13 @@
 import hashlib
 import json
+import logging
 import re
+import struct
 from datetime import datetime, timedelta, timezone
 
 import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 
 def make_dedup_hash(title: str, company: str, url: str) -> str:
@@ -39,7 +43,30 @@ class Database:
     async def init(self):
         self.db = await aiosqlite.connect(self.db_path)
         self.db.row_factory = aiosqlite.Row
+        await self._load_vec_extension()
         await self._create_tables()
+
+    async def _load_vec_extension(self):
+        try:
+            import sqlite_vec
+            db = self.db
+
+            def _load():
+                db._connection.enable_load_extension(True)
+                sqlite_vec.load(db._connection)
+                db._connection.enable_load_extension(False)
+
+            await db._execute(_load)
+            self._vec_loaded = True
+        except Exception as e:
+            logger.warning("sqlite-vec extension not available: %s", e)
+            self._vec_loaded = False
+
+    async def _ensure_vec_tables(self, dimensions: int = 256):
+        if not self._vec_loaded:
+            return
+        from app.embeddings import ensure_vec_tables
+        await ensure_vec_tables(self.db, dimensions=dimensions)
 
     async def close(self):
         if self.db:
@@ -390,9 +417,27 @@ class Database:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (job_id) REFERENCES jobs(id)
             );
+            CREATE TABLE IF NOT EXISTS context_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                source_id INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                embedded INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_context_type_source ON context_items(type, source_id);
+            CREATE TABLE IF NOT EXISTS embedding_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                provider TEXT NOT NULL DEFAULT 'openai',
+                api_key TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                base_url TEXT NOT NULL DEFAULT '',
+                dimensions INTEGER NOT NULL DEFAULT 256,
+                updated_at TEXT NOT NULL DEFAULT ''
+            );
         """)
         await self._migrate()
         await self.db.commit()
+        await self._ensure_vec_tables()
 
     async def _migrate(self):
         cursor = await self.db.execute("PRAGMA table_info(search_config)")
@@ -1245,8 +1290,35 @@ class Database:
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
-    async def find_similar_jobs(self, title: str, company: str, exclude_id: int = None) -> list[dict]:
-        """Find jobs with similar company name (fuzzy match on company, same or similar title)."""
+    async def find_similar_jobs(self, title: str, company: str, exclude_id: int = None,
+                               embedding_client=None) -> list[dict]:
+        """Find similar jobs using vector search (if available) with LIKE fallback."""
+        # Try vector search first
+        if self._vec_loaded and embedding_client and exclude_id:
+            try:
+                text = f"{title} at {company}"
+                query_vec = await embedding_client.embed(text)
+                vec_results = await self.find_similar_jobs_by_vector(query_vec, limit=11)
+                if vec_results:
+                    similar = []
+                    for r in vec_results:
+                        if r["id"] != exclude_id:
+                            score_cursor = await self.db.execute(
+                                "SELECT match_score FROM job_scores WHERE job_id = ?", (r["id"],)
+                            )
+                            score_row = await score_cursor.fetchone()
+                            similar.append({
+                                "id": r["id"], "title": r["title"],
+                                "company": r["company"], "url": r["url"],
+                                "match_score": score_row["match_score"] if score_row else None,
+                                "distance": r["distance"],
+                            })
+                    if similar:
+                        return similar[:10]
+            except Exception as e:
+                logger.warning("Vector similar search failed, falling back to LIKE: %s", e)
+
+        # Fallback to LIKE-based search
         norm_company = company.lower().strip()
         query = """
             SELECT j.id, j.title, j.company, j.url, js.match_score
@@ -2536,3 +2608,84 @@ class Database:
             for rtype, count in response_counts.items():
                 lines.append(f"- {rtype}: {count}")
         return "\n".join(lines) if len(lines) > 1 else "No application history yet."
+
+    # --- Embedding settings ---
+
+    async def get_embedding_settings(self) -> dict | None:
+        cursor = await self.db.execute("SELECT * FROM embedding_settings WHERE id = 1")
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+    async def save_embedding_settings(self, provider: str, api_key: str = "",
+                                      model: str = "", base_url: str = "",
+                                      dimensions: int = 256):
+        now = datetime.now(timezone.utc).isoformat()
+        await self.db.execute(
+            """INSERT INTO embedding_settings (id, provider, api_key, model, base_url, dimensions, updated_at)
+               VALUES (1, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+               provider = excluded.provider,
+               api_key = excluded.api_key,
+               model = excluded.model,
+               base_url = excluded.base_url,
+               dimensions = excluded.dimensions,
+               updated_at = excluded.updated_at""",
+            (provider, api_key, model, base_url, dimensions, now)
+        )
+        await self.db.commit()
+
+    # --- Embedding CRUD ---
+
+    @staticmethod
+    def _serialize_f32(vec: list[float]) -> bytes:
+        return struct.pack(f"{len(vec)}f", *vec)
+
+    async def upsert_job_embedding(self, job_id: int, vector: list[float]):
+        if not self._vec_loaded:
+            return
+        from app.embeddings import upsert_embedding
+        await upsert_embedding(self.db, "vec_jobs", job_id, vector)
+
+    async def upsert_context_embedding(self, item_id: int, vector: list[float]):
+        if not self._vec_loaded:
+            return
+        from app.embeddings import upsert_embedding
+        await upsert_embedding(self.db, "vec_context", item_id, vector)
+
+    async def find_similar_jobs_by_vector(self, query_vector: list[float],
+                                          limit: int = 10) -> list[dict]:
+        if not self._vec_loaded:
+            return []
+        from app.embeddings import search_embeddings
+        results = await search_embeddings(self.db, "vec_jobs", query_vector, limit=limit)
+        similar = []
+        for job_id, distance in results:
+            cursor = await self.db.execute(
+                "SELECT id, title, company, location, url FROM jobs WHERE id = ?",
+                (job_id,)
+            )
+            row = await cursor.fetchone()
+            if row:
+                similar.append({**dict(row), "distance": distance})
+        return similar
+
+    async def find_similar_context_by_vector(self, query_vector: list[float],
+                                             limit: int = 10) -> list[tuple[int, float]]:
+        if not self._vec_loaded:
+            return []
+        from app.embeddings import search_embeddings
+        return await search_embeddings(self.db, "vec_context", query_vector, limit=limit)
+
+    async def delete_job_embedding(self, job_id: int):
+        if not self._vec_loaded:
+            return
+        from app.embeddings import delete_embedding
+        await delete_embedding(self.db, "vec_jobs", job_id)
+
+    async def delete_context_embedding(self, item_id: int):
+        if not self._vec_loaded:
+            return
+        from app.embeddings import delete_embedding
+        await delete_embedding(self.db, "vec_context", item_id)

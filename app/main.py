@@ -34,7 +34,23 @@ def _build_ai_client(ai_settings: dict | None, env_key: str = "") -> AIClient | 
     return None
 
 
-@asynccontextmanager
+async def _init_embedding_client(db):
+    """Build an EmbeddingClient from saved DB settings, or None."""
+    settings = await db.get_embedding_settings()
+    if not settings or not settings.get("provider"):
+        return None
+    from app.embeddings import EmbeddingClient
+    provider = settings["provider"]
+    api_key = settings.get("api_key", "")
+    model = settings.get("model", "")
+    base_url = settings.get("base_url", "")
+    dimensions = settings.get("dimensions", 256)
+    if provider != "ollama" and not api_key:
+        return None
+    return EmbeddingClient(provider=provider, api_key=api_key, model=model,
+                           base_url=base_url, dimensions=dimensions)
+
+
 async def lifespan(app: FastAPI):
     db_path = app.state.db_path
     testing = getattr(app.state, "testing", False)
@@ -46,7 +62,7 @@ async def lifespan(app: FastAPI):
     if not testing:
         from app.config import Settings
         from app.scrapers import ALL_SCRAPERS
-        from app.scheduler import run_scrape_cycle, run_enrichment_cycle, run_maintenance_cycle, run_reminder_check, run_digest_cycle, run_alert_check
+        from app.scheduler import run_scrape_cycle, run_enrichment_cycle, run_maintenance_cycle, run_reminder_check, run_digest_cycle, run_alert_check, run_job_embedding_cycle, run_context_embedding_cycle
 
         settings = Settings()
 
@@ -79,6 +95,9 @@ async def lifespan(app: FastAPI):
         app.state.ai_client = client
         app.state.settings = settings
 
+        # Initialize embedding client from saved settings
+        app.state.embedding_client = await _init_embedding_client(app.state.db)
+
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
         scheduler = AsyncIOScheduler()
@@ -101,7 +120,7 @@ async def lifespan(app: FastAPI):
             await run_maintenance_cycle(app.state.db)
 
         async def scheduled_reminder_check():
-            due = await run_reminder_check(app.state.db)
+            due = await run_reminder_check(app.state.db, embedding_client=app.state.embedding_client)
             for r in due:
                 await app.state.db.add_event(
                     r["job_id"], "reminder_due",
@@ -113,6 +132,10 @@ async def lifespan(app: FastAPI):
 
         async def scheduled_alert_check():
             await run_alert_check(app.state.db)
+
+        async def scheduled_embedding():
+            await run_job_embedding_cycle(app.state.db, app.state.embedding_client)
+            await run_context_embedding_cycle(app.state.db, app.state.embedding_client)
 
         scheduler.add_job(
             scheduled_scrape, "interval",
@@ -149,12 +172,18 @@ async def lifespan(app: FastAPI):
             hours=1,
             id="alert_check",
         )
+        scheduler.add_job(
+            scheduled_embedding, "interval",
+            hours=2,
+            id="embedding_cycle",
+        )
         scheduler.start()
         app.state.scheduler = scheduler
     else:
         app.state.matcher = None
         app.state.tailor = None
         app.state.ai_client = None
+        app.state.embedding_client = None
         app.state.scheduler = None
 
     app.state.start_time = _time.monotonic()
@@ -559,9 +588,23 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
         sources = await app.state.db.get_sources(job_id)
         application = await app.state.db.get_application(job_id)
         events = await app.state.db.get_events(job_id)
-        similar = await app.state.db.find_similar_jobs(job["title"], job["company"], exclude_id=job_id)
+        similar = await app.state.db.find_similar_jobs(
+            job["title"], job["company"], exclude_id=job_id,
+            embedding_client=app.state.embedding_client,
+        )
         interview_prep = await app.state.db.get_interview_prep(job_id)
         return {**job, "score": score, "sources": sources, "application": application, "events": events, "similar": similar, "interview_prep": interview_prep}
+
+    @app.get("/api/jobs/{job_id}/similar")
+    async def get_similar_jobs(job_id: int):
+        job = await app.state.db.get_job(job_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        similar = await app.state.db.find_similar_jobs(
+            job["title"], job["company"], exclude_id=job_id,
+            embedding_client=app.state.embedding_client,
+        )
+        return {"similar": similar}
 
     @app.post("/api/jobs/{job_id}/dismiss")
     async def dismiss_job(job_id: int):
@@ -1152,6 +1195,19 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
         if not job:
             raise HTTPException(404, "Job not found")
         history = await app.state.db.get_application_history_summary()
+
+        # Enrich with similar past applications via embeddings
+        emb_client = getattr(app.state, "embedding_client", None)
+        db = app.state.db
+        if emb_client and getattr(db, "_vec_loaded", False):
+            from app.embeddings import retrieve_relevant_context
+            query = f"{job['title']} at {job['company']}"
+            context_items = await retrieve_relevant_context(db.db, emb_client, query, limit=3)
+            if context_items:
+                history += "\n\nRelevant past context:\n" + "\n".join(
+                    f"- {c['text'][:200]}" for c in context_items
+                )
+
         result = await _predict(
             client, history=history,
             title=job["title"], company=job["company"],
@@ -1502,6 +1558,16 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
             if concerns:
                 match_context += "Concerns: " + "; ".join(concerns)
 
+        # Retrieve relevant context via embeddings
+        rag_context = ""
+        emb_client = getattr(app.state, "embedding_client", None)
+        if emb_client and getattr(db, "_vec_loaded", False):
+            from app.embeddings import retrieve_relevant_context
+            query = f"{job['title']} at {job['company']} {(job.get('description') or '')[:500]}"
+            context_items = await retrieve_relevant_context(db.db, emb_client, query, limit=5)
+            if context_items:
+                rag_context = "\n".join(f"- [{c['type']}] {c['text'][:300]}" for c in context_items)
+
         prompt = f"""You are an interview preparation coach. Generate interview prep materials for this candidate and job.
 
 JOB: {job['title']} at {job['company']}
@@ -1510,6 +1576,7 @@ DESCRIPTION: {(job.get('description') or '')[:2000]}
 {f'COMPANY INFO: {company_context}' if company_context else ''}
 {f'MATCH ANALYSIS: {match_context}' if match_context else ''}
 {f'WORK HISTORY: {work_context}' if work_context else ''}
+{f'RELEVANT EXPERIENCE: {rag_context}' if rag_context else ''}
 {f'RESUME: {resume_text[:1500]}' if resume_text else ''}
 
 Return ONLY valid JSON with this structure:
@@ -2194,6 +2261,83 @@ Rank by ROI (jobs unlocked relative to learning difficulty). Return top 5 skills
             return {"ok": True, "response": response.strip()[:50]}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    @app.get("/api/settings/embeddings")
+    async def get_embedding_settings():
+        settings = await app.state.db.get_embedding_settings()
+        if not settings:
+            return {
+                "provider": "",
+                "api_key": "",
+                "model": "",
+                "base_url": "",
+                "dimensions": 256,
+                "has_key": False,
+                "enabled": False,
+                "updated_at": None,
+            }
+        return {
+            "provider": settings["provider"],
+            "api_key": _mask_key(settings["api_key"]),
+            "model": settings["model"],
+            "base_url": settings["base_url"],
+            "dimensions": settings["dimensions"],
+            "has_key": bool(settings["api_key"]),
+            "enabled": bool(app.state.embedding_client),
+            "updated_at": settings["updated_at"],
+        }
+
+    @app.post("/api/settings/embeddings")
+    async def save_embedding_settings(request: Request):
+        body = await request.json()
+        provider = body.get("provider", "openai")
+        api_key = body.get("api_key", "")
+        model = body.get("model", "")
+        base_url = body.get("base_url", "")
+        dimensions = body.get("dimensions", 256)
+
+        if provider not in ("openai", "ollama"):
+            raise HTTPException(400, "Provider must be 'openai' or 'ollama'")
+
+        if api_key.startswith("****"):
+            existing = await app.state.db.get_embedding_settings()
+            if existing:
+                api_key = existing["api_key"]
+
+        await app.state.db.save_embedding_settings(provider, api_key, model, base_url, dimensions)
+
+        # Re-initialize embedding client
+        app.state.embedding_client = await _init_embedding_client(app.state.db)
+
+        return {"ok": True, "provider": provider, "enabled": bool(app.state.embedding_client)}
+
+    @app.post("/api/embeddings/backfill")
+    async def backfill_embeddings(request: Request):
+        client = app.state.embedding_client
+        if not client:
+            raise HTTPException(400, "Embeddings not configured")
+
+        db = app.state.db
+        from app.embeddings import upsert_embedding
+
+        cursor = await db.db.execute(
+            "SELECT id, title, company, description FROM jobs WHERE dismissed = 0"
+        )
+        jobs = await cursor.fetchall()
+        embedded = 0
+        errors = 0
+
+        for job in jobs:
+            text = f"{job['title']} at {job['company']}\n{job['description'] or ''}"
+            try:
+                vector = await client.embed(text[:8000])
+                await upsert_embedding(db.db, "vec_jobs", job["id"], vector)
+                embedded += 1
+            except Exception as e:
+                logger.warning("Failed to embed job %d: %s", job["id"], e)
+                errors += 1
+
+        return {"ok": True, "embedded": embedded, "errors": errors, "total": len(jobs)}
 
     @app.get("/api/scraper-keys")
     async def get_scraper_keys():

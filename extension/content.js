@@ -125,6 +125,28 @@
         if (text && text.length < 200) return text;
       }
 
+      // 6. Google Forms: walk up to question container and find the title
+      // Google Forms nests inputs inside [data-params] containers with [role="heading"] titles
+      let ancestor = el.parentElement;
+      for (let i = 0; i < 15 && ancestor; i++) {
+        if (ancestor.hasAttribute('data-params') || ancestor.classList.contains('freebirdFormviewerComponentsQuestionBaseRoot')) {
+          const heading = ancestor.querySelector('[role="heading"], .freebirdFormviewerComponentsQuestionBaseTitle');
+          if (heading) return heading.textContent.trim();
+        }
+        ancestor = ancestor.parentElement;
+      }
+
+      // 7. Generic: walk up looking for a heading-like element near a form field container
+      ancestor = el.parentElement;
+      for (let i = 0; i < 8 && ancestor; i++) {
+        const heading = ancestor.querySelector('[role="heading"], legend, h3, h4');
+        if (heading) {
+          const inputs = ancestor.querySelectorAll('input, select, textarea, [role="checkbox"], [role="radio"]');
+          if (inputs.length <= 10) return heading.textContent.trim();
+        }
+        ancestor = ancestor.parentElement;
+      }
+
       return '';
     } catch {
       return '';
@@ -1976,11 +1998,22 @@
 
       const formHtml = serializeFormHtml();
 
+      // If adapter provides extra field extraction (e.g. Google Forms), merge them
+      let adapterFields = [];
+      if (atsAdapter?.getExtraFields) {
+        try {
+          adapterFields = atsAdapter.getExtraFields(document);
+        } catch { /* skip */ }
+      }
+
       // Include ATS metadata in the analysis request
       const analyzePayload = { type: 'analyzeForm', formHtml };
       if (atsAdapter) {
         analyzePayload.atsName = atsAdapter.name;
         analyzePayload.atsFieldMap = atsAdapter.getFieldMap?.() || {};
+        if (adapterFields.length) {
+          analyzePayload.adapterFields = adapterFields;
+        }
       }
 
       let response;

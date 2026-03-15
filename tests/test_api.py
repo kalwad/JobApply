@@ -14,6 +14,7 @@ async def app(tmp_path):
     db = Database(str(tmp_path / "test.db"))
     await db.init()
     application.state.db = db
+    application.state.embedding_client = None
     yield application
     await db.close()
 

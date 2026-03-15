@@ -1,4 +1,4 @@
-const DEFAULT_SERVER_URL = 'http://localhost:8001';
+const DEFAULT_SERVER_URL = 'http://localhost:8085';
 
 async function getServerUrl() {
   const { serverUrl } = await chrome.storage.local.get({ serverUrl: DEFAULT_SERVER_URL });
@@ -37,11 +37,15 @@ async function getFullProfile() {
   }
 }
 
-async function analyzeForm(formHtml) {
+async function analyzeForm(formHtml, adapterFields) {
   try {
+    const payload = { form_html: formHtml };
+    if (adapterFields?.length) {
+      payload.fields = adapterFields;
+    }
     const resp = await apiFetch('/api/autofill/analyze', {
       method: 'POST',
-      body: JSON.stringify({ form_html: formHtml }),
+      body: JSON.stringify(payload),
     });
     return { ok: true, data: await resp.json() };
   } catch (err) {
@@ -302,7 +306,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case 'getFullProfile':
           return await getFullProfile();
         case 'analyzeForm':
-          return await analyzeForm(message.formHtml);
+          return await analyzeForm(message.formHtml, message.adapterFields);
         case 'getResumeForJob':
           return await getResumeForJob(message.jobId);
         case 'saveLearnedData':

@@ -133,7 +133,7 @@ async def run_alert_check(db: Database) -> int:
     return total_notifications
 
 
-async def run_reminder_check(db: Database) -> list[dict]:
+async def run_reminder_check(db: Database, embedding_client=None) -> list[dict]:
     """Check for due follow-up reminders. Auto-drafts if configured. Returns list of due reminders."""
     due = await db.get_due_reminders()
     if due:
@@ -159,12 +159,28 @@ async def run_reminder_check(db: Database) -> list[dict]:
                             days = (datetime.now(timezone.utc) - datetime.fromisoformat(applied_at)).days
                         except (ValueError, TypeError):
                             pass
+
+                    # Retrieve past contact interactions for this company via embeddings
+                    template_text = None
+                    if embedding_client and getattr(db, "_vec_loaded", False):
+                        from app.embeddings import retrieve_relevant_context
+                        company = reminder.get("company", "")
+                        query = f"follow-up with {company} {reminder.get('title', '')}"
+                        context_items = await retrieve_relevant_context(
+                            db.db, embedding_client, query, limit=3
+                        )
+                        if context_items:
+                            template_text = "Previous interactions:\n" + "\n".join(
+                                f"- {c['text'][:200]}" for c in context_items
+                            )
+
                     draft = await draft_follow_up(
                         client,
                         title=reminder.get("title", ""),
                         company=reminder.get("company", ""),
                         applied_at=applied_at,
                         days_since=days,
+                        template_text=template_text,
                     )
                     if draft:
                         await db.update_reminder_draft(reminder["id"], draft)
@@ -172,6 +188,113 @@ async def run_reminder_check(db: Database) -> list[dict]:
             except Exception as e:
                 logger.error(f"Auto-draft failed for reminder {reminder['id']}: {e}")
     return due
+
+
+async def run_context_embedding_cycle(db: Database, embedding_client, batch_size: int = 20) -> int:
+    """Sync context items (work history, contact interactions) and embed them."""
+    if not embedding_client:
+        return 0
+    if not getattr(db, "_vec_loaded", False):
+        return 0
+
+    from app.embeddings import upsert_embedding
+
+    # Sync work history descriptions into context_items
+    cursor = await db.db.execute(
+        """SELECT id, job_title, company, description FROM work_history
+           WHERE description != ''"""
+    )
+    for row in await cursor.fetchall():
+        text = f"{row['job_title']} at {row['company']}: {row['description']}"
+        existing = await db.db.execute(
+            "SELECT id FROM context_items WHERE type = 'work_history' AND source_id = ?",
+            (row["id"],),
+        )
+        if not await existing.fetchone():
+            await db.db.execute(
+                "INSERT INTO context_items (type, source_id, text) VALUES (?, ?, ?)",
+                ("work_history", row["id"], text),
+            )
+
+    # Sync contact interaction notes
+    cursor = await db.db.execute(
+        """SELECT ci.id, ci.notes, c.name, c.company
+           FROM contact_interactions ci
+           JOIN contacts c ON c.id = ci.contact_id
+           WHERE ci.notes != ''"""
+    )
+    for row in await cursor.fetchall():
+        text = f"Interaction with {row['name']} ({row['company']}): {row['notes']}"
+        existing = await db.db.execute(
+            "SELECT id FROM context_items WHERE type = 'contact_interaction' AND source_id = ?",
+            (row["id"],),
+        )
+        if not await existing.fetchone():
+            await db.db.execute(
+                "INSERT INTO context_items (type, source_id, text) VALUES (?, ?, ?)",
+                ("contact_interaction", row["id"], text),
+            )
+
+    await db.db.commit()
+
+    # Embed unembedded context items
+    cursor = await db.db.execute(
+        "SELECT id, text FROM context_items WHERE embedded = 0 LIMIT ?",
+        (batch_size,),
+    )
+    items = await cursor.fetchall()
+    embedded = 0
+    for item in items:
+        try:
+            vector = await embedding_client.embed(item["text"][:8000])
+            await upsert_embedding(db.db, "vec_context", item["id"], vector)
+            await db.db.execute(
+                "UPDATE context_items SET embedded = 1 WHERE id = ?", (item["id"],)
+            )
+            embedded += 1
+        except Exception as e:
+            logger.warning("Failed to embed context item %d: %s", item["id"], e)
+
+    if embedded:
+        await db.db.commit()
+        logger.info(f"Context embedding cycle: embedded {embedded}/{len(items)} items")
+    return embedded
+
+
+async def run_job_embedding_cycle(db: Database, embedding_client, batch_size: int = 20) -> int:
+    """Embed jobs that don't have embeddings yet. Runs every 2 hours."""
+    if not embedding_client:
+        return 0
+    if not getattr(db, "_vec_loaded", False):
+        return 0
+
+    from app.embeddings import upsert_embedding
+
+    cursor = await db.db.execute(
+        """SELECT j.id, j.title, j.company, j.description
+           FROM jobs j
+           LEFT JOIN vec_jobs v ON v.item_id = j.id
+           WHERE j.dismissed = 0 AND v.item_id IS NULL
+           LIMIT ?""",
+        (batch_size,),
+    )
+    jobs = await cursor.fetchall()
+    if not jobs:
+        return 0
+
+    embedded = 0
+    for job in jobs:
+        text = f"{job['title']} at {job['company']}\n{job['description'] or ''}"
+        try:
+            vector = await embedding_client.embed(text[:8000])
+            await upsert_embedding(db.db, "vec_jobs", job["id"], vector)
+            embedded += 1
+        except Exception as e:
+            logger.warning("Failed to embed job %d: %s", job["id"], e)
+
+    if embedded:
+        logger.info(f"Embedding cycle: embedded {embedded}/{len(jobs)} jobs")
+    return embedded
 
 
 async def run_digest_cycle(db: Database) -> bool:

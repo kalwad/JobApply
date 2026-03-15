@@ -10,7 +10,7 @@ let isConnected = false;
 async function init() {
   const { serverUrl } = await chrome.storage.local.get({ serverUrl: 'http://localhost:8001' });
   serverUrlInput.value = serverUrl;
-  settingsLink.href = `${serverUrl}/settings`;
+  settingsLink.href = `${serverUrl}/#/settings`;
   await checkConnection();
 }
 
@@ -62,14 +62,14 @@ saveUrlBtn.addEventListener('click', async () => {
   let url = serverUrlInput.value.trim().replace(/\/+$/, '');
   if (!url) return;
   await chrome.storage.local.set({ serverUrl: url });
-  settingsLink.href = `${url}/settings`;
+  settingsLink.href = `${url}/#/settings`;
   await checkConnection();
 });
 
 settingsLink.addEventListener('click', async (e) => {
   e.preventDefault();
   const { serverUrl } = await chrome.storage.local.get({ serverUrl: 'http://localhost:8001' });
-  chrome.tabs.create({ url: `${serverUrl}/settings` });
+  chrome.tabs.create({ url: `${serverUrl}/#/settings` });
 });
 
 init();

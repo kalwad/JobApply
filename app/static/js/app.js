@@ -3382,7 +3382,7 @@ async function renderSettings(container) {
     container.innerHTML = `<div class="loading-container"><div class="spinner spinner-lg"></div><span>Loading settings...</span></div>`;
 
     try {
-        const [config, aiSettings, profile, fullProfile, scraperKeys, customQA, emailSettings, resumesData] = await Promise.all([
+        const [config, aiSettings, profile, fullProfile, scraperKeys, customQA, emailSettings, resumesData, embeddingSettings] = await Promise.all([
             api.getSearchConfig(),
             api.getAISettings(),
             api.request('GET', '/api/profile'),
@@ -3391,8 +3391,9 @@ async function renderSettings(container) {
             api.request('GET', '/api/custom-qa'),
             api.request('GET', '/api/settings/email'),
             api.request('GET', '/api/resumes'),
+            api.request('GET', '/api/settings/embeddings'),
         ]);
-        settingsData = { config, aiSettings, profile, fullProfile, scraperKeys, customQA: customQA.items || [], emailSettings, resumes: resumesData.resumes || [] };
+        settingsData = { config, aiSettings, profile, fullProfile, scraperKeys, customQA: customQA.items || [], emailSettings, resumes: resumesData.resumes || [], embeddingSettings };
         renderSettingsShell(container);
     } catch (err) {
         showToast(err.message, 'error');
@@ -3442,7 +3443,7 @@ function renderActiveTab(shell) {
         case 'job-search': renderTabJobSearch(content, d.config || {}, d.fullProfile || d.profile || {}, d.customQA || []); break;
         case 'alerts': renderTabAlerts(content); break;
         case 'follow-ups': renderTabFollowUps(content); break;
-        case 'integrations': renderTabAI(content, d.aiSettings || {}, d.scraperKeys || {}, d.emailSettings || {}); break;
+        case 'integrations': renderTabAI(content, d.aiSettings || {}, d.scraperKeys || {}, d.emailSettings || {}, d.embeddingSettings || {}); break;
         case 'data': renderTabData(content); break;
     }
 }
@@ -4487,7 +4488,7 @@ function renderTabJobSearch(container, config, profile, customQA) {
 }
 
 // === Tab 4: AI & Integrations ===
-function renderTabAI(container, aiSettings, scraperKeys, emailSettings) {
+function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddingSettings) {
     const aiProvider = aiSettings.provider || '';
     const aiKey = aiSettings.api_key || '';
     const aiModel = aiSettings.model || '';
@@ -4615,6 +4616,39 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings) {
             </div>
             <div id="email-test-result" style="margin-top:12px"></div>
         </div>
+
+        <div class="card" style="padding:24px;margin-bottom:24px">
+            <h2 style="font-size:1.125rem;font-weight:600;margin-bottom:8px">Embedding Settings</h2>
+            <p style="color:var(--text-secondary);margin-bottom:16px;font-size:0.875rem">
+                Configure vector embeddings for semantic job search and similar job recommendations.
+            </p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+                ${settingsSelect('Provider', 'emb-provider', embeddingSettings.provider || '', [
+                    { value: 'openai', label: 'OpenAI' },
+                    { value: 'ollama', label: 'Ollama' },
+                ])}
+                <div>
+                    <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Model</label>
+                    <input type="text" class="search-input" id="emb-model" value="${escapeHtml(embeddingSettings.model || '')}" placeholder="${(!embeddingSettings.provider || embeddingSettings.provider === 'openai') ? 'text-embedding-3-small' : 'nomic-embed-text'}" style="width:100%">
+                </div>
+            </div>
+            <div id="emb-key-row" style="margin-bottom:12px;${embeddingSettings.provider === 'ollama' ? 'display:none' : ''}">
+                <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">API Key</label>
+                <input type="password" class="search-input" id="emb-api-key" placeholder="${embeddingSettings.has_key ? 'Key configured (leave blank to keep)' : 'Enter API key'}" style="width:100%">
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+                <div id="emb-url-row" style="${embeddingSettings.provider === 'ollama' ? '' : 'display:none'}">
+                    <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Base URL</label>
+                    <input type="text" class="search-input" id="emb-base-url" value="${escapeHtml(embeddingSettings.base_url || '')}" placeholder="http://localhost:11434" style="width:100%">
+                </div>
+                ${settingsField('Dimensions', 'emb-dimensions', embeddingSettings.dimensions || (embeddingSettings.provider === 'ollama' ? 768 : 256), 'number')}
+            </div>
+            <div style="display:flex;gap:12px">
+                <button class="btn btn-primary" id="save-emb-btn">Save Embedding Settings</button>
+                <button class="btn btn-secondary" id="backfill-emb-btn">Backfill Embeddings</button>
+            </div>
+            <div id="emb-result" style="margin-top:12px"></div>
+        </div>
     `;
 
     // AI provider toggle
@@ -4741,6 +4775,53 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings) {
             resultDiv.innerHTML = `<div style="color:var(--danger, #ef4444);font-size:0.875rem">${escapeHtml(err.message)}</div>`;
         }
         finally { btn.disabled = false; btn.textContent = 'Send Test Digest'; }
+    });
+
+    // Embedding provider toggle
+    const embDefaults = { openai: { model: 'text-embedding-3-small', dims: 256 }, ollama: { model: 'nomic-embed-text', dims: 768 } };
+    document.getElementById('emb-provider').addEventListener('change', (e) => {
+        const provider = e.target.value;
+        const isOllama = provider === 'ollama';
+        document.getElementById('emb-key-row').style.display = isOllama ? 'none' : '';
+        document.getElementById('emb-url-row').style.display = isOllama ? '' : 'none';
+        document.getElementById('emb-model').placeholder = embDefaults[provider]?.model || '';
+        document.getElementById('emb-dimensions').value = embDefaults[provider]?.dims || 256;
+    });
+
+    document.getElementById('save-emb-btn').addEventListener('click', async () => {
+        const btn = document.getElementById('save-emb-btn');
+        const resultDiv = document.getElementById('emb-result');
+        btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Saving...';
+        try {
+            const payload = {
+                provider: document.getElementById('emb-provider').value,
+                api_key: document.getElementById('emb-api-key').value,
+                model: document.getElementById('emb-model').value,
+                base_url: document.getElementById('emb-base-url').value,
+                dimensions: parseInt(document.getElementById('emb-dimensions').value) || 256,
+            };
+            await api.request('POST', '/api/settings/embeddings', payload);
+            showToast('Embedding settings saved', 'success');
+            resultDiv.innerHTML = '';
+        } catch (err) {
+            showToast(err.message, 'error');
+            resultDiv.innerHTML = `<div style="color:var(--danger, #ef4444);font-size:0.875rem">${escapeHtml(err.message)}</div>`;
+        }
+        finally { btn.disabled = false; btn.textContent = 'Save Embedding Settings'; }
+    });
+
+    document.getElementById('backfill-emb-btn').addEventListener('click', async () => {
+        const btn = document.getElementById('backfill-emb-btn');
+        const resultDiv = document.getElementById('emb-result');
+        btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Backfilling...';
+        resultDiv.innerHTML = '<div style="font-size:0.875rem;color:var(--text-secondary)">Processing embeddings, this may take a while...</div>';
+        try {
+            const result = await api.request('POST', '/api/embeddings/backfill');
+            resultDiv.innerHTML = `<div style="color:var(--success, #22c55e);font-size:0.875rem;font-weight:600">Backfill complete: ${result.embedded || 0}/${result.total || 0} jobs embedded${result.errors ? `, ${result.errors} errors` : ''}</div>`;
+        } catch (err) {
+            resultDiv.innerHTML = `<div style="color:var(--danger, #ef4444);font-size:0.875rem">${escapeHtml(err.message)}</div>`;
+        }
+        finally { btn.disabled = false; btn.textContent = 'Backfill Embeddings'; }
     });
 }
 

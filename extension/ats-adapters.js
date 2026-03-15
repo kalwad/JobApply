@@ -378,9 +378,194 @@
     },
   };
 
+  // ─── Google Forms Adapter ────────────────────────────────────
+
+  const googleForms = {
+    name: 'Google Forms',
+
+    match(url) {
+      return /docs\.google\.com\/forms/i.test(url);
+    },
+
+    getFormRoot(doc) {
+      return doc.querySelector('[role="form"]') || doc.querySelector('form') || doc;
+    },
+
+    getFieldMap() {
+      return {}; // Google Forms uses dynamic IDs, rely on label extraction
+    },
+
+    enhanceExtraction(fields) {
+      // Google Forms checkboxes use <div role="checkbox"> or <div role="option">
+      // which aren't picked up by standard extractFormData
+      return fields;
+    },
+
+    getExtraFields(doc) {
+      // Extract Google Forms question blocks that standard extraction might miss
+      const fields = [];
+      const questionBlocks = doc.querySelectorAll('[data-params], .freebirdFormviewerComponentsQuestionBaseRoot');
+
+      for (const block of questionBlocks) {
+        const heading = block.querySelector('[role="heading"], .freebirdFormviewerComponentsQuestionBaseTitle');
+        if (!heading) continue;
+        const label = heading.textContent.trim();
+        const required = block.querySelector('[aria-label*="Required"]') !== null
+          || block.textContent.includes('*');
+
+        // Text inputs
+        const textInput = block.querySelector('input[type="text"], input[type="email"], textarea');
+        if (textInput) {
+          const selector = buildSelectorForEl(textInput);
+          if (selector) {
+            fields.push({
+              selector,
+              tag: textInput.tagName.toLowerCase(),
+              type: textInput.type || 'text',
+              name: textInput.name || null,
+              id: textInput.id || null,
+              placeholder: textInput.placeholder || null,
+              label,
+              nearbyHeading: label,
+              required,
+              currentValue: textInput.value || '',
+              role: textInput.getAttribute('role') || null,
+            });
+          }
+          continue;
+        }
+
+        // Checkbox groups — Google Forms uses <div role="list"> with <div role="listitem">
+        const checkboxes = block.querySelectorAll('[role="checkbox"], input[type="checkbox"]');
+        if (checkboxes.length > 0) {
+          const options = Array.from(checkboxes).map(cb => {
+            const optLabel = cb.getAttribute('aria-label')
+              || cb.closest('[role="listitem"]')?.textContent?.trim()
+              || cb.parentElement?.textContent?.trim()
+              || cb.value || '';
+            return {
+              value: cb.getAttribute('data-answer-value') || optLabel,
+              label: optLabel,
+              checked: cb.getAttribute('aria-checked') === 'true' || cb.checked,
+            };
+          });
+
+          // Use the first checkbox as the selector anchor
+          const first = checkboxes[0];
+          const isNativeInput = first.tagName === 'INPUT';
+          const selector = isNativeInput
+            ? buildSelectorForEl(first)
+            : buildSelectorForEl(first);
+
+          if (selector) {
+            fields.push({
+              selector,
+              tag: first.tagName.toLowerCase(),
+              type: 'checkbox',
+              name: first.getAttribute('name') || null,
+              id: first.id || null,
+              placeholder: null,
+              label,
+              nearbyHeading: label,
+              required,
+              currentValue: '',
+              role: first.getAttribute('role') || null,
+              options,
+            });
+          }
+          continue;
+        }
+
+        // Radio groups
+        const radios = block.querySelectorAll('[role="radio"], input[type="radio"]');
+        if (radios.length > 0) {
+          const options = Array.from(radios).map(rb => {
+            const optLabel = rb.getAttribute('aria-label')
+              || rb.closest('[role="listitem"]')?.textContent?.trim()
+              || rb.parentElement?.textContent?.trim()
+              || rb.value || '';
+            return {
+              value: rb.getAttribute('data-answer-value') || optLabel,
+              label: optLabel,
+              checked: rb.getAttribute('aria-checked') === 'true' || rb.checked,
+            };
+          });
+
+          const first = radios[0];
+          const selector = buildSelectorForEl(first);
+          if (selector) {
+            fields.push({
+              selector,
+              tag: first.tagName.toLowerCase(),
+              type: 'radio',
+              name: first.getAttribute('name') || null,
+              id: first.id || null,
+              placeholder: null,
+              label,
+              nearbyHeading: label,
+              required,
+              currentValue: '',
+              role: first.getAttribute('role') || null,
+              options,
+            });
+          }
+          continue;
+        }
+
+        // Dropdowns — Google Forms uses <div role="listbox">
+        const dropdown = block.querySelector('[role="listbox"], select');
+        if (dropdown) {
+          const selector = buildSelectorForEl(dropdown);
+          const options = dropdown.tagName === 'SELECT'
+            ? Array.from(dropdown.options).map(o => ({ value: o.value, text: o.textContent.trim() }))
+            : Array.from(dropdown.querySelectorAll('[role="option"]')).map(o => ({
+                value: o.getAttribute('data-value') || o.textContent.trim(),
+                text: o.textContent.trim(),
+              }));
+          if (selector) {
+            fields.push({
+              selector,
+              tag: dropdown.tagName.toLowerCase(),
+              type: 'select',
+              name: null,
+              id: dropdown.id || null,
+              placeholder: null,
+              label,
+              nearbyHeading: label,
+              required,
+              currentValue: '',
+              role: dropdown.getAttribute('role') || null,
+              options,
+            });
+          }
+        }
+      }
+
+      return fields;
+    },
+  };
+
+  // Helper to build a CSS selector for an element (simplified version)
+  function buildSelectorForEl(el) {
+    if (el.id) return `#${CSS.escape(el.id)}`;
+    if (el.name) return `[name="${CSS.escape(el.name)}"]`;
+    // Build a path-based selector
+    const tag = el.tagName.toLowerCase();
+    const parent = el.parentElement;
+    if (!parent) return null;
+    const siblings = Array.from(parent.children).filter(c => c.tagName === el.tagName);
+    if (siblings.length === 1) {
+      const parentSel = buildSelectorForEl(parent);
+      return parentSel ? `${parentSel} > ${tag}` : null;
+    }
+    const idx = siblings.indexOf(el) + 1;
+    const parentSel = buildSelectorForEl(parent);
+    return parentSel ? `${parentSel} > ${tag}:nth-of-type(${idx})` : null;
+  }
+
   // ─── Registry ─────────────────────────────────────────────────
 
-  const atsAdapters = [workday, greenhouse, lever, icims, taleo];
+  const atsAdapters = [workday, greenhouse, lever, icims, taleo, googleForms];
 
   function detectATS(url, doc) {
     try {
