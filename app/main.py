@@ -2258,7 +2258,7 @@ Rank by ROI (jobs unlocked relative to learning difficulty). Return top 5 skills
         try:
             client = AIClient(provider, api_key=api_key, model=model, base_url=base_url)
             response = await client.chat("Reply with exactly: OK", max_tokens=10)
-            return {"ok": True, "response": response.strip()[:50]}
+            return {"ok": True, "response": (response or "").strip()[:50]}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 

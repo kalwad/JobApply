@@ -149,7 +149,7 @@ class AIClient:
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content or ""
 
     async def _ollama_chat(self, prompt: str, max_tokens: int) -> str:
         url = f"{_resolve_ollama_url(self.base_url).rstrip('/')}/api/chat"
