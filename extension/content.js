@@ -2012,7 +2012,6 @@
         }
 
         // Extract structured fields for more reliable AI analysis
-        const formRoot = atsAdapter?.getFormRoot?.(document) || null;
         const structuredFields = extractFormData(formRoot);
 
         // Include ATS metadata in the analysis request
