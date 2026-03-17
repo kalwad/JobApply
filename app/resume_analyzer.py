@@ -122,6 +122,8 @@ Guidelines:
 - key_skills: The candidate's top 10-15 technical and domain skills extracted from the resume
 - seniority: The appropriate seniority level based on years of experience and roles held
 - summary: What makes this candidate unique and what types of roles they should target
+- IMPORTANT: The candidate's own job title, headline, and professional summary are the strongest signal for what roles they want. Use these to determine the PRIMARY focus of search terms and job titles. Do not over-index on secondary skills mentioned in past roles.
+- ORDER search_terms by relevance: put terms matching the candidate's self-stated title and summary FIRST, then broader/adjacent terms after
 - Focus on the candidate's strongest skills and most recent experience
 - Include both broad and niche search terms
 - Add "remote" to search terms where appropriate

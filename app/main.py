@@ -1926,17 +1926,44 @@ Return ONLY valid JSON with this structure:
             return {"skills": [], "message": "No jobs in the 50-80 score range to analyze"}
 
         user_skills = await db.get_skills()
-        user_skill_names = [s["name"] for s in user_skills if s.get("name")]
+        # Flatten category-style skill strings into individual skills
+        # e.g. "IaC & Automation: Terraform, Packer, Ansible, Puppet, Bash, Python" → individual items
+        import re
+        flat_skills = set()
+        for s in user_skills:
+            name = s.get("name", "")
+            if not name:
+                continue
+            # Split on category separator (colon), take the values part
+            if ": " in name:
+                name = name.split(": ", 1)[1]
+            # Strip parenthetical details BEFORE splitting on commas
+            # e.g. "AWS (EC2, SES, Lightsail)" → "AWS"
+            name = re.sub(r'\s*\([^)]*\)', '', name)
+            # Split on commas and common separators
+            for part in name.replace(" / ", ", ").replace(" & ", ", ").split(","):
+                part = part.strip()
+                if part and len(part) > 1:
+                    flat_skills.add(part)
+        flat_skill_list = sorted(flat_skills)
+
+        # Filter out keywords the user already has — these are strengths, not gaps
+        user_skills_lower = {s.lower() for s in flat_skill_list}
+        filtered_keywords = [
+            (k, n) for k, n in gap_data['top_keywords']
+            if k.lower() not in user_skills_lower
+        ]
 
         prompt = f"""You are a career advisor. Analyze the skill gaps between a job seeker's current skills and the jobs they almost qualify for (scored 50-80 out of 100).
 
-CURRENT SKILLS: {', '.join(user_skill_names) if user_skill_names else 'Not specified'}
+CURRENT SKILLS (the candidate ALREADY HAS these — do NOT suggest these as gaps):
+{', '.join(flat_skill_list) if flat_skill_list else 'Not specified'}
 
-TOP CONCERNS FROM JOB MATCHES (concern, frequency):
+TOP CONCERNS FROM JOB MATCHES (reasons jobs scored below 80):
 {chr(10).join(f'- {c}: {n} jobs' for c, n in gap_data['top_concerns'][:15])}
 
-SUGGESTED KEYWORDS/SKILLS FROM JOB MATCHES (keyword, frequency):
-{chr(10).join(f'- {k}: {n} jobs' for k, n in gap_data['top_keywords'][:15])}
+SKILLS FREQUENTLY REQUIRED BY NEAR-MATCH JOBS (already filtered to exclude skills the candidate has):
+{chr(10).join(f'- {k}: {n} jobs' for k, n in filtered_keywords[:15]) if filtered_keywords else '- None (candidate has all frequently required skills)'}
 
 TOTAL NEAR-MATCH JOBS: {gap_data['job_count']}
 
@@ -1953,6 +1980,7 @@ Return ONLY valid JSON with this structure:
     ]
 }}
 
+IMPORTANT: Do NOT suggest skills the candidate already has. Only suggest genuinely NEW skills.
 Rank by ROI (jobs unlocked relative to learning difficulty). Return top 5 skills."""
 
         raw = await client.chat(prompt, max_tokens=1024)
