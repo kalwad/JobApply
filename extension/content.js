@@ -1192,7 +1192,22 @@
           return { selector, success: true, action };
         }
 
+        case 'select_dropdown_safe':
         case 'select_dropdown': {
+          // For 'select_dropdown_safe': check if the field already contains the
+          // desired value before interacting — avoids opening dropdowns unnecessarily
+          if (action === 'select_dropdown_safe') {
+            const container = el.closest('[data-automation-id], [class*="combobox"], [role="combobox"], [role="listbox"]') || el.parentElement;
+            const existingText = (container?.textContent || el.value || '').toLowerCase();
+            const valueLower = value.toLowerCase();
+            // Check if the value (or a key part) is already present
+            const valueWords = valueLower.split(/[\s()]+/).filter(w => w.length > 2);
+            const alreadySet = valueWords.length > 0 && valueWords.every(w => existingText.includes(w));
+            if (alreadySet) {
+              return { selector, success: true, action, skipped: true, reason: 'already set' };
+            }
+          }
+
           // Handle native <select>
           if (el.tagName === 'SELECT') {
             const options = Array.from(el.options || []).map(o => ({ value: o.value, text: o.textContent }));
