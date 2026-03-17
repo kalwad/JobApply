@@ -67,11 +67,19 @@ class JobMatcher:
             raw = await self.client.chat(prompt, max_tokens=1024)
             return parse_json_response(raw)
         except Exception as e:
-            logger.error(f"Scoring failed: {e}")
+            provider = getattr(self.client, "provider", "unknown")
+            base_url = getattr(self.client, "base_url", "")
+            if "connect" in str(e).lower() or "refused" in str(e).lower():
+                msg = f"{provider} unreachable at {base_url}"
+            elif "circuit breaker" in str(e).lower():
+                msg = f"{provider} unavailable (too many failures, will retry after cooldown)"
+            else:
+                msg = f"Scoring error: {e}"
+            logger.error(f"Scoring failed: {msg}")
             return {
                 "score": 0,
                 "reasons": [],
-                "concerns": [f"Scoring error: {e}"],
+                "concerns": [msg],
                 "keywords": [],
             }
 

@@ -78,6 +78,37 @@ OPENAI_COMPAT_PROVIDERS = {
 ALL_PROVIDERS = ["anthropic", "ollama", "openai", "google", "openrouter"]
 
 
+async def check_ai_reachable(client: "AIClient") -> tuple[bool, str]:
+    """Quick connectivity check for the configured AI provider. Returns (reachable, detail)."""
+    try:
+        if client.provider == "ollama":
+            url = f"{_resolve_ollama_url(client.base_url).rstrip('/')}/api/tags"
+            async with httpx.AsyncClient(timeout=5.0) as http:
+                resp = await http.get(url)
+                resp.raise_for_status()
+            return True, "ok"
+        elif client.provider == "anthropic":
+            import anthropic
+            c = anthropic.AsyncAnthropic(api_key=client.api_key)
+            await c.messages.create(
+                model=client.model, max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+            return True, "ok"
+        elif client.provider in OPENAI_COMPAT_PROVIDERS:
+            from openai import AsyncOpenAI
+            c = AsyncOpenAI(api_key=client.api_key, base_url=client.base_url)
+            await c.models.list()
+            return True, "ok"
+        return False, f"Unknown provider: {client.provider}"
+    except httpx.ConnectError:
+        return False, f"{client.provider} unreachable at {client.base_url}"
+    except httpx.HTTPStatusError as e:
+        return False, f"{client.provider} returned HTTP {e.response.status_code}"
+    except Exception as e:
+        return False, f"{client.provider} error: {e}"
+
+
 class AIClient:
     """Unified async AI client supporting Anthropic, Ollama, OpenAI, Google, and OpenRouter."""
 

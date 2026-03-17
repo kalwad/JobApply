@@ -720,6 +720,13 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
 
         ai_client = getattr(app.state, "ai_client", None)
 
+        ai_status = "not_configured"
+        ai_detail = ""
+        if ai_client:
+            from app.ai_client import check_ai_reachable
+            reachable, ai_detail = await check_ai_reachable(ai_client)
+            ai_status = "ok" if reachable else "unreachable"
+
         start = getattr(app.state, "start_time", None)
         uptime_seconds = round(_time.monotonic() - start, 1) if start else None
 
@@ -730,6 +737,8 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
             "last_scrape": last_scrape,
             "ai_provider": ai_client.provider if ai_client else None,
             "ai_configured": ai_client is not None,
+            "ai_status": ai_status,
+            "ai_detail": ai_detail if ai_status != "ok" else "",
             "uptime_seconds": uptime_seconds,
         }
 
@@ -2142,6 +2151,7 @@ Rank by ROI (jobs unlocked relative to learning difficulty). Return top 5 skills
             try:
                 from app.scrapers import ALL_SCRAPERS
                 from app.scheduler import run_scrape_cycle, run_enrichment_cycle
+                from app.ai_client import check_ai_reachable
 
                 db = app.state.db
                 config = await db.get_search_config()
@@ -2152,7 +2162,20 @@ Rank by ROI (jobs unlocked relative to learning difficulty). Return top 5 skills
                 await run_scrape_cycle(db, scrapers, search_terms=terms, progress=app.state.scrape_progress, scraper_keys=keys)
 
                 await run_enrichment_cycle(db)
-                await _score_unscored(db)
+
+                ai_client = getattr(app.state, "ai_client", None)
+                if ai_client:
+                    reachable, detail = await check_ai_reachable(ai_client)
+                    if reachable:
+                        await _score_unscored(db)
+                    else:
+                        logger.warning(f"Skipping scoring: {detail}")
+                        if app.state.scrape_progress:
+                            app.state.scrape_progress["scoring_skipped"] = detail
+                else:
+                    logger.warning("Skipping scoring: no AI provider configured")
+                    if app.state.scrape_progress:
+                        app.state.scrape_progress["scoring_skipped"] = "No AI provider configured"
             except Exception:
                 logger.exception("Background scrape+score failed")
                 if app.state.scrape_progress:
