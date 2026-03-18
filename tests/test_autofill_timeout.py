@@ -43,7 +43,7 @@ async def test_autofill_analyze_timeout(app, client, mock_ai_client):
     mock_ai_client.chat = AsyncMock(side_effect=slow_chat)
     app.state.ai_client = mock_ai_client
 
-    with patch("app.main.AUTOFILL_ANALYZE_TIMEOUT", 1):
+    with patch("app.routers.autofill.AUTOFILL_ANALYZE_TIMEOUT", 1):
         resp = await client.post(
             "/api/autofill/analyze",
             json={"form_html": "<form><input name='email'></form>", "fields": [{"name": "email"}]},

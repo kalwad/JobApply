@@ -2,8 +2,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
+let originalFetch;
+let onRemovedCallback;
+let onMessageHandler;
+
 function loadBackground() {
-  // Mock all chrome APIs used at top level in background.js
   globalThis.chrome = {
     storage: {
       local: {
@@ -11,9 +14,11 @@ function loadBackground() {
       },
     },
     tabs: {
-      onRemoved: { addListener: vi.fn() },
+      onRemoved: {
+        addListener: vi.fn((cb) => { onRemovedCallback = cb; }),
+      },
       onUpdated: { addListener: vi.fn(), removeListener: vi.fn() },
-      query: vi.fn().mockResolvedValue([]),
+      query: vi.fn().mockResolvedValue([{ id: 42 }]),
       create: vi.fn().mockResolvedValue({ id: 1 }),
       sendMessage: vi.fn(),
     },
@@ -21,7 +26,9 @@ function loadBackground() {
       onCommand: { addListener: vi.fn() },
     },
     runtime: {
-      onMessage: { addListener: vi.fn() },
+      onMessage: {
+        addListener: vi.fn((handler) => { onMessageHandler = handler; }),
+      },
     },
     downloads: {
       download: vi.fn().mockResolvedValue(undefined),
@@ -32,13 +39,36 @@ function loadBackground() {
   globalThis.URL.revokeObjectURL = vi.fn();
 
   const code = readFileSync(join(__dirname, '..', 'background.js'), 'utf-8');
-  // Indirect eval to execute in global scope so function declarations are accessible
   (0, eval)(code);
 }
 
-describe('apiFetch timeout', () => {
-  let originalFetch;
+function mockFetchOk(data) {
+  globalThis.fetch = vi.fn().mockResolvedValue({
+    ok: true,
+    json: () => Promise.resolve(data),
+    blob: () => Promise.resolve(new Blob(['test'])),
+  });
+}
 
+function mockFetchFail(status = 500) {
+  globalThis.fetch = vi.fn().mockResolvedValue({
+    ok: false,
+    status,
+    statusText: 'Server Error',
+  });
+}
+
+function sendMessage(message) {
+  return new Promise((resolve) => {
+    onMessageHandler(message, {}, resolve);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// apiFetch
+// ═══════════════════════════════════════════════════════════════
+
+describe('apiFetch timeout', () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     originalFetch = globalThis.fetch;
@@ -51,7 +81,6 @@ describe('apiFetch timeout', () => {
   });
 
   it('aborts fetch after 50 seconds if backend hangs', async () => {
-    // Make fetch hang until abort signal fires
     globalThis.fetch = vi.fn((url, opts) => {
       return new Promise((resolve, reject) => {
         if (opts?.signal) {
@@ -63,8 +92,6 @@ describe('apiFetch timeout', () => {
     });
 
     const fetchPromise = globalThis.apiFetch('/api/health').catch(e => e);
-
-    // Advance past the 50s timeout
     await vi.advanceTimersByTimeAsync(51000);
 
     const error = await fetchPromise;
@@ -80,5 +107,365 @@ describe('apiFetch timeout', () => {
     const callArgs = globalThis.fetch.mock.calls[0];
     expect(callArgs[1]).toHaveProperty('signal');
     expect(callArgs[1].signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// API functions via onMessage router
+// ═══════════════════════════════════════════════════════════════
+
+describe('onMessage router', () => {
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    loadBackground();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('routes checkConnection and returns ok on success', async () => {
+    mockFetchOk({ status: 'healthy' });
+    const result = await sendMessage({ type: 'checkConnection' });
+    expect(result.ok).toBe(true);
+    expect(result.data.status).toBe('healthy');
+  });
+
+  it('routes checkConnection and returns error on failure', async () => {
+    mockFetchFail(500);
+    const result = await sendMessage({ type: 'checkConnection' });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBeTruthy();
+  });
+
+  it('routes getFullProfile', async () => {
+    mockFetchOk({ name: 'Test User', email: 'test@example.com' });
+    const result = await sendMessage({ type: 'getFullProfile' });
+    expect(result.ok).toBe(true);
+    expect(result.data.name).toBe('Test User');
+  });
+
+  it('routes analyzeForm with form HTML', async () => {
+    mockFetchOk({ mappings: [{ selector: '#name', value: 'John' }] });
+    const result = await sendMessage({
+      type: 'analyzeForm',
+      formHtml: '<form><input name="name"></form>',
+    });
+    expect(result.ok).toBe(true);
+    expect(result.data.mappings).toHaveLength(1);
+  });
+
+  it('routes analyzeForm with structured fields', async () => {
+    mockFetchOk({ mappings: [] });
+    const result = await sendMessage({
+      type: 'analyzeForm',
+      formHtml: '<form></form>',
+      structuredFields: [{ selector: '#f1', label: 'Name' }],
+    });
+    expect(result.ok).toBe(true);
+    const body = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
+    expect(body.fields).toHaveLength(1);
+  });
+
+  it('routes analyzeForm with adapter fields when no structured fields', async () => {
+    mockFetchOk({ mappings: [] });
+    const result = await sendMessage({
+      type: 'analyzeForm',
+      formHtml: '<form></form>',
+      adapterFields: [{ selector: '#f1', label: 'Name' }],
+    });
+    expect(result.ok).toBe(true);
+    const body = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
+    expect(body.fields).toHaveLength(1);
+  });
+
+  it('routes getCustomQA', async () => {
+    mockFetchOk({ qa_pairs: [] });
+    const result = await sendMessage({ type: 'getCustomQA' });
+    expect(result.ok).toBe(true);
+  });
+
+  it('routes saveJob', async () => {
+    mockFetchOk({ id: 1 });
+    const result = await sendMessage({
+      type: 'saveJob',
+      jobData: { title: 'Dev', company: 'Acme', url: 'https://example.com/job/1' },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.data.id).toBe(1);
+  });
+
+  it('routes lookupJob', async () => {
+    mockFetchOk({ id: 5, title: 'Dev' });
+    const result = await sendMessage({ type: 'lookupJob', url: 'https://example.com/job/5' });
+    expect(result.ok).toBe(true);
+    expect(result.data.id).toBe(5);
+  });
+
+  it('routes markAppliedByUrl', async () => {
+    mockFetchOk({ updated: true });
+    const result = await sendMessage({ type: 'markAppliedByUrl', url: 'https://example.com/job/1' });
+    expect(result.ok).toBe(true);
+  });
+
+  it('routes getScoreForUrl', async () => {
+    mockFetchOk({ id: 1, match_score: 85 });
+    const result = await sendMessage({ type: 'getScoreForUrl', url: 'https://example.com/job/1' });
+    expect(result.ok).toBe(true);
+    expect(result.data.match_score).toBe(85);
+  });
+
+  it('routes saveLearnedData', async () => {
+    mockFetchOk({ saved: true });
+    const result = await sendMessage({
+      type: 'saveLearnedData',
+      data: { field: 'phone', value: '555-1234' },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('routes downloadResume', async () => {
+    mockFetchOk({});
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(new Blob(['pdf-data'])),
+    });
+    const result = await sendMessage({ type: 'downloadResume', jobId: 1 });
+    expect(result.ok).toBe(true);
+    expect(globalThis.chrome.downloads.download).toHaveBeenCalled();
+    const dlArgs = globalThis.chrome.downloads.download.mock.calls[0][0];
+    expect(dlArgs.filename).toContain('resume-1.pdf');
+  });
+
+  it('routes downloadCoverLetter', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () => Promise.resolve(new Blob(['pdf-data'])),
+    });
+    const result = await sendMessage({ type: 'downloadCoverLetter', jobId: 2 });
+    expect(result.ok).toBe(true);
+    const dlArgs = globalThis.chrome.downloads.download.mock.calls[0][0];
+    expect(dlArgs.filename).toContain('cover-letter-2.pdf');
+  });
+
+  it('returns error for unknown message type', async () => {
+    const result = await sendMessage({ type: 'unknownType' });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('Unknown message type');
+  });
+
+  it('routes getQueueStatus when no queue active', async () => {
+    const result = await sendMessage({ type: 'getQueueStatus' });
+    expect(result.ok).toBe(true);
+    expect(result.active).toBe(false);
+  });
+
+  it('routes cancelQueue when no queue active', async () => {
+    const result = await sendMessage({ type: 'cancelQueue' });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('No active queue');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Queue orchestration
+// ═══════════════════════════════════════════════════════════════
+
+describe('queue orchestration', () => {
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    loadBackground();
+    mockFetchOk({ status: 'ok' });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('startQueueFill returns error for empty items', async () => {
+    const result = await sendMessage({ type: 'fillFromQueue', items: [] });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('No queue items');
+  });
+
+  it('startQueueFill returns error for null items', async () => {
+    const result = await sendMessage({ type: 'fillFromQueue', items: null });
+    expect(result.ok).toBe(false);
+  });
+
+  it('startQueueFill processes first item and opens tab', async () => {
+    const items = [
+      { id: 'q1', job_id: 1, apply_url: 'https://example.com/apply/1', title: 'Dev', company: 'Acme' },
+      { id: 'q2', job_id: 2, apply_url: 'https://example.com/apply/2', title: 'PM', company: 'Beta' },
+    ];
+    const result = await sendMessage({ type: 'fillFromQueue', items });
+    expect(result.ok).toBe(true);
+    expect(result.processing).toBe(true);
+    expect(result.position).toBe(1);
+    expect(result.total).toBe(2);
+    expect(globalThis.chrome.tabs.create).toHaveBeenCalledWith({
+      url: 'https://example.com/apply/1',
+      active: true,
+    });
+  });
+
+  it('getQueueStatus shows active queue after start', async () => {
+    const items = [
+      { id: 'q1', job_id: 1, apply_url: 'https://example.com/apply/1' },
+    ];
+    await sendMessage({ type: 'fillFromQueue', items });
+    const status = await sendMessage({ type: 'getQueueStatus' });
+    expect(status.ok).toBe(true);
+    expect(status.active).toBe(true);
+    expect(status.position).toBe(1);
+    expect(status.total).toBe(1);
+  });
+
+  it('cancelQueueFill cancels active queue', async () => {
+    const items = [
+      { id: 'q1', job_id: 1, apply_url: 'https://example.com/apply/1' },
+      { id: 'q2', job_id: 2, apply_url: 'https://example.com/apply/2' },
+    ];
+    await sendMessage({ type: 'fillFromQueue', items });
+    const result = await sendMessage({ type: 'cancelQueue' });
+    expect(result.ok).toBe(true);
+    expect(result.cancelled).toBe(true);
+
+    const status = await sendMessage({ type: 'getQueueStatus' });
+    expect(status.active).toBe(false);
+  });
+
+  it('queueUserAction advances to next item', async () => {
+    const items = [
+      { id: 'q1', job_id: 1, apply_url: 'https://example.com/apply/1' },
+      { id: 'q2', job_id: 2, apply_url: 'https://example.com/apply/2' },
+    ];
+    await sendMessage({ type: 'fillFromQueue', items });
+
+    const result = await sendMessage({ type: 'queueUserAction', queueItemId: 'q1', action: 'submitted' });
+    expect(result.ok).toBe(true);
+    // Should have opened a second tab
+    expect(globalThis.chrome.tabs.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('queueUserAction returns error on item mismatch', async () => {
+    const items = [
+      { id: 'q1', job_id: 1, apply_url: 'https://example.com/apply/1' },
+    ];
+    await sendMessage({ type: 'fillFromQueue', items });
+
+    const result = await sendMessage({ type: 'queueUserAction', queueItemId: 'wrong-id', action: 'submitted' });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('mismatch');
+  });
+
+  it('queueUserAction reports done when all items processed', async () => {
+    const items = [
+      { id: 'q1', job_id: 1, apply_url: 'https://example.com/apply/1' },
+    ];
+    await sendMessage({ type: 'fillFromQueue', items });
+
+    const result = await sendMessage({ type: 'queueUserAction', queueItemId: 'q1', action: 'submitted' });
+    expect(result.ok).toBe(true);
+    expect(result.done).toBe(true);
+    expect(result.completed).toBe(1);
+  });
+
+  it('reports fill status to backend API', async () => {
+    mockFetchOk({ status: 'ok' });
+    const result = await sendMessage({
+      type: 'reportFillStatus',
+      queueItemId: 'q1',
+      status: 'filling',
+      details: {},
+    });
+    expect(result.ok).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalled();
+    const url = globalThis.fetch.mock.calls[0][0];
+    expect(url).toContain('/api/queue/q1/fill-status');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Tab lifecycle cleanup
+// ═══════════════════════════════════════════════════════════════
+
+describe('tab lifecycle cleanup', () => {
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    loadBackground();
+    mockFetchOk({ status: 'ok' });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('registers a tabs.onRemoved listener', () => {
+    expect(globalThis.chrome.tabs.onRemoved.addListener).toHaveBeenCalled();
+  });
+
+  it('advances queue when active tab is closed', async () => {
+    const items = [
+      { id: 'q1', job_id: 1, apply_url: 'https://example.com/apply/1' },
+      { id: 'q2', job_id: 2, apply_url: 'https://example.com/apply/2' },
+    ];
+    await sendMessage({ type: 'fillFromQueue', items });
+
+    // Simulate the tab being closed (tab id 1 matches the mocked chrome.tabs.create result)
+    onRemovedCallback(1);
+
+    // Should have tried to open the next tab
+    expect(globalThis.chrome.tabs.create).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Keyboard shortcut handler
+// ═══════════════════════════════════════════════════════════════
+
+describe('keyboard shortcut handler', () => {
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    loadBackground();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('registers a commands listener', () => {
+    expect(globalThis.chrome.commands.onCommand.addListener).toHaveBeenCalled();
+  });
+
+  it('sends startFill message on start-fill command', async () => {
+    const commandHandler = globalThis.chrome.commands.onCommand.addListener.mock.calls[0][0];
+    await commandHandler('start-fill');
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, { type: 'startFill' });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// getServerUrl
+// ═══════════════════════════════════════════════════════════════
+
+describe('getServerUrl', () => {
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    loadBackground();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('strips trailing slashes from server URL', async () => {
+    globalThis.chrome.storage.local.get.mockResolvedValue({ serverUrl: 'http://localhost:8085///' });
+    mockFetchOk({ status: 'healthy' });
+
+    await sendMessage({ type: 'checkConnection' });
+
+    const url = globalThis.fetch.mock.calls[0][0];
+    expect(url).toBe('http://localhost:8085/api/health');
   });
 });

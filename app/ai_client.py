@@ -194,7 +194,12 @@ class AIClient:
             resp = await client.post(url, json=payload)
             resp.raise_for_status()
             data = resp.json()
-            return data["message"]["content"]
+            if "error" in data:
+                raise RuntimeError(f"Ollama error: {data['error']}")
+            try:
+                return data["message"]["content"]
+            except (KeyError, TypeError) as e:
+                raise RuntimeError(f"Unexpected Ollama response structure: {e}") from e
 
 
 def parse_json_response(raw: str) -> dict:

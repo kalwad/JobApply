@@ -8,7 +8,7 @@ const settingsLink = document.getElementById('settingsLink');
 let isConnected = false;
 
 async function init() {
-  const { serverUrl } = await chrome.storage.local.get({ serverUrl: 'http://localhost:8001' });
+  const { serverUrl } = await chrome.storage.local.get({ serverUrl: 'http://localhost:8085' });
   serverUrlInput.value = serverUrl;
   settingsLink.href = `${serverUrl}/#/settings`;
   await checkConnection();
@@ -68,7 +68,7 @@ saveUrlBtn.addEventListener('click', async () => {
 
 settingsLink.addEventListener('click', async (e) => {
   e.preventDefault();
-  const { serverUrl } = await chrome.storage.local.get({ serverUrl: 'http://localhost:8001' });
+  const { serverUrl } = await chrome.storage.local.get({ serverUrl: 'http://localhost:8085' });
   chrome.tabs.create({ url: `${serverUrl}/#/settings` });
 });
 

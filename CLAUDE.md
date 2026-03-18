@@ -13,13 +13,14 @@ docker compose up -d
 
 ## Tech Stack
 - Python (FastAPI), aiosqlite
-- AI: Anthropic/OpenAI (configurable via settings UI)
+- AI: Anthropic, OpenAI, Google, OpenRouter, Ollama (configurable via settings UI)
 - APScheduler for periodic scraping
 - Vanilla JS frontend (served from `app/static/`)
 
 ## Key Architecture
-- `app/main.py` — FastAPI app with lifespan, ~90 API routes
-- `app/database.py` — async SQLite via aiosqlite (~30 tables)
+- `app/main.py` — FastAPI app assembler: `create_app` factory + lifespan (352 lines)
+- `app/routers/` — API routes split into 10 modules: `jobs.py`, `tailoring.py`, `pipeline.py`, `queue.py`, `contacts.py`, `analytics.py`, `settings.py`, `alerts.py`, `scraping.py`, `autofill.py`
+- `app/database.py` — async SQLite via aiosqlite (37 tables)
 - `app/scrapers/` — job board scrapers (pluggable, 10 sources)
 - `app/matcher.py` — AI-powered job/resume matching (supports resume override)
 - `app/tailoring.py` — generates tailored resumes/cover letters (supports resume override)
@@ -37,16 +38,21 @@ docker compose up -d
 - `extension/` — Chrome extension (Manifest V3): autofill, job board overlays, queue orchestration
 
 ## Environment Variables
-Required in `.env`:
-- `JOBFINDER_ANTHROPIC_API_KEY` — AI scoring (or configure via UI)
+Required in `.env` (all optional — can configure via UI instead):
+- `JOBFINDER_ANTHROPIC_API_KEY` — AI scoring key (Anthropic); use UI for other providers
+- `JOBFINDER_USAJOBS_API_KEY` — USAJobs.gov API key (optional, for federal listings)
 - `JOBFINDER_DB_PATH` — default: `data/jobfinder.db`
 - `JOBFINDER_RESUME_PATH` — default: `data/resume.txt`
-- `JOBFINDER_SCRAPE_INTERVAL_HOURS` — default: 6
+- `JOBFINDER_SCRAPE_INTERVAL_HOURS` — default: `6`
+- `JOBFINDER_MIN_SALARY` — default: `150000` (annual FTE filter)
+- `JOBFINDER_MIN_HOURLY_RATE` — default: `95` (contract rate filter)
+- `JOBFINDER_HOST` — default: `0.0.0.0`
+- `JOBFINDER_PORT` — default: `8085`
 
 ## Testing
 ```bash
-uv run pytest                        # 370 backend tests
-cd extension && npx vitest run       # 298 extension tests
+uv run pytest                        # 504 backend tests
+cd extension && npx vitest run       # 410 extension tests
 ```
 
 ## Git Remote

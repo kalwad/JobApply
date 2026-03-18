@@ -606,6 +606,19 @@ class Database:
                 if col not in rem_columns:
                     await self.db.execute(sql)
 
+        # Add missing indexes for common query patterns
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_applications_job ON applications(job_id)",
+            "CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status)",
+            "CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_jobs_dismissed ON jobs(dismissed)",
+            "CREATE INDEX IF NOT EXISTS idx_queue_status ON application_queue(status)",
+            "CREATE INDEX IF NOT EXISTS idx_notifications_job ON notifications(job_id)",
+            "CREATE INDEX IF NOT EXISTS idx_reminders_job ON reminders(job_id)",
+            "CREATE INDEX IF NOT EXISTS idx_contact_interactions_contact ON contact_interactions(contact_id)",
+        ]:
+            await self.db.execute(idx_sql)
+
         await self.db.commit()
 
         # Clean HTML entities from existing job titles/companies

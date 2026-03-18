@@ -15,12 +15,18 @@ If you truly cannot estimate, return: {{"min": 0, "max": 0, "confidence": "none"
 
 async def estimate_salary(client, job: dict) -> dict:
     """Use AI to estimate salary range for a job."""
+    import logging
     from app.ai_client import parse_json_response
+    logger = logging.getLogger(__name__)
     prompt = SALARY_PROMPT.format(
         title=job.get("title", ""),
         company=job.get("company", ""),
         location=job.get("location", ""),
         description=(job.get("description", "") or "")[:500],
     )
-    raw = await client.chat(prompt, max_tokens=200)
-    return parse_json_response(raw)
+    try:
+        raw = await client.chat(prompt, max_tokens=200)
+        return parse_json_response(raw)
+    except Exception as e:
+        logger.error(f"Salary estimation failed: {e}")
+        return {"min": 0, "max": 0, "confidence": "none", "reasoning": f"Estimation error: {e}"}

@@ -9,7 +9,7 @@ globalThis.chrome = {
   storage: {
     local: {
       get: vi.fn().mockImplementation((query, callback) => {
-        const result = { serverUrl: 'http://localhost:8001', dismissedHosts: [] };
+        const result = { serverUrl: 'http://localhost:8085', dismissedHosts: [] };
         if (typeof callback === 'function') {
           callback(result);
           return undefined;

@@ -63,11 +63,9 @@ Open http://localhost:8085
 ### Local
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
 cp .env.example .env
-uvicorn app.main:create_app --factory --port 8085
+# uv auto-manages the virtualenv and dependencies
+uv run uvicorn app.main:create_app --factory --reload --host 0.0.0.0 --port 8085
 ```
 
 ## Configuration
@@ -81,6 +79,8 @@ All env vars use the `JOBFINDER_` prefix. Everything can also be configured from
 | `JOBFINDER_DB_PATH` | `data/jobfinder.db` | SQLite database path |
 | `JOBFINDER_RESUME_PATH` | `data/resume.txt` | Default resume file path |
 | `JOBFINDER_SCRAPE_INTERVAL_HOURS` | `6` | Auto-scrape interval |
+| `JOBFINDER_MIN_SALARY` | `150000` | Minimum annual salary filter (FTE roles) |
+| `JOBFINDER_MIN_HOURLY_RATE` | `95` | Minimum hourly rate filter (contract roles) |
 | `JOBFINDER_HOST` | `0.0.0.0` | Server bind host |
 | `JOBFINDER_PORT` | `8085` | Server port |
 
@@ -110,7 +110,7 @@ The CareerPulse AutoFill extension auto-fills job application forms on any ATS u
 
 ### Install
 
-1. Make sure CareerPulse is running (default: `http://localhost:8001`)
+1. Make sure CareerPulse is running (default: `http://localhost:8085`)
 2. Open Chrome and go to `chrome://extensions/`
 3. Enable **Developer mode** (toggle in top right)
 4. Click **Load unpacked** and select the `extension/` folder from this repo
@@ -139,7 +139,7 @@ The CareerPulse AutoFill extension auto-fills job application forms on any ATS u
 
 ### Configuration
 
-Click the extension popup gear icon or visit **Settings > AI & Integrations** in CareerPulse to configure the server URL (defaults to `http://localhost:8001`).
+Click the extension popup gear icon or visit **Settings > AI & Integrations** in CareerPulse to configure the server URL (defaults to `http://localhost:8085`).
 
 The extension requires profile data in CareerPulse. Fill out your profile in **Settings > Profile** and **Settings > Work History** before using autofill.
 
@@ -184,9 +184,28 @@ Jobs are deduplicated by SHA-256 hash of normalized title + company + URL.
 
 ### Database
 
-SQLite with tables: `jobs`, `sources`, `job_scores`, `applications`, `app_events`, `search_config`, `ai_settings`, `user_profile`, `companies`, `scraper_keys`, `work_history`, `education`, `certifications`, `skills`, `languages`, `user_references`, `military_service`, `eeo_responses`, `custom_qa`, `autofill_history`, `saved_views`, `resumes`, `job_alerts`, `application_queue`, `follow_up_templates`, `contacts`, `contact_interactions`, `job_contacts`, `career_suggestions`, `offers`. Schema auto-migrates on startup (~30 tables).
+SQLite with tables: `jobs`, `sources`, `job_scores`, `applications`, `app_events`, `search_config`, `ai_settings`, `user_profile`, `companies`, `scraper_keys`, `work_history`, `education`, `certifications`, `skills`, `languages`, `user_references`, `military_service`, `eeo_responses`, `custom_qa`, `autofill_history`, `saved_views`, `resumes`, `job_alerts`, `application_queue`, `follow_up_templates`, `contacts`, `contact_interactions`, `job_contacts`, `career_suggestions`, `offers`. Schema auto-migrates on startup (37 tables).
+
+## Background Jobs
+
+The app runs these scheduled jobs automatically:
+
+| Job | Interval | Description |
+|-----|----------|-------------|
+| Scrape | Every 6h (configurable) | Fetches new listings from all enabled sources |
+| Enrichment | Every 2h | Fills missing data (company info, apply links) |
+| Scoring | Every 1h | Scores any unscored jobs against your resume |
+| Maintenance | Every 24h | Prunes dismissed jobs and stale data |
+| Reminder check | Every 12h | Fires follow-up reminders for active applications |
+| Digest | Daily at 8am | Sends email digest of top new matches (if configured) |
+| Alert check | Every 1h | Evaluates saved search alerts for new matches |
+| Embedding | Every 2h | Generates semantic embeddings for similarity search |
 
 ## API
+
+The full REST API is auto-documented at:
+- **Swagger UI**: http://localhost:8085/docs
+- **ReDoc**: http://localhost:8085/redoc
 
 ### Jobs
 - `GET /api/jobs` — List with filters (`sort`, `limit`, `offset`, `min_score`, `search`, `source`, `work_type`, `employment_type`, `location`)
@@ -337,16 +356,15 @@ SQLite with tables: `jobs`, `sources`, `job_scores`, `applications`, `app_events
 ## Testing
 
 ```bash
-pip install -e ".[dev]"
-pytest
+uv run pytest
 ```
 
-370 tests covering scrapers, database, API endpoints, matcher, tailor, resume analyzer, AI client, contact finder, apply link finder, salary estimator, company research, digest, profile CRUD, autofill, custom Q&A, saved views, response tracking, alerts, application queue, follow-up templates, contacts CRM, career advisor, offers, and predictions.
+504 tests covering scrapers, database, API endpoints, matcher, tailor, resume analyzer, AI client, contact finder, apply link finder, salary estimator, company research, digest, profile CRUD, autofill, custom Q&A, saved views, response tracking, alerts, application queue, follow-up templates, contacts CRM, career advisor, offers, and predictions.
 
-The Chrome extension has a separate test suite (298 tests) using Vitest:
+The Chrome extension has a separate test suite (410 tests) using Vitest:
 
 ```bash
-cd extension && pnpm test
+cd extension && npx vitest run
 ```
 
 ## Tech Stack
