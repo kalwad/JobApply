@@ -20,7 +20,7 @@ async function checkSetupCompleteness() {
         const steps = {
             profile: !!(profile.full_name && profile.email),
             resume: (resumesData.resumes || []).length > 0,
-            ai: !!(aiSettings.provider && aiSettings.api_key),
+            ai: !!(aiSettings.provider && (aiSettings.api_key || aiSettings.provider === 'ollama')),
         };
         const done = Object.values(steps).filter(Boolean).length;
         const total = Object.keys(steps).length;
@@ -257,7 +257,7 @@ function showOnboardingWizard() {
                     testBtn.disabled = true;
                     testBtn.innerHTML = '<span class="spinner"></span> Testing...';
                     try {
-                        const settings = { provider, api_key: apiKey || undefined, ollama_base_url: ollamaUrl || undefined };
+                        const settings = { provider, api_key: apiKey || undefined, base_url: ollamaUrl || undefined };
                         await api.testAIConnection(settings);
                         if (statusEl) statusEl.innerHTML = '<span style="color:var(--score-green);font-weight:600">Connected!</span>';
                     } catch (err) {
@@ -276,7 +276,7 @@ function showOnboardingWizard() {
                         const apiKey = wizard.querySelector('#onb-api-key')?.value?.trim();
                         const ollamaUrl = wizard.querySelector('#onb-ollama-url')?.value?.trim();
                         try {
-                            await api.updateAISettings({ provider, api_key: apiKey || undefined, ollama_base_url: ollamaUrl || undefined });
+                            await api.updateAISettings({ provider, api_key: apiKey || undefined, base_url: ollamaUrl || undefined });
                         } catch {}
                     }
                     currentStep++;

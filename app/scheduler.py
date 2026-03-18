@@ -14,7 +14,7 @@ _consecutive_zero_runs: dict[str, int] = {}
 ZERO_RESULT_WARN_THRESHOLD = 3
 
 
-async def run_scrape_cycle(db: Database, scrapers: list, search_terms: list[str] | None = None, progress: dict | None = None, scraper_keys: dict | None = None) -> int:
+async def run_scrape_cycle(db: Database, scrapers: list, search_terms: list[str] | None = None, progress: dict | None = None, scraper_keys: dict | None = None, force: bool = False) -> int:
     """Scrape job boards and insert new listings. Scrape-only — no enrichment or scoring."""
     total_new = 0
     total_scrapers = len(scrapers)
@@ -22,8 +22,8 @@ async def run_scrape_cycle(db: Database, scrapers: list, search_terms: list[str]
         if isinstance(scraper_instance, type):
             scraper_instance = scraper_instance(search_terms=search_terms, scraper_keys=scraper_keys or {})
         source_name = scraper_instance.source_name
-        # Check per-source schedule
-        if not await db.should_scraper_run(source_name):
+        # Check per-source schedule (bypass for manual triggers)
+        if not force and not await db.should_scraper_run(source_name):
             logger.info(f"Skipping {source_name} — not yet due")
             if progress is not None:
                 progress.update({"completed": i + 1, "total": total_scrapers, "current": source_name, "new_jobs": total_new, "active": True})

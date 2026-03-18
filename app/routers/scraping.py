@@ -90,7 +90,7 @@ async def trigger_scrape(request: Request):
                 keys = await db.get_scraper_keys()
                 scrapers = [s(search_terms=terms, scraper_keys=keys) for s in ALL_SCRAPERS]
                 app.state.scrape_progress = {"completed": 0, "total": len(scrapers), "current": None, "new_jobs": 0, "active": True}
-                await run_scrape_cycle(db, scrapers, search_terms=terms, progress=app.state.scrape_progress, scraper_keys=keys)
+                await run_scrape_cycle(db, scrapers, search_terms=terms, progress=app.state.scrape_progress, scraper_keys=keys, force=True)
 
                 await run_enrichment_cycle(db)
 

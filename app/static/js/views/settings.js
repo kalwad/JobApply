@@ -1176,7 +1176,8 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
                 <div>
                     <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Model</label>
                     <div id="ai-model-container">
-                        <input type="text" class="search-input" id="ai-model" placeholder="${aiProvider === 'openai' ? 'e.g. gpt-4o' : aiProvider === 'google' ? 'e.g. gemini-2.0-flash' : 'e.g. claude-sonnet-4-20250514'}" value="${escapeHtml(aiModel)}" style="width:100%;${aiProvider === 'ollama' ? 'display:none' : ''}">
+                        <input type="text" class="search-input" id="ai-model" placeholder="e.g. anthropic/claude-sonnet-4" value="${escapeHtml(aiModel)}" style="width:100%;${['anthropic', 'openai', 'google', 'ollama'].includes(aiProvider) ? 'display:none' : ''}">
+                        <select class="filter-select" id="ai-model-dropdown" style="width:100%;${['anthropic', 'openai', 'google'].includes(aiProvider) ? '' : 'display:none'}"></select>
                         <div id="ai-model-ollama" style="${aiProvider === 'ollama' ? '' : 'display:none'}">
                             <div style="display:flex;gap:8px;align-items:center">
                                 <select class="filter-select" id="ai-model-select" style="flex:1">
@@ -1312,15 +1313,47 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
     `;
 
     // AI provider toggle
-    const modelPlaceholders = { anthropic: 'e.g. claude-sonnet-4-20250514', openai: 'e.g. gpt-4o', google: 'e.g. gemini-2.0-flash', openrouter: 'e.g. anthropic/claude-sonnet-4', ollama: '' };
+    const PROVIDER_MODELS = {
+        anthropic: ['claude-opus-4-20250514', 'claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'],
+        openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo', 'o1', 'o1-mini', 'o3-mini'],
+        google: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'],
+    };
+
+    function populateModelDropdown(provider, currentModel) {
+        const dropdown = document.getElementById('ai-model-dropdown');
+        const models = PROVIDER_MODELS[provider] || [];
+        const options = models.map(m => `<option value="${escapeHtml(m)}"${m === currentModel ? ' selected' : ''}>${escapeHtml(m)}</option>`);
+        if (currentModel && !models.includes(currentModel)) {
+            options.unshift(`<option value="${escapeHtml(currentModel)}" selected>${escapeHtml(currentModel)}</option>`);
+        }
+        if (!currentModel) {
+            options.unshift('<option value="">Select a model...</option>');
+        }
+        dropdown.innerHTML = options.join('');
+    }
+
+    function updateModelVisibility(provider) {
+        const hasDropdown = provider in PROVIDER_MODELS;
+        const isOllama = provider === 'ollama';
+        document.getElementById('ai-model').style.display = (!hasDropdown && !isOllama) ? '' : 'none';
+        document.getElementById('ai-model-dropdown').style.display = hasDropdown ? '' : 'none';
+        document.getElementById('ai-model-ollama').style.display = isOllama ? '' : 'none';
+    }
+
+    // Initialize dropdown for current provider
+    if (aiProvider in PROVIDER_MODELS) {
+        populateModelDropdown(aiProvider, aiModel);
+    }
+
     document.getElementById('ai-provider').addEventListener('change', (e) => {
         const provider = e.target.value;
         const isOllama = provider === 'ollama';
         document.getElementById('ai-key-row').style.display = isOllama ? 'none' : '';
         document.getElementById('ai-url-row').style.display = isOllama ? '' : 'none';
-        document.getElementById('ai-model').style.display = isOllama ? 'none' : '';
-        document.getElementById('ai-model').placeholder = modelPlaceholders[provider] || '';
-        document.getElementById('ai-model-ollama').style.display = isOllama ? '' : 'none';
+        updateModelVisibility(provider);
+        if (provider in PROVIDER_MODELS) {
+            populateModelDropdown(provider, '');
+        }
         if (isOllama) fetchOllamaModels();
     });
 
@@ -1349,7 +1382,14 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
 
     function getAIFormValues() {
         const provider = document.getElementById('ai-provider').value;
-        const model = provider === 'ollama' ? document.getElementById('ai-model-select').value : document.getElementById('ai-model').value;
+        let model;
+        if (provider === 'ollama') {
+            model = document.getElementById('ai-model-select').value;
+        } else if (provider in PROVIDER_MODELS) {
+            model = document.getElementById('ai-model-dropdown').value;
+        } else {
+            model = document.getElementById('ai-model').value;
+        }
         return { provider, api_key: document.getElementById('ai-api-key').value, model, base_url: document.getElementById('ai-base-url').value };
     }
 

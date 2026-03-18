@@ -21,15 +21,57 @@ async def get_analytics(request: Request):
     return await request.app.state.db.get_analytics()
 
 
+def _flatten_user_skills(user_skills: list[dict]) -> set[str]:
+    """Extract individual skill names from compound skill entries, including categories."""
+    flat = set()
+    for s in user_skills:
+        name = s.get("name", "")
+        if not name:
+            continue
+        # Keep both the category and the items
+        if ": " in name:
+            category, items = name.split(": ", 1)
+            # Split category on / and & to get individual category terms
+            for cat_part in category.replace(" / ", ", ").replace(" & ", ", ").split(","):
+                cat_part = cat_part.strip()
+                if cat_part and len(cat_part) > 1:
+                    flat.add(cat_part)
+            name = items
+        name = re.sub(r'\s*\([^)]*\)', '', name)
+        for part in name.replace(" / ", ", ").replace(" & ", ", ").split(","):
+            part = part.strip()
+            if part and len(part) > 1:
+                flat.add(part)
+    return flat
+
+
+def _filter_keywords(top_keywords: list, user_skills_lower: set) -> list:
+    """Remove keywords that match user's existing skills (exact or substring)."""
+    filtered = []
+    for k, n in top_keywords:
+        kl = k.lower()
+        # Exact match
+        if kl in user_skills_lower:
+            continue
+        # Substring match: skip if keyword is contained in a skill or a skill is contained in keyword
+        if any(kl in skill or skill in kl for skill in user_skills_lower if len(skill) > 2):
+            continue
+        filtered.append((k, n))
+    return filtered
+
+
 @router.get("/skill-gaps")
 async def get_skill_gaps(request: Request):
     db = request.app.state.db
     gap_data = await db.get_skill_gap_data(min_score=50, max_score=80)
     user_skills = await db.get_skills()
+    flat_skills = _flatten_user_skills(user_skills)
+    user_skills_lower = {s.lower() for s in flat_skills}
+    filtered_keywords = _filter_keywords(gap_data["top_keywords"], user_skills_lower)
     return {
         "job_count": gap_data["job_count"],
         "top_concerns": gap_data["top_concerns"],
-        "top_keywords": gap_data["top_keywords"],
+        "top_keywords": filtered_keywords,
         "user_skills": [s["name"] for s in user_skills],
     }
 
@@ -45,24 +87,10 @@ async def analyze_skill_gaps(request: Request):
     if gap_data["job_count"] == 0:
         return {"skills": [], "message": "No jobs in the 50-80 score range to analyze"}
     user_skills = await db.get_skills()
-    flat_skills = set()
-    for s in user_skills:
-        name = s.get("name", "")
-        if not name:
-            continue
-        if ": " in name:
-            name = name.split(": ", 1)[1]
-        name = re.sub(r'\s*\([^)]*\)', '', name)
-        for part in name.replace(" / ", ", ").replace(" & ", ", ").split(","):
-            part = part.strip()
-            if part and len(part) > 1:
-                flat_skills.add(part)
+    flat_skills = _flatten_user_skills(user_skills)
     flat_skill_list = sorted(flat_skills)
     user_skills_lower = {s.lower() for s in flat_skill_list}
-    filtered_keywords = [
-        (k, n) for k, n in gap_data['top_keywords']
-        if k.lower() not in user_skills_lower
-    ]
+    filtered_keywords = _filter_keywords(gap_data['top_keywords'], user_skills_lower)
     prompt = f"""You are a career advisor. Analyze the skill gaps between a job seeker's current skills and the jobs they almost qualify for (scored 50-80 out of 100).
 
 CURRENT SKILLS (the candidate ALREADY HAS these — do NOT suggest these as gaps):

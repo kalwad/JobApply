@@ -214,7 +214,7 @@ async function getSetupStatus() {
         ]);
         _cachedSetupStatus = {
             hasResume: (resumesData.resumes || []).length > 0,
-            hasAI: !!(aiSettings.provider && aiSettings.api_key),
+            hasAI: !!(aiSettings.provider && (aiSettings.api_key || aiSettings.provider === 'ollama')),
         };
         _setupStatusExpiry = Date.now() + 30000;
     } catch {
