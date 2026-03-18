@@ -1176,7 +1176,7 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
                 <div>
                     <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Model</label>
                     <div id="ai-model-container">
-                        <input type="text" class="search-input" id="ai-model" placeholder="e.g. anthropic/claude-sonnet-4" value="${escapeHtml(aiModel)}" style="width:100%;${['anthropic', 'openai', 'google', 'ollama'].includes(aiProvider) ? 'display:none' : ''}">
+                        <input type="text" class="search-input" id="ai-model" placeholder="e.g. custom-model" value="${escapeHtml(aiModel)}" style="width:100%;display:none">
                         <select class="filter-select" id="ai-model-dropdown" style="width:100%;${['anthropic', 'openai', 'google'].includes(aiProvider) ? '' : 'display:none'}"></select>
                         <div id="ai-model-ollama" style="${aiProvider === 'ollama' ? '' : 'display:none'}">
                             <div style="display:flex;gap:8px;align-items:center">
@@ -1184,6 +1184,14 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
                                     ${aiModel ? `<option value="${escapeHtml(aiModel)}" selected>${escapeHtml(aiModel)}</option>` : '<option value="">Select a model...</option>'}
                                 </select>
                                 <button class="btn btn-secondary btn-sm" id="refresh-models-btn" style="white-space:nowrap">Refresh</button>
+                            </div>
+                        </div>
+                        <div id="ai-model-openrouter" style="${aiProvider === 'openrouter' ? '' : 'display:none'}">
+                            <div style="display:flex;gap:8px;align-items:center">
+                                <select class="filter-select" id="ai-model-or-select" style="flex:1">
+                                    ${aiModel ? `<option value="${escapeHtml(aiModel)}" selected>${escapeHtml(aiModel)}</option>` : '<option value="">Loading models...</option>'}
+                                </select>
+                                <button class="btn btn-secondary btn-sm" id="refresh-or-models-btn" style="white-space:nowrap">Refresh</button>
                             </div>
                         </div>
                     </div>
@@ -1335,9 +1343,11 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
     function updateModelVisibility(provider) {
         const hasDropdown = provider in PROVIDER_MODELS;
         const isOllama = provider === 'ollama';
-        document.getElementById('ai-model').style.display = (!hasDropdown && !isOllama) ? '' : 'none';
+        const isOpenRouter = provider === 'openrouter';
+        document.getElementById('ai-model').style.display = (!hasDropdown && !isOllama && !isOpenRouter) ? '' : 'none';
         document.getElementById('ai-model-dropdown').style.display = hasDropdown ? '' : 'none';
         document.getElementById('ai-model-ollama').style.display = isOllama ? '' : 'none';
+        document.getElementById('ai-model-openrouter').style.display = isOpenRouter ? '' : 'none';
     }
 
     // Initialize dropdown for current provider
@@ -1355,6 +1365,7 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
             populateModelDropdown(provider, '');
         }
         if (isOllama) fetchOllamaModels();
+        if (provider === 'openrouter') { _orCurrentModel = ''; fetchOpenRouterModels(); }
     });
 
     async function fetchOllamaModels() {
@@ -1380,11 +1391,54 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
     document.getElementById('refresh-models-btn').addEventListener('click', fetchOllamaModels);
     if (document.getElementById('ai-provider').value === 'ollama') fetchOllamaModels();
 
+    let _orCurrentModel = aiProvider === 'openrouter' ? aiModel : '';
+
+    async function fetchOpenRouterModels() {
+        const select = document.getElementById('ai-model-or-select');
+        const currentVal = _orCurrentModel;
+        const btn = document.getElementById('refresh-or-models-btn');
+        btn.disabled = true; btn.textContent = '...';
+        select.innerHTML = '<option value="">Loading models...</option>';
+        try {
+            const res = await fetch('https://openrouter.ai/api/v1/models');
+            if (!res.ok) throw new Error('Failed to fetch');
+            const data = await res.json();
+            const models = (data.data || [])
+                .map(m => ({ id: m.id, name: m.name || m.id }))
+                .sort((a, b) => a.id.localeCompare(b.id));
+            if (models.length > 0) {
+                const opts = models.map(m => `<option value="${escapeHtml(m.id)}"${m.id === currentVal ? ' selected' : ''}>${escapeHtml(m.id)}</option>`);
+                if (currentVal && !models.some(m => m.id === currentVal)) {
+                    opts.unshift(`<option value="${escapeHtml(currentVal)}" selected>${escapeHtml(currentVal)}</option>`);
+                }
+                if (!currentVal) opts.unshift('<option value="">Select a model...</option>');
+                select.innerHTML = opts.join('');
+            } else {
+                select.innerHTML = '<option value="">No models found</option>';
+            }
+        } catch {
+            select.innerHTML = `<option value="${escapeHtml(currentVal)}">${currentVal || 'Failed to load models'}</option>`;
+            // Show fallback text input
+            document.getElementById('ai-model').style.display = '';
+            document.getElementById('ai-model').placeholder = 'e.g. anthropic/claude-sonnet-4';
+        }
+        finally { btn.disabled = false; btn.textContent = 'Refresh'; }
+    }
+
+    document.getElementById('refresh-or-models-btn').addEventListener('click', () => {
+        _orCurrentModel = document.getElementById('ai-model-or-select').value;
+        fetchOpenRouterModels();
+    });
+    if (document.getElementById('ai-provider').value === 'openrouter') fetchOpenRouterModels();
+
     function getAIFormValues() {
         const provider = document.getElementById('ai-provider').value;
         let model;
         if (provider === 'ollama') {
             model = document.getElementById('ai-model-select').value;
+        } else if (provider === 'openrouter') {
+            const orSelect = document.getElementById('ai-model-or-select');
+            model = orSelect.value || document.getElementById('ai-model').value;
         } else if (provider in PROVIDER_MODELS) {
             model = document.getElementById('ai-model-dropdown').value;
         } else {
