@@ -115,10 +115,11 @@
     name: 'Greenhouse',
 
     match(url, doc) {
-      if (/boards\.greenhouse\.io/i.test(url)) return true;
+      if (/(?:boards|job-boards)\.greenhouse\.io/i.test(url)) return true;
       try {
         return doc.querySelector('#app_form') !== null
-          || doc.querySelector('#application_form') !== null;
+          || doc.querySelector('#application_form') !== null
+          || doc.querySelector('#grnhse_app') !== null;
       } catch {
         return false;
       }
@@ -128,6 +129,8 @@
       try {
         return doc.querySelector('#app_form')
           || doc.querySelector('#application_form')
+          || doc.querySelector('#grnhse_app')
+          || doc.querySelector('form')
           || doc;
       } catch {
         return doc;
@@ -148,6 +151,13 @@
         'input[name="job_application[last_name]"]': 'last_name',
         'input[name="job_application[email]"]': 'email',
         'input[name="job_application[phone]"]': 'phone',
+        // New Greenhouse React/Remix form selectors
+        'input[name="first_name"]': 'first_name',
+        'input[name="last_name"]': 'last_name',
+        'input[name="preferred_name"]': 'preferred_name',
+        'input[name="email"]': 'email',
+        'input[name="phone"]': 'phone',
+        'input[name="resume"]': 'resume',
       };
     },
 

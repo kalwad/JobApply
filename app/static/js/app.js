@@ -86,7 +86,7 @@ async function handleRoute() {
 }
 
 // === Filter Persistence & Smart Views ===
-const FILTER_IDS = ['filter-search', 'filter-score', 'filter-sort', 'filter-work-type', 'filter-employment', 'filter-location', 'filter-region', 'filter-posted-within', 'filter-clearance'];
+const FILTER_IDS = ['filter-search', 'filter-exclude', 'filter-score', 'filter-sort', 'filter-work-type', 'filter-employment', 'filter-location', 'filter-region', 'filter-posted-within', 'filter-clearance'];
 const FILTER_STORAGE_KEY = 'careerpulse_filters';
 const SMART_VIEWS_KEY = 'careerpulse_saved_views';
 

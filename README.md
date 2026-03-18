@@ -147,7 +147,12 @@ The extension requires profile data in CareerPulse. Fill out your profile in **S
 
 ```
 FastAPI (async)
-├── Scrapers (10 sources) → SQLite (aiosqlite)
+├── app/main.py — create_app factory + lifespan (352 lines)
+├── app/routers/ — 10 APIRouter modules
+│   ├── jobs.py, tailoring.py, pipeline.py, queue.py, contacts.py
+│   └── analytics.py, settings.py, alerts.py, scraping.py, autofill.py
+├── app/scrapers/ — 10+ sources with retry/backoff, UA rotation, rate limiting
+├── app/database.py — SQLite via aiosqlite (37 tables, FK enforcement, WAL mode)
 ├── AIClient (Anthropic | OpenAI | Google | OpenRouter | Ollama)
 │   ├── JobMatcher (scoring)
 │   ├── ResumeAnalyzer (analysis + ATS)
@@ -157,11 +162,14 @@ FastAPI (async)
 │   ├── CareerAdvisor (trajectory + role suggestions)
 │   ├── OfferCalculator (total comp + cost-of-living)
 │   └── FollowUp (email drafting + auto-send)
-├── SalaryCalculator (W2/1099/C2C + state taxes, client-side)
-├── ContactCRM (contacts, interactions, referrals)
-├── ApplicationQueue (batch prep + approval workflow)
-├── APScheduler (periodic scraping + alerts)
-├── Vanilla JS SPA (frontend)
+├── APScheduler (8 background jobs)
+├── Vanilla JS SPA
+│   ├── app/static/js/app.js — router, mobile nav
+│   ├── app/static/js/api.js — API client
+│   ├── app/static/js/utils.js — HTML sanitization, shared helpers
+│   ├── app/static/js/onboarding.js — 4-step first-run wizard
+│   ├── app/static/js/salary-calculator.js — W2/1099/C2C calculator
+│   └── app/static/js/views/ — feed, detail, pipeline, queue, stats, settings, network, triage
 └── Chrome Extension (autofill + overlay + queue fill)
 ```
 
@@ -181,6 +189,8 @@ FastAPI (async)
 | Himalayas | REST API | Paginated, client-side keyword filtering |
 
 Jobs are deduplicated by SHA-256 hash of normalized title + company + URL.
+
+All scrapers share a base class with: exponential backoff on retryable errors (429/5xx), per-domain rate limiting, randomized user-agent rotation, and `Retry-After` header respect.
 
 ### Database
 
@@ -356,21 +366,24 @@ The full REST API is auto-documented at:
 ## Testing
 
 ```bash
+# Backend (504 tests)
 uv run pytest
-```
 
-504 tests covering scrapers, database, API endpoints, matcher, tailor, resume analyzer, AI client, contact finder, apply link finder, salary estimator, company research, digest, profile CRUD, autofill, custom Q&A, saved views, response tracking, alerts, application queue, follow-up templates, contacts CRM, career advisor, offers, and predictions.
+# Frontend (92 tests)
+cd app/static && npx vitest run
 
-The Chrome extension has a separate test suite (410 tests) using Vitest:
-
-```bash
+# Extension (416 tests)
 cd extension && npx vitest run
 ```
+
+**Total: 1,012 tests** across backend, frontend, and extension.
+
+Backend covers: scrapers, database, API endpoints, matcher, tailor, resume analyzer, AI client, contact finder, apply link finder, salary estimator, company research, digest, profile CRUD, autofill, custom Q&A, saved views, response tracking, alerts, application queue, follow-up templates, contacts CRM, career advisor, offers, and predictions.
 
 ## Tech Stack
 
 - **Backend**: Python 3.12+, FastAPI, aiosqlite, httpx
-- **Frontend**: Vanilla JS SPA, no build step
+- **Frontend**: Vanilla JS SPA (14 modules, no build step), Vitest for tests
 - **Extension**: Chrome Manifest V3 (content script + service worker)
 - **AI**: Anthropic SDK / OpenAI SDK / Ollama REST API
 - **Scraping**: feedparser, BeautifulSoup4, httpx

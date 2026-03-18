@@ -6,6 +6,7 @@ async function renderFeed(container) {
         <div id="smart-views" class="smart-views-bar"></div>
         <div class="filter-bar">
             <input type="text" class="search-input" id="filter-search" placeholder="Search jobs...">
+            <input type="text" class="search-input" id="filter-exclude" placeholder="Exclude terms..." style="max-width:160px">
             <select class="filter-select" id="filter-score">
                 <option value="">All scores</option>
                 <option value="40">40+</option>
@@ -71,6 +72,7 @@ async function renderFeed(container) {
     `;
 
     const searchInput = document.getElementById('filter-search');
+    const excludeInput = document.getElementById('filter-exclude');
     const scoreSelect = document.getElementById('filter-score');
     const sortSelect = document.getElementById('filter-sort');
     const workTypeSelect = document.getElementById('filter-work-type');
@@ -97,8 +99,15 @@ async function renderFeed(container) {
     };
 
     searchInput.addEventListener('input', () => {
+        filterJobsClientSide();
+        saveFilterState();
         clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(reload, 300);
+        debounceTimer = setTimeout(reload, 500);
+    });
+    excludeInput.addEventListener('input', () => {
+        saveFilterState();
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(filterJobsClientSide, 150);
     });
     locationInput.addEventListener('input', () => {
         clearTimeout(debounceTimer);
@@ -245,10 +254,37 @@ async function loadJobs(append) {
 
         currentOffset += jobs.length;
         loadMoreContainer.style.display = jobs.length >= PAGE_SIZE ? '' : 'none';
+        filterJobsClientSide();
     } catch (err) {
         showToast(err.message, 'error');
         if (!append) list.innerHTML = '';
     }
+}
+
+function filterJobsClientSide() {
+    const searchVal = (document.getElementById('filter-search')?.value || '').toLowerCase().trim();
+    const excludeVal = (document.getElementById('filter-exclude')?.value || '').toLowerCase().trim();
+    const searchWords = searchVal ? searchVal.split(/\s+/) : [];
+    const excludeWords = excludeVal ? excludeVal.split(/\s+/) : [];
+
+    if (!searchWords.length && !excludeWords.length) {
+        document.querySelectorAll('.job-card').forEach(card => card.style.display = '');
+        return;
+    }
+
+    document.querySelectorAll('.job-card').forEach(card => {
+        const text = card.dataset.searchText || '';
+        let visible = true;
+
+        if (searchWords.length) {
+            visible = searchWords.every(w => text.includes(w));
+        }
+        if (visible && excludeWords.length) {
+            visible = !excludeWords.some(w => text.includes(w));
+        }
+
+        card.style.display = visible ? '' : 'none';
+    });
 }
 
 function updateBatchBar() {
@@ -414,7 +450,7 @@ async function renderComparison(container, jobIds) {
                                 <td class="comparison-cell">
                                     <div style="display:flex;flex-direction:column;gap:6px">
                                         <a href="#/job/${job.id}" class="btn btn-primary btn-sm">View Details</a>
-                                        <a href="${escapeHtml(job.url)}" target="_blank" class="btn btn-secondary btn-sm">Open Listing</a>
+                                        <a href="${sanitizeUrl(job.url)}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">Open Listing</a>
                                     </div>
                                 </td>
                             `).join('')}
@@ -443,6 +479,7 @@ function createJobCard(job) {
     const card = document.createElement('div');
     card.className = 'card card-interactive job-card';
     card.dataset.jobId = job.id;
+    card.dataset.searchText = [job.title, job.company, job.location, job.description || ''].join(' ').toLowerCase();
 
     const score = job.match_score;
     const salary = formatSalary(job.salary_min, job.salary_max);

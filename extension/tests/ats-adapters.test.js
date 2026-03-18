@@ -92,6 +92,21 @@ describe('detectATS', () => {
     expect(result.name).toBe('Greenhouse');
   });
 
+  it('detects Greenhouse by job-boards.greenhouse.io URL', () => {
+    const result = adapters.detectATS('https://job-boards.greenhouse.io/embed/job_app?for=datadog&token=123', document);
+    expect(result).not.toBeNull();
+    expect(result.name).toBe('Greenhouse');
+  });
+
+  it('detects Greenhouse by #grnhse_app container', () => {
+    const div = document.createElement('div');
+    div.id = 'grnhse_app';
+    document.body.appendChild(div);
+    const result = adapters.detectATS('https://careers.example.com/apply', document);
+    expect(result).not.toBeNull();
+    expect(result.name).toBe('Greenhouse');
+  });
+
   it('detects Lever by URL', () => {
     const result = adapters.detectATS('https://jobs.lever.co/company/position', document);
     expect(result).not.toBeNull();
@@ -213,6 +228,15 @@ describe('Greenhouse adapter', () => {
     expect(map['#resume_text']).toBe('resume');
   });
 
+  it('getFieldMap includes new React/Remix form selectors', () => {
+    const map = greenhouse.getFieldMap();
+    expect(map['input[name="first_name"]']).toBe('first_name');
+    expect(map['input[name="last_name"]']).toBe('last_name');
+    expect(map['input[name="email"]']).toBe('email');
+    expect(map['input[name="phone"]']).toBe('phone');
+    expect(map['input[name="preferred_name"]']).toBe('preferred_name');
+  });
+
   it('getFormRoot returns #app_form if present', () => {
     const form = document.createElement('form');
     form.id = 'app_form';
@@ -220,7 +244,20 @@ describe('Greenhouse adapter', () => {
     expect(greenhouse.getFormRoot(document)).toBe(form);
   });
 
-  it('getFormRoot falls back to document', () => {
+  it('getFormRoot returns #grnhse_app if present', () => {
+    const div = document.createElement('div');
+    div.id = 'grnhse_app';
+    document.body.appendChild(div);
+    expect(greenhouse.getFormRoot(document)).toBe(div);
+  });
+
+  it('getFormRoot returns first form element as fallback', () => {
+    const form = document.createElement('form');
+    document.body.appendChild(form);
+    expect(greenhouse.getFormRoot(document)).toBe(form);
+  });
+
+  it('getFormRoot falls back to document when no form exists', () => {
     expect(greenhouse.getFormRoot(document)).toBe(document);
   });
 

@@ -2260,7 +2260,7 @@
     // URL patterns (high confidence)
     const highConfidenceUrls = [
       /myworkdayjobs\.com\/.*\/job\//i,
-      /boards\.greenhouse\.io\/.*\/jobs\//i,
+      /(?:boards|job-boards)\.greenhouse\.io/i,
       /jobs\.lever\.co\/.*\/apply/i,
       /icims\.com\/.*\/job\//i,
       /taleo\.net\/.*\/apply/i,
