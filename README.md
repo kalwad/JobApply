@@ -1,5 +1,7 @@
 # CareerPulse
 
+[![CI](https://github.com/tcpsyn/CareerPulse/actions/workflows/ci.yml/badge.svg)](https://github.com/tcpsyn/CareerPulse/actions/workflows/ci.yml)
+
 Self-hosted job discovery and application tool. Scrapes jobs from multiple boards, scores them against your resume using AI, and helps prepare tailored applications.
 
 ## Features
@@ -88,11 +90,11 @@ All env vars use the `JOBFINDER_` prefix. Everything can also be configured from
 
 Configure from **Settings > AI Provider**:
 
-- **Anthropic** — API key required, defaults to `claude-sonnet-4-20250514`
-- **OpenAI** — API key required, defaults to `gpt-4o`
-- **Google (Gemini)** — API key required, defaults to `gemini-2.0-flash`
-- **OpenRouter** — API key required, defaults to `anthropic/claude-sonnet-4` (access many models through one API)
-- **Ollama** — Select from a dropdown of locally available models. Set the Ollama URL (defaults to `http://localhost:11434`). When running in Docker, localhost URLs are automatically rewritten to reach the host.
+- **Anthropic** — API key required. Model dropdown: Claude Opus 4, Sonnet 4, Haiku 4.5, and 3.5 variants (hardcoded list).
+- **OpenAI** — API key required. Model dropdown: GPT-4o, GPT-4o-mini, GPT-4-turbo, o1, o3-mini (hardcoded list).
+- **Google (Gemini)** — API key required. Model dropdown: Gemini 2.5 Pro/Flash, 2.0 Flash, 1.5 Pro/Flash (hardcoded list).
+- **OpenRouter** — API key required. Model list fetched live from the OpenRouter API.
+- **Ollama** — No API key. Model list fetched live from your local Ollama server (`/api/tags`). Set the Ollama URL (defaults to `http://localhost:11434`). When running in Docker, localhost URLs are automatically rewritten to reach the host.
 
 OpenAI, Google, and OpenRouter use the OpenAI-compatible API format. Recommended Ollama models: `qwen2.5:32b`, `Qwen2.5-Coder:32b`, or `qwen2.5:14b-instruct-q4_K_M`.
 
@@ -148,10 +150,12 @@ The extension requires profile data in CareerPulse. Fill out your profile in **S
 ```
 FastAPI (async)
 ├── app/main.py — create_app factory + lifespan (378 lines)
+│   └── Dual DB connections: app.state.db (requests) + app.state.bg_db (background tasks)
 ├── app/routers/ — 10 APIRouter modules
 │   ├── jobs.py, tailoring.py, pipeline.py, queue.py, contacts.py
 │   └── analytics.py, settings.py, alerts.py, scraping.py, autofill.py
-├── app/scrapers/ — 10+ sources with retry/backoff, UA rotation, rate limiting
+│       scraping.py: supports force=True to bypass scraper schedule check
+├── app/scrapers/ — 14 active sources with retry/backoff, UA rotation, rate limiting
 ├── app/database.py — SQLite via aiosqlite (37 tables, FK enforcement, WAL mode)
 ├── AIClient (Anthropic | OpenAI | Google | OpenRouter | Ollama)
 │   ├── JobMatcher (scoring)
@@ -376,13 +380,25 @@ uv run pytest
 # Frontend (92 tests)
 cd app/static && npx vitest run
 
-# Extension (428 tests)
+# Extension (429 tests)
 cd extension && npx vitest run
 ```
 
-**Total: 1,024 tests** across backend, frontend, and extension.
+**Total: 1,025 tests** across backend, frontend, and extension.
 
 Backend covers: scrapers, database, API endpoints, matcher, tailor, resume analyzer, AI client, contact finder, apply link finder, salary estimator, company research, digest, profile CRUD, autofill, custom Q&A, saved views, response tracking, alerts, application queue, follow-up templates, contacts CRM, career advisor, offers, and predictions.
+
+## CI
+
+GitHub Actions runs 3 parallel test suites on every push and PR to `main` (`.github/workflows/ci.yml`):
+
+| Job | Runner | Command |
+|-----|--------|---------|
+| Backend Tests | ubuntu-latest | `uv run pytest` |
+| Frontend Tests | ubuntu-latest | `npx vitest run` (in `app/static/`) |
+| Extension Tests | ubuntu-latest | `npx vitest run` (in `extension/`) |
+
+Results are uploaded as artifacts (`test-results/*.xml`).
 
 ## Tech Stack
 
