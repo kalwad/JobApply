@@ -96,6 +96,8 @@ function getFilterState() {
         const el = document.getElementById(id);
         if (el) state[id] = el.value;
     });
+    const showStale = document.getElementById('filter-show-stale');
+    if (showStale) state['filter-show-stale'] = showStale.checked;
     return state;
 }
 
@@ -104,6 +106,8 @@ function applyFilterState(state) {
         const el = document.getElementById(id);
         if (el && state[id] !== undefined) el.value = state[id];
     });
+    const showStale = document.getElementById('filter-show-stale');
+    if (showStale && state['filter-show-stale'] !== undefined) showStale.checked = state['filter-show-stale'];
 }
 
 function saveFilterState() {

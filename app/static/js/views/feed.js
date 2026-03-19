@@ -53,6 +53,7 @@ async function renderFeed(container) {
                 <option value="hide">Hide clearance/visa required</option>
                 <option value="only">Only clearance/visa required</option>
             </select>
+            <label style="display:flex;align-items:center;gap:4px;font-size:0.8125rem;color:var(--text-secondary);white-space:nowrap;cursor:pointer"><input type="checkbox" id="filter-show-stale"> Show stale</label>
             <button class="btn btn-secondary btn-sm" id="save-view-btn" style="white-space:nowrap">Save View</button>
             <button class="btn btn-secondary btn-sm" id="create-alert-btn" style="white-space:nowrap">Create Alert</button>
             <button class="btn btn-secondary btn-sm" id="select-mode-btn" style="white-space:nowrap">Select</button>
@@ -121,6 +122,10 @@ async function renderFeed(container) {
     regionSelect.addEventListener('change', reload);
     clearanceSelect.addEventListener('change', reload);
     postedWithinSelect.addEventListener('change', reload);
+    document.getElementById('filter-show-stale').addEventListener('change', () => {
+        saveFilterState();
+        filterJobsClientSide();
+    });
 
     // Smart views
     await renderSmartViewChips(reload);
@@ -265,22 +270,22 @@ async function loadJobs(append) {
 function filterJobsClientSide() {
     const searchVal = (document.getElementById('filter-search')?.value || '').toLowerCase().trim();
     const excludeVal = (document.getElementById('filter-exclude')?.value || '').toLowerCase().trim();
+    const showStale = document.getElementById('filter-show-stale')?.checked || false;
     const searchWords = searchVal ? searchVal.split(/\s+/) : [];
     const excludeWords = excludeVal ? excludeVal.split(/\s+/) : [];
 
-    if (!searchWords.length && !excludeWords.length) {
-        document.querySelectorAll('.job-card').forEach(card => card.style.display = '');
-        return;
-    }
-
     document.querySelectorAll('.job-card').forEach(card => {
-        const text = card.dataset.searchText || '';
         let visible = true;
 
-        if (searchWords.length) {
+        if (!showStale && card.dataset.freshness === 'freshness-stale') {
+            visible = false;
+        }
+        if (visible && searchWords.length) {
+            const text = card.dataset.searchText || '';
             visible = searchWords.every(w => text.includes(w));
         }
         if (visible && excludeWords.length) {
+            const text = card.dataset.searchText || '';
             visible = !excludeWords.some(w => text.includes(w));
         }
 
@@ -481,6 +486,8 @@ function createJobCard(job) {
     card.className = 'card card-interactive job-card';
     card.dataset.jobId = job.id;
     card.dataset.searchText = [job.title, job.company, job.location, job.description || ''].join(' ').toLowerCase();
+    const freshness = getFreshness(job);
+    card.dataset.freshness = freshness ? freshness.class : '';
 
     const score = job.match_score;
     const salary = formatSalary(job.salary_min, job.salary_max);
@@ -488,7 +495,6 @@ function createJobCard(job) {
     const newTag = isNew(job.created_at) ? `<span class="new-indicator">New</span>` : '';
     const safeStatus = job.app_status ? job.app_status.replace(/[^a-z0-9-]/gi, '') : '';
     const statusTag = safeStatus ? `<span class="status-badge status-${safeStatus}">${escapeHtml(job.app_status)}</span>` : '';
-    const freshness = getFreshness(job);
     const freshnessHtml = freshness ? `<span class="freshness-badge ${freshness.class}">${freshness.label}</span>` : '';
 
     let cardSalaryHtml = '';
