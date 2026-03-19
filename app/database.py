@@ -11,6 +11,21 @@ import aiosqlite
 logger = logging.getLogger(__name__)
 
 
+def _normalize_posted_date(value) -> str | None:
+    """Normalize posted_date to ISO format. Handles Unix timestamps and ISO strings."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if s.isdigit() and len(s) >= 9:
+        try:
+            return datetime.fromtimestamp(int(s), tz=timezone.utc).isoformat()
+        except (ValueError, OSError, OverflowError):
+            return None
+    return s
+
+
 def make_dedup_hash(title: str, company: str, url: str) -> str:
     normalized = f"{title.lower().strip()}|{company.lower().strip()}|{url.lower().strip().rstrip('/')}"
     return hashlib.sha256(normalized.encode()).hexdigest()
@@ -739,13 +754,14 @@ class Database:
                          description, url, posted_date, application_method, contact_email):
         dedup = make_dedup_hash(title, company, url)
         now = datetime.now(timezone.utc).isoformat()
+        normalized_date = _normalize_posted_date(posted_date)
         cursor = await self.db.execute(
             """INSERT OR IGNORE INTO jobs
                (title, company, location, salary_min, salary_max, description, url,
                 posted_date, application_method, contact_email, dedup_hash, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (title, company, location, salary_min, salary_max, description, url,
-             posted_date, application_method, contact_email, dedup, now)
+             normalized_date, application_method, contact_email, dedup, now)
         )
         await self.db.commit()
         if cursor.rowcount == 0:
@@ -1131,6 +1147,7 @@ class Database:
         """Auto-dismiss old jobs. Never dismisses jobs with non-interested applications."""
         cutoff_posted = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
         cutoff_created = (datetime.now(timezone.utc) - timedelta(days=no_date_max_days)).isoformat()
+        cutoff_unix = str(int((datetime.now(timezone.utc) - timedelta(days=max_age_days)).timestamp()))
         cursor = await self.db.execute("""
             UPDATE jobs SET dismissed = 1
             WHERE dismissed = 0
@@ -1138,10 +1155,15 @@ class Database:
                 SELECT job_id FROM applications WHERE status != 'interested'
             )
             AND (
-                (posted_date IS NOT NULL AND posted_date < ?)
+                (posted_date IS NOT NULL
+                 AND CASE
+                     WHEN posted_date GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*'
+                     THEN CAST(posted_date AS INTEGER) < CAST(? AS INTEGER)
+                     ELSE posted_date < ?
+                 END)
                 OR (posted_date IS NULL AND created_at < ?)
             )
-        """, (cutoff_posted, cutoff_created))
+        """, (cutoff_unix, cutoff_posted, cutoff_created))
         await self.db.commit()
         return cursor.rowcount
 
@@ -2156,6 +2178,40 @@ class Database:
             seniority=config.get("seniority", ""),
             summary=config.get("summary", ""),
         )
+
+    async def migrate_normalize_posted_dates(self):
+        """Convert Unix timestamp posted_dates to ISO format and un-dismiss wrongly dismissed jobs."""
+        cursor = await self.db.execute(
+            "SELECT id, posted_date FROM jobs WHERE posted_date GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*'"
+        )
+        rows = await cursor.fetchall()
+        if not rows:
+            return
+        fixed = 0
+        for row in rows:
+            try:
+                ts = int(row["posted_date"])
+                iso = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+                await self.db.execute(
+                    "UPDATE jobs SET posted_date = ? WHERE id = ?", (iso, row["id"])
+                )
+                fixed += 1
+            except (ValueError, OSError, OverflowError):
+                continue
+        if fixed:
+            await self.db.commit()
+            logger.info(f"Normalized {fixed} Unix timestamp posted_dates to ISO format")
+        undismissed = await self.db.execute("""
+            UPDATE jobs SET dismissed = 0
+            WHERE dismissed = 1
+            AND created_at > datetime('now', '-3 days')
+            AND posted_date > datetime('now', '-31 days')
+            AND id NOT IN (SELECT job_id FROM applications WHERE status != 'interested')
+        """)
+        await self.db.commit()
+        count = undismissed.rowcount
+        if count:
+            logger.info(f"Un-dismissed {count} wrongly dismissed recent jobs")
 
     # --- Response Tracking ---
 

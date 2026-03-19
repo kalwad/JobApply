@@ -1,6 +1,6 @@
 import pytest
 from datetime import datetime, timedelta, timezone
-from app.database import Database
+from app.database import Database, _normalize_posted_date
 
 
 @pytest.fixture
@@ -68,3 +68,51 @@ async def test_skips_applied_jobs(db):
     await db.auto_dismiss_stale(max_age_days=30, no_date_max_days=14)
     job = await db.get_job(jid)
     assert job["dismissed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_unix_timestamp_posted_date_not_dismissed(db):
+    """Jobs with Unix timestamp posted_dates for recent dates should NOT be dismissed."""
+    recent_ts = str(int((datetime.now(timezone.utc) - timedelta(days=2)).timestamp()))
+    jid = await db.insert_job(
+        title="Unix TS Job", company="Co", location="Remote",
+        salary_min=None, salary_max=None, description="d",
+        url="https://example.com/unix-ts", posted_date=recent_ts,
+        application_method="url", contact_email=None,
+    )
+    job = await db.get_job(jid)
+    assert job["posted_date"].startswith("20"), f"Expected ISO date, got {job['posted_date']}"
+    await db.auto_dismiss_stale(max_age_days=30, no_date_max_days=14)
+    job = await db.get_job(jid)
+    assert job["dismissed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_old_unix_timestamp_dismissed(db):
+    """Jobs with Unix timestamp posted_dates for old dates should be dismissed."""
+    old_ts = str(int((datetime.now(timezone.utc) - timedelta(days=45)).timestamp()))
+    jid = await db.insert_job(
+        title="Old Unix TS Job", company="Co", location="Remote",
+        salary_min=None, salary_max=None, description="d",
+        url="https://example.com/old-unix-ts", posted_date=old_ts,
+        application_method="url", contact_email=None,
+    )
+    await db.auto_dismiss_stale(max_age_days=30, no_date_max_days=14)
+    job = await db.get_job(jid)
+    assert job["dismissed"] == 1
+
+
+def test_normalize_posted_date_unix():
+    result = _normalize_posted_date("1773906979")
+    assert result is not None
+    assert result.startswith("2026-")
+
+
+def test_normalize_posted_date_iso_passthrough():
+    iso = "2026-03-19T07:56:19+00:00"
+    assert _normalize_posted_date(iso) == iso
+
+
+def test_normalize_posted_date_none():
+    assert _normalize_posted_date(None) is None
+    assert _normalize_posted_date("") is None

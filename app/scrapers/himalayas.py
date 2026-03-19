@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 
 import httpx
 
@@ -28,6 +29,18 @@ class HimalayasScraper(BaseScraper):
             if matched >= threshold:
                 return True
         return False
+
+    @staticmethod
+    def _parse_pub_date(value) -> str | None:
+        if value is None:
+            return None
+        s = str(value).strip()
+        if s.isdigit() and len(s) >= 9:
+            try:
+                return datetime.fromtimestamp(int(s), tz=timezone.utc).isoformat()
+            except (ValueError, OSError, OverflowError):
+                return None
+        return s
 
     async def scrape(self) -> list[JobListing]:
         jobs = []
@@ -69,7 +82,7 @@ class HimalayasScraper(BaseScraper):
                             source=self.source_name,
                             salary_min=item.get("minSalary"),
                             salary_max=item.get("maxSalary"),
-                            posted_date=item.get("pubDate", None),
+                            posted_date=self._parse_pub_date(item.get("pubDate")),
                             tags=categories,
                         )
                     )
