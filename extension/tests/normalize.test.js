@@ -170,6 +170,14 @@ describe('areEquivalent — EEO values', () => {
   it('Decline to self-identify equals I do not wish to self-identify (race)', () => {
     expect(norm.areEquivalent('Decline to self-identify', 'I do not wish to self-identify')).toBe(true);
   });
+
+  it('Asian equals Asian (Not Hispanic or Latino)', () => {
+    expect(norm.areEquivalent('Asian', 'Asian (Not Hispanic or Latino)')).toBe(true);
+  });
+
+  it('Black or African American equals long EEOC variant', () => {
+    expect(norm.areEquivalent('Black or African American', 'Black or African American (Not Hispanic or Latino)')).toBe(true);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -318,6 +326,11 @@ describe('detectFieldCategory', () => {
 
   it('detects race/ethnicity fields', () => {
     const tables = norm.detectFieldCategory(['race or ethnicity']);
+    expect(tables).toContain(norm.RACE_ETHNICITY);
+  });
+
+  it('detects racial identity fields', () => {
+    const tables = norm.detectFieldCategory(['racial background']);
     expect(tables).toContain(norm.RACE_ETHNICITY);
   });
 

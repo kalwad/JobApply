@@ -1223,6 +1223,123 @@ describe('hasNearbyPhoneCountryCode', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════
+// looksLikePhoneNumber
+// ═══════════════════════════════════════════════════════════════
+
+describe('looksLikePhoneNumber', () => {
+  it('detects raw 10-digit number', () => {
+    expect(api.looksLikePhoneNumber('1234567890')).toBe(true);
+  });
+
+  it('detects formatted US phone', () => {
+    expect(api.looksLikePhoneNumber('(123) 456-7890')).toBe(true);
+  });
+
+  it('detects phone with country code', () => {
+    expect(api.looksLikePhoneNumber('+1 (123) 456-7890')).toBe(true);
+  });
+
+  it('detects dot-separated phone', () => {
+    expect(api.looksLikePhoneNumber('123.456.7890')).toBe(true);
+  });
+
+  it('rejects text values', () => {
+    expect(api.looksLikePhoneNumber('John Smith')).toBe(false);
+  });
+
+  it('rejects short numbers', () => {
+    expect(api.looksLikePhoneNumber('123')).toBe(false);
+  });
+
+  it('rejects null/empty', () => {
+    expect(api.looksLikePhoneNumber(null)).toBe(false);
+    expect(api.looksLikePhoneNumber('')).toBe(false);
+  });
+
+  it('rejects mixed alphanumeric', () => {
+    expect(api.looksLikePhoneNumber('abc1234567')).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Phone guard in fillField
+// ═══════════════════════════════════════════════════════════════
+
+describe('fillField — phone number guard', () => {
+  it('skips phone-like value for non-phone text field', async () => {
+    createInput({ type: 'text', name: 'firstName', id: 'fname' });
+    const result = await api.fillField('#fname', '(555) 123-4567', 'fill_text');
+    expect(result.success).toBe(true);
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toMatch(/phone/i);
+  });
+
+  it('allows phone value for actual phone field', async () => {
+    const input = createInput({ type: 'tel', name: 'phone', id: 'phone1' });
+    const result = await api.fillField('#phone1', '(555) 123-4567', 'fill_text');
+    expect(result.success).toBe(true);
+    expect(result.skipped).toBeUndefined();
+  });
+
+  it('allows non-phone value for non-phone field', async () => {
+    const input = createInput({ type: 'text', name: 'city', id: 'city1' });
+    const result = await api.fillField('#city1', 'New York', 'fill_text');
+    expect(result.success).toBe(true);
+    expect(result.skipped).toBeUndefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// fillField — click_radio normalization
+// ═══════════════════════════════════════════════════════════════
+
+describe('fillField — click_radio normalization', () => {
+  it('matches synonym via normalization (Caucasian → White)', async () => {
+    const form = document.createElement('form');
+
+    const r1 = document.createElement('input');
+    r1.type = 'radio'; r1.name = 'race'; r1.value = 'white'; r1.id = 'raceWhite';
+    const l1 = document.createElement('label');
+    l1.setAttribute('for', 'raceWhite'); l1.textContent = 'White';
+
+    const r2 = document.createElement('input');
+    r2.type = 'radio'; r2.name = 'race'; r2.value = 'black'; r2.id = 'raceBlack';
+    const l2 = document.createElement('label');
+    l2.setAttribute('for', 'raceBlack'); l2.textContent = 'Black or African American';
+
+    form.append(r1, l1, r2, l2);
+    document.body.appendChild(form);
+
+    const result = await api.fillField('#raceWhite', 'Caucasian', 'click_radio');
+    expect(result.success).toBe(true);
+    expect(result.selectedValue).toBe('white');
+    expect(r1.checked).toBe(true);
+  });
+
+  it('matches EEO long form via normalization (Latino → Hispanic or Latino)', async () => {
+    const form = document.createElement('form');
+
+    const r1 = document.createElement('input');
+    r1.type = 'radio'; r1.name = 'ethnicity'; r1.value = 'hispanic'; r1.id = 'ethHisp';
+    const l1 = document.createElement('label');
+    l1.setAttribute('for', 'ethHisp'); l1.textContent = 'Hispanic or Latino';
+
+    const r2 = document.createElement('input');
+    r2.type = 'radio'; r2.name = 'ethnicity'; r2.value = 'white'; r2.id = 'ethWhite';
+    const l2 = document.createElement('label');
+    l2.setAttribute('for', 'ethWhite'); l2.textContent = 'White (Not Hispanic or Latino)';
+
+    form.append(r1, l1, r2, l2);
+    document.body.appendChild(form);
+
+    const result = await api.fillField('#ethHisp', 'Latino', 'click_radio');
+    expect(result.success).toBe(true);
+    expect(result.selectedValue).toBe('hispanic');
+    expect(r1.checked).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
 // Resume upload field detection
 // ═══════════════════════════════════════════════════════════════
 

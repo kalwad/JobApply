@@ -138,11 +138,11 @@
   const RACE_ETHNICITY = [
     ['hispanic or latino', 'hispanic', 'latino', 'latina', 'latinx', 'latine', 'hispanic/latino', 'hispanic or latino/a', 'hispanic/latina/latino'],
     ['white', 'caucasian', 'white (not hispanic or latino)', 'white/caucasian', 'european american'],
-    ['black or african american', 'black', 'african american', 'black/african american', 'african-american'],
-    ['asian', 'asian american', 'east asian', 'south asian', 'southeast asian'],
-    ['american indian or alaska native', 'native american', 'american indian', 'alaska native', 'indigenous', 'first nations', 'native american/alaska native', 'american indian/alaska native'],
-    ['native hawaiian or other pacific islander', 'native hawaiian', 'pacific islander', 'nhpi', 'native hawaiian/pacific islander'],
-    ['two or more races', 'multiracial', 'mixed race', 'biracial', 'two or more', 'multi-racial'],
+    ['black or african american', 'black', 'african american', 'black/african american', 'african-american', 'black or african american (not hispanic or latino)'],
+    ['asian', 'asian american', 'east asian', 'south asian', 'southeast asian', 'asian (not hispanic or latino)'],
+    ['american indian or alaska native', 'native american', 'american indian', 'alaska native', 'indigenous', 'first nations', 'native american/alaska native', 'american indian/alaska native', 'american indian or alaska native (not hispanic or latino)'],
+    ['native hawaiian or other pacific islander', 'native hawaiian', 'pacific islander', 'nhpi', 'native hawaiian/pacific islander', 'native hawaiian or other pacific islander (not hispanic or latino)'],
+    ['two or more races', 'multiracial', 'mixed race', 'biracial', 'two or more', 'multi-racial', 'two or more races (not hispanic or latino)'],
     ['decline to self-identify', 'decline', 'prefer not to say', 'prefer not to answer', 'prefer not to disclose', 'choose not to disclose', 'decline to answer', 'i do not wish to self-identify', 'decline to state'],
   ];
 
@@ -287,7 +287,7 @@
     { pattern: /\b(degree|education|qualification|diploma)\b/i, tables: [DEGREES] },
     { pattern: /\bgender\b/i, tables: [GENDER] },
     { pattern: /\bsex\b/i, tables: [GENDER] },
-    { pattern: /\b(race|ethnicity|ethnic)\b/i, tables: [RACE_ETHNICITY] },
+    { pattern: /\b(race|racial|ethnicity|ethnic)\b/i, tables: [RACE_ETHNICITY] },
     { pattern: /\bdisabilit/i, tables: [DISABILITY_STATUS] },
     { pattern: /\bveteran\b/i, tables: [VETERAN_STATUS] },
     { pattern: /\b(work\s*auth|authorized?\s*to\s*work|legally\s*auth|employment\s*eligib)/i, tables: [WORK_AUTH] },

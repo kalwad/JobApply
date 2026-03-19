@@ -480,6 +480,16 @@
     }
   }
 
+  function looksLikePhoneNumber(val) {
+    if (val == null) return false;
+    const s = String(val).trim();
+    if (!s) return false;
+    // Must be composed only of digits and phone formatting characters
+    if (!/^[\d\s()+.\-/]+$/.test(s)) return false;
+    const digits = s.replace(/\D/g, '');
+    return digits.length >= 7 && digits.length <= 15;
+  }
+
   function isPhoneExtensionField(el) {
     if (!el) return false;
     try {
@@ -1200,6 +1210,11 @@
         }
       }
 
+      // Guard: skip phone-number-like values for fields not identified as phone
+      if (!isPhoneField(el) && !isPhoneCountryCodeField(el) && looksLikePhoneNumber(value)) {
+        return { selector, success: true, skipped: true, reason: 'value looks like phone number for non-phone field' };
+      }
+
       // Capture original value before filling (for undo support)
       const origVal = el.value || el.textContent?.trim() || '';
       const fieldLabel = label || findLabel(el) || el.name || el.id || selector;
@@ -1385,6 +1400,22 @@
                   return { selector, success: true, action, selectedValue: radio.value };
                 }
               }
+            }
+
+            // Pass 3: normalization via lookup tables (handles synonyms like Caucasian→White)
+            if (window.__cpNormalize) {
+              try {
+                const norm = window.__cpNormalize;
+                const hints = fieldHints || {};
+                const hintValues = [hints.label, hints.name, hints.id, hints.placeholder].filter(Boolean);
+                const tables = norm.detectFieldCategory(hintValues);
+                const radioLabels = Array.from(radios).map(r => findLabel(r).trim());
+                const normIdx = norm.normalizedMatch(radioLabels, value, tables.length ? tables : undefined);
+                if (normIdx >= 0) {
+                  radios[normIdx].click();
+                  return { selector, success: true, action, selectedValue: radios[normIdx].value };
+                }
+              } catch { /* normalization unavailable */ }
             }
           }
           el.click();
@@ -3066,6 +3097,7 @@
       fuzzyMatchDropdownOption,
       fuzzyMatchOption,
       getFieldHints,
+      looksLikePhoneNumber,
       isPhoneField,
       isPhoneExtensionField,
       isPhoneCountryCodeField,
