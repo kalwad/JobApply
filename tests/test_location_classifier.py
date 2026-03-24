@@ -199,6 +199,32 @@ class TestClassifyWorkType:
     def test_ambiguous_returns_none(self, location):
         assert classify_work_type(location) is None
 
+    # Description-based detection when location/title are ambiguous
+    def test_hybrid_from_description(self):
+        assert classify_work_type(
+            "Oakland, CA", "Program Manager",
+            "This is a hybrid position with two days in the office each week."
+        ) == "hybrid"
+
+    def test_onsite_from_description(self):
+        assert classify_work_type(
+            "New York, NY", "Software Engineer",
+            "This role requires on-site presence five days a week."
+        ) == "onsite"
+
+    def test_remote_from_description(self):
+        assert classify_work_type(
+            "United States", "Data Analyst",
+            "This is a fully remote position open to candidates anywhere in the US."
+        ) == "remote"
+
+    # Structured fields take priority over description
+    def test_location_overrides_description(self):
+        assert classify_work_type(
+            "Remote", "Engineer",
+            "Our office is hybrid but this role is remote."
+        ) == "remote"
+
     # Empty inputs
     def test_empty_returns_none(self):
         assert classify_work_type("") is None

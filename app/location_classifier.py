@@ -184,8 +184,8 @@ def classify_location_rule_based(location: str) -> str | None:
     return None
 
 
-def classify_work_type(location: str, title: str = "") -> str | None:
-    """Classify work type from location and title strings.
+def classify_work_type(location: str, title: str = "", description: str = "") -> str | None:
+    """Classify work type from location, title, and description.
 
     Returns:
         "remote" — remote job
@@ -193,19 +193,34 @@ def classify_work_type(location: str, title: str = "") -> str | None:
         "hybrid" — hybrid job
         None — ambiguous, no clear signal
     """
-    combined = f"{location or ''} {title or ''}".lower()
+    # Check structured fields first (location + title) — most reliable signal
+    structured = f"{location or ''} {title or ''}".lower()
 
-    has_remote = any(kw in combined for kw in _REMOTE_KEYWORDS)
-    has_hybrid = any(kw in combined for kw in _HYBRID_KEYWORDS)
-    has_onsite = any(kw in combined for kw in _ONSITE_KEYWORDS)
+    has_remote_structured = any(kw in structured for kw in _REMOTE_KEYWORDS)
+    has_hybrid_structured = any(kw in structured for kw in _HYBRID_KEYWORDS)
+    has_onsite_structured = any(kw in structured for kw in _ONSITE_KEYWORDS)
 
-    # Hybrid takes priority (e.g. "remote/hybrid" = hybrid)
-    if has_hybrid:
+    if has_hybrid_structured:
         return "hybrid"
-    if has_onsite:
+    if has_onsite_structured:
         return "onsite"
-    if has_remote:
+    if has_remote_structured:
         return "remote"
+
+    # Fall back to description scan if structured fields are ambiguous
+    if description:
+        desc_lower = description.lower()
+        has_hybrid_desc = any(kw in desc_lower for kw in _HYBRID_KEYWORDS)
+        has_onsite_desc = any(kw in desc_lower for kw in _ONSITE_KEYWORDS)
+        has_remote_desc = any(kw in desc_lower for kw in _REMOTE_KEYWORDS)
+
+        if has_hybrid_desc:
+            return "hybrid"
+        if has_onsite_desc:
+            return "onsite"
+        if has_remote_desc:
+            return "remote"
+
     return None
 
 

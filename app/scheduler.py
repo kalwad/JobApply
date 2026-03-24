@@ -61,7 +61,7 @@ async def run_scrape_cycle(db: Database, scrapers: list, search_terms: list[str]
                 continue
 
             if remote_only:
-                work_type = classify_work_type(listing.location, listing.title)
+                work_type = classify_work_type(listing.location, listing.title, listing.description)
                 if work_type is not None and work_type != "remote":
                     skipped_work_type += 1
                     continue
