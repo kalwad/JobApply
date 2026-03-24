@@ -153,6 +153,18 @@ def _extract_linkedin(soup: BeautifulSoup) -> str | None:
 
 
 def _extract_dice(soup: BeautifulSoup) -> str | None:
+    # Dice renders descriptions client-side; check JSON-LD structured data first
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            import json
+            data = json.loads(script.string)
+            desc_html = data.get("description", "")
+            if desc_html:
+                text = BeautifulSoup(desc_html, "html.parser").get_text(separator="\n", strip=True)
+                if len(text) > 100:
+                    return text
+        except (json.JSONDecodeError, TypeError):
+            continue
     el = soup.select_one('[data-testid="jobDescriptionHtml"], .job-description, #jobDescription')
     if el:
         return el.get_text(separator="\n", strip=True)
