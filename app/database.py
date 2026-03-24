@@ -849,7 +849,7 @@ class Database:
             """SELECT j.id, j.url, j.description, j.enrichment_attempts FROM jobs j
                INNER JOIN sources s ON s.job_id = j.id
                WHERE j.description_enriched = 0
-               AND (j.description IS NULL OR length(j.description) < 200)
+               AND (j.description IS NULL OR length(j.description) < 500)
                AND j.dismissed = 0
                AND NOT (j.enrichment_status = 'failed' AND j.enrichment_attempts >= 3)
                GROUP BY j.id
