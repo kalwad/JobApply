@@ -1216,6 +1216,7 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
     const aiKey = aiSettings.api_key || '';
     const aiModel = aiSettings.model || '';
     const aiBaseUrl = aiSettings.base_url || '';
+    const aiRegion = aiSettings.region || '';
     const hasKey = aiSettings.has_key || false;
     const keys = scraperKeys || {};
 
@@ -1233,6 +1234,7 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
                         <option value="openai" ${aiProvider === 'openai' ? 'selected' : ''}>OpenAI</option>
                         <option value="google" ${aiProvider === 'google' ? 'selected' : ''}>Google (Gemini)</option>
                         <option value="openrouter" ${aiProvider === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
+                        <option value="bedrock" ${aiProvider === 'bedrock' ? 'selected' : ''}>AWS Bedrock</option>
                         <option value="ollama" ${aiProvider === 'ollama' ? 'selected' : ''}>Ollama (Local)</option>
                     </select>
                 </div>
@@ -1240,7 +1242,7 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
                     <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Model</label>
                     <div id="ai-model-container">
                         <input type="text" class="search-input" id="ai-model" placeholder="e.g. custom-model" value="${escapeHtml(aiModel)}" style="width:100%;display:none">
-                        <select class="filter-select" id="ai-model-dropdown" style="width:100%;${['anthropic', 'openai', 'google'].includes(aiProvider) ? '' : 'display:none'}"></select>
+                        <select class="filter-select" id="ai-model-dropdown" style="width:100%;${['anthropic', 'openai', 'google', 'bedrock'].includes(aiProvider) ? '' : 'display:none'}"></select>
                         <div id="ai-model-ollama" style="${aiProvider === 'ollama' ? '' : 'display:none'}">
                             <div style="display:flex;gap:8px;align-items:center">
                                 <select class="filter-select" id="ai-model-select" style="flex:1">
@@ -1260,9 +1262,26 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
                     </div>
                 </div>
             </div>
-            <div id="ai-key-row" style="margin-bottom:12px;${aiProvider === 'ollama' ? 'display:none' : ''}">
-                <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">API Key</label>
+            <div id="ai-key-row" style="margin-bottom:12px;${aiProvider === 'ollama' || aiProvider === 'bedrock' ? 'display:none' : ''}">
+                <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px" id="ai-key-label">API Key</label>
                 <input type="password" class="search-input" id="ai-api-key" placeholder="${hasKey ? 'Key configured (leave blank to keep)' : 'Enter API key'}" value="${escapeHtml(aiKey)}" style="width:100%">
+            </div>
+            <div id="ai-bedrock-creds" style="${aiProvider === 'bedrock' ? '' : 'display:none'}">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+                    <div>
+                        <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">AWS Access Key ID</label>
+                        <input type="password" class="search-input" id="ai-aws-access-key" placeholder="${hasKey ? 'Configured (leave blank to keep)' : 'AKIA...'}" value="${aiProvider === 'bedrock' ? escapeHtml(aiKey) : ''}" style="width:100%">
+                    </div>
+                    <div>
+                        <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">AWS Secret Access Key</label>
+                        <input type="password" class="search-input" id="ai-aws-secret-key" placeholder="${aiProvider === 'bedrock' && aiBaseUrl ? 'Configured (leave blank to keep)' : 'Enter secret key'}" value="${aiProvider === 'bedrock' ? escapeHtml(aiBaseUrl) : ''}" style="width:100%">
+                    </div>
+                </div>
+                <div style="font-size:0.75rem;color:var(--text-tertiary);margin-bottom:12px">Leave blank to use default AWS credentials (~/.aws/credentials or environment variables)</div>
+            </div>
+            <div id="ai-region-row" style="margin-bottom:12px;${aiProvider === 'bedrock' ? '' : 'display:none'}">
+                <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">AWS Region</label>
+                <input type="text" class="search-input" id="ai-region" value="${escapeHtml(aiRegion || 'us-east-1')}" placeholder="us-east-1" style="width:100%">
             </div>
             <div id="ai-url-row" style="margin-bottom:16px;${aiProvider === 'ollama' ? '' : 'display:none'}">
                 <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">Ollama URL</label>
@@ -1388,6 +1407,20 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
         anthropic: ['claude-opus-4-20250514', 'claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'],
         openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo', 'o1', 'o1-mini', 'o3-mini'],
         google: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'],
+        bedrock: [
+            'us.anthropic.claude-sonnet-4-6',
+            'us.anthropic.claude-opus-4-6-v1',
+            'us.anthropic.claude-opus-4-5-20251101-v1:0',
+            'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+            'us.anthropic.claude-opus-4-1-20250805-v1:0',
+            'us.anthropic.claude-opus-4-20250514-v1:0',
+            'us.anthropic.claude-sonnet-4-20250514-v1:0',
+            'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+            'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
+            'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
+            'us.anthropic.claude-3-5-haiku-20241022-v1:0',
+            'us.anthropic.claude-3-haiku-20240307-v1:0',
+        ],
     };
 
     function populateModelDropdown(provider, currentModel) {
@@ -1421,8 +1454,11 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
     document.getElementById('ai-provider').addEventListener('change', (e) => {
         const provider = e.target.value;
         const isOllama = provider === 'ollama';
-        document.getElementById('ai-key-row').style.display = isOllama ? 'none' : '';
+        const isBedrock = provider === 'bedrock';
+        document.getElementById('ai-key-row').style.display = (isOllama || isBedrock) ? 'none' : '';
         document.getElementById('ai-url-row').style.display = isOllama ? '' : 'none';
+        document.getElementById('ai-bedrock-creds').style.display = isBedrock ? '' : 'none';
+        document.getElementById('ai-region-row').style.display = isBedrock ? '' : 'none';
         updateModelVisibility(provider);
         if (provider in PROVIDER_MODELS) {
             populateModelDropdown(provider, '');
@@ -1507,7 +1543,17 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
         } else {
             model = document.getElementById('ai-model').value;
         }
-        return { provider, api_key: document.getElementById('ai-api-key').value, model, base_url: document.getElementById('ai-base-url').value };
+        let api_key, base_url, region;
+        if (provider === 'bedrock') {
+            api_key = document.getElementById('ai-aws-access-key').value;
+            base_url = document.getElementById('ai-aws-secret-key').value;
+            region = document.getElementById('ai-region').value;
+        } else {
+            api_key = document.getElementById('ai-api-key').value;
+            base_url = document.getElementById('ai-base-url').value;
+            region = '';
+        }
+        return { provider, api_key, model, base_url, region };
     }
 
     document.getElementById('save-ai-btn').addEventListener('click', async () => {
