@@ -1096,6 +1096,7 @@ function renderInterviewTimeline(rounds, jobId) {
                                         ${round.notes ? `<div style="font-size:0.8125rem;color:var(--text-tertiary);margin-top:4px;white-space:pre-line">${escapeHtml(round.notes)}</div>` : ''}
                                     </div>
                                     <div style="display:flex;gap:4px;flex-shrink:0">
+                                        <button class="btn btn-ghost btn-sm interview-view-btn" data-round-id="${round.id}" data-job-id="${jobId}" title="View Details + Salary" style="padding:4px 8px">View</button>
                                         <button class="btn btn-ghost btn-sm interview-edit-btn" data-round-id="${round.id}" title="Edit" style="padding:4px 8px">Edit</button>
                                         <button class="btn btn-ghost btn-sm interview-delete-btn" data-round-id="${round.id}" title="Delete" style="padding:4px 8px;color:var(--danger)">Del</button>
                                     </div>
@@ -1116,6 +1117,16 @@ function wireInterviewTimelineEvents(timelineContainer, jobId, container, profil
             showInterviewForm(timelineContainer, jobId, null, container, profile, companyInfo, resumes);
         });
     }
+
+    timelineContainer.querySelectorAll('.interview-view-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const roundId = parseInt(btn.dataset.roundId);
+            const jid = parseInt(btn.dataset.jobId);
+            if (typeof openInterviewPanel === 'function') {
+                openInterviewPanel(roundId, jid);
+            }
+        });
+    });
 
     timelineContainer.querySelectorAll('.interview-edit-btn').forEach(btn => {
         btn.addEventListener('click', async () => {
