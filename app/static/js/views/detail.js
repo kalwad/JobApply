@@ -78,9 +78,12 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
             </div>
         </div>
         <div class="detail-layout">
-            <div class="card detail-description">
-                <h2>Job Description</h2>
-                <div class="detail-description-content">${descriptionContent}</div>
+            <div class="detail-main-col">
+                <div class="card detail-description">
+                    <h2>Job Description</h2>
+                    <div class="detail-description-content">${descriptionContent}</div>
+                </div>
+                ${application ? `<div id="interview-timeline-container"></div>` : ''}
             </div>
             <div class="detail-sidebar">
                 ${score ? `
@@ -584,6 +587,11 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
 
     attachPreparedListeners();
 
+    // Load interview timeline for pipeline jobs
+    if (document.getElementById('interview-timeline-container')) {
+        loadInterviewTimeline(job.id, container, profile, companyInfo, resumes);
+    }
+
     const dismissDupesBtn = document.getElementById('dismiss-dupes-btn');
     if (dismissDupesBtn) {
         dismissDupesBtn.addEventListener('click', async () => {
@@ -619,6 +627,7 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
             }
         });
     }
+
 }
 
 function renderInterviewPrep(prep) {
@@ -830,4 +839,311 @@ function renderEmailPreview(email) {
             </div>
         </div>
     `;
+}
+
+// === Interview Timeline ===
+
+async function loadInterviewTimeline(jobId, container, profile, companyInfo, resumes) {
+    const timelineContainer = document.getElementById('interview-timeline-container');
+    if (!timelineContainer) return;
+
+    let rounds = [];
+    try {
+        const data = await api.getInterviews(jobId);
+        rounds = (data.rounds || []).sort((a, b) => a.round_number - b.round_number);
+    } catch {
+        // API may not exist yet — show empty state with add button
+    }
+
+    timelineContainer.innerHTML = renderInterviewTimeline(rounds, jobId);
+    wireInterviewTimelineEvents(timelineContainer, jobId, container, profile, companyInfo, resumes);
+}
+
+function renderInterviewTimeline(rounds, jobId) {
+    const statusBadge = (status) => {
+        const colors = {
+            scheduled: 'var(--accent)',
+            completed: 'var(--score-green)',
+            cancelled: 'var(--text-tertiary)',
+            no_show: 'var(--danger)',
+        };
+        const color = colors[status] || 'var(--text-secondary)';
+        return `<span style="font-size:0.7rem;font-weight:600;padding:2px 8px;border-radius:var(--radius-full);background:${color}18;color:${color};text-transform:capitalize">${escapeHtml((status || 'scheduled').replace('_', ' '))}</span>`;
+    };
+
+    return `
+        <div class="card" style="padding:20px;margin-top:16px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                <h2 style="font-size:1.125rem;font-weight:700;margin:0">Interviews</h2>
+                <button class="btn btn-primary btn-sm" id="add-interview-btn">+ Add Round</button>
+            </div>
+            <div id="interview-add-form-container" style="display:none"></div>
+            ${rounds.length === 0 ? `
+                <div class="empty-state empty-state-compact" style="padding:16px 0">
+                    <div class="empty-state-desc">No interview rounds yet. Add your first round to track interviews.</div>
+                </div>
+            ` : `
+                <div class="interview-timeline-list">
+                    ${rounds.map(round => `
+                        <div class="interview-round-card" data-round-id="${round.id}">
+                            <div class="interview-round-line"></div>
+                            <div class="interview-round-dot"></div>
+                            <div class="interview-round-content">
+                                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+                                    <div>
+                                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                                            <span style="font-weight:600;font-size:0.9375rem">Round ${round.round_number}${round.label ? ': ' + escapeHtml(round.label) : ''}</span>
+                                            ${statusBadge(round.status)}
+                                        </div>
+                                        ${round.scheduled_at ? `
+                                            <div style="font-size:0.8125rem;color:var(--text-secondary);margin-top:4px">
+                                                ${new Date(round.scheduled_at).toLocaleString('default', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                                                ${round.duration_min ? ` (${round.duration_min} min)` : ''}
+                                            </div>
+                                        ` : ''}
+                                        ${round.interviewer_name ? `
+                                            <div style="font-size:0.8125rem;color:var(--text-secondary);margin-top:2px">
+                                                ${escapeHtml(round.interviewer_name)}${round.interviewer_title ? ` — ${escapeHtml(round.interviewer_title)}` : ''}
+                                                ${!round.contact_id ? `<button class="btn btn-ghost btn-sm interview-save-contact-btn" data-round-id="${round.id}" style="font-size:0.7rem;padding:1px 6px;margin-left:4px">Save to Network</button>` : `<span style="font-size:0.7rem;color:var(--score-green);margin-left:4px">In Network</span>`}
+                                            </div>
+                                        ` : ''}
+                                        ${round.location ? `<div style="font-size:0.8125rem;color:var(--text-tertiary);margin-top:2px">${escapeHtml(round.location)}</div>` : ''}
+                                        ${round.notes ? `<div style="font-size:0.8125rem;color:var(--text-tertiary);margin-top:4px;white-space:pre-line">${escapeHtml(round.notes)}</div>` : ''}
+                                    </div>
+                                    <div style="display:flex;gap:4px;flex-shrink:0">
+                                        <button class="btn btn-ghost btn-sm interview-edit-btn" data-round-id="${round.id}" title="Edit" style="padding:4px 8px">Edit</button>
+                                        <button class="btn btn-ghost btn-sm interview-delete-btn" data-round-id="${round.id}" title="Delete" style="padding:4px 8px;color:var(--danger)">Del</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            `}
+        </div>
+    `;
+}
+
+function wireInterviewTimelineEvents(timelineContainer, jobId, container, profile, companyInfo, resumes) {
+    const addBtn = timelineContainer.querySelector('#add-interview-btn');
+    if (addBtn) {
+        addBtn.addEventListener('click', () => {
+            showInterviewForm(timelineContainer, jobId, null, container, profile, companyInfo, resumes);
+        });
+    }
+
+    timelineContainer.querySelectorAll('.interview-edit-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const roundId = parseInt(btn.dataset.roundId);
+            try {
+                const data = await api.getInterviews(jobId);
+                const round = (data.rounds || []).find(r => r.id === roundId);
+                if (round) showInterviewForm(timelineContainer, jobId, round, container, profile, companyInfo, resumes);
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        });
+    });
+
+    timelineContainer.querySelectorAll('.interview-delete-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const roundId = parseInt(btn.dataset.roundId);
+            const ok = await showModal({
+                title: 'Delete Interview Round',
+                message: 'Are you sure you want to delete this interview round?',
+                confirmText: 'Delete',
+                danger: true,
+            });
+            if (!ok) return;
+            try {
+                await api.deleteInterview(roundId);
+                showToast('Interview round deleted', 'success');
+                await loadInterviewTimeline(jobId, container, profile, companyInfo, resumes);
+            } catch (err) {
+                showToast(`Failed to delete: ${err.message}`, 'error');
+            }
+        });
+    });
+
+    timelineContainer.querySelectorAll('.interview-save-contact-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const roundId = parseInt(btn.dataset.roundId);
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>';
+            try {
+                await api.promoteInterviewer(roundId);
+                showToast('Interviewer saved to network', 'success');
+                await loadInterviewTimeline(jobId, container, profile, companyInfo, resumes);
+            } catch (err) {
+                showToast(`Failed: ${err.message}`, 'error');
+                btn.disabled = false;
+                btn.textContent = 'Save to Network';
+            }
+        });
+    });
+}
+
+function showInterviewForm(timelineContainer, jobId, existingRound, container, profile, companyInfo, resumes) {
+    const formContainer = timelineContainer.querySelector('#interview-add-form-container');
+    if (!formContainer) return;
+
+    const isEdit = !!existingRound;
+    const labelSuggestions = ['Phone Screen', 'Technical', 'System Design', 'Behavioral', 'Hiring Manager', 'Culture Fit', 'Panel', 'Final Round', 'Take Home'];
+
+    const scheduledVal = existingRound?.scheduled_at
+        ? existingRound.scheduled_at.slice(0, 16)
+        : '';
+
+    const currentLabel = existingRound?.label || '';
+    const labelPills = labelSuggestions.map(s =>
+        `<button type="button" class="iv-label-pill${s === currentLabel ? ' active' : ''}" data-label="${escapeHtml(s)}">${escapeHtml(s)}</button>`
+    ).join('');
+
+    const durationOptions = [15, 30, 45, 60, 90, 120, 180].map(m => {
+        const label = m >= 60 ? `${m / 60}h${m % 60 ? ` ${m % 60}m` : ''}` : `${m}m`;
+        const selected = (existingRound?.duration_min || 60) === m;
+        return `<button type="button" class="iv-duration-pill${selected ? ' active' : ''}" data-duration="${m}">${label}</button>`;
+    }).join('');
+
+    formContainer.style.display = 'block';
+    formContainer.innerHTML = `
+        <div class="iv-form-panel">
+            <div class="iv-form-header">
+                <h3>${isEdit ? 'Edit' : 'Add'} Interview Round</h3>
+                <button type="button" class="btn btn-ghost btn-sm" id="cancel-interview-form" aria-label="Close">&times;</button>
+            </div>
+            <form id="interview-round-form">
+                <div class="iv-form-section">
+                    <label class="iv-form-label">Round Type</label>
+                    <div class="iv-label-pills">${labelPills}</div>
+                    <input type="text" name="label" class="search-input" id="interview-label-input" value="${escapeHtml(currentLabel)}" placeholder="Or type a custom label..." style="margin-top:8px">
+                </div>
+
+                <div class="iv-form-row">
+                    <div class="iv-form-section" style="flex:1.2">
+                        <label class="iv-form-label">Date & Time</label>
+                        <input type="datetime-local" name="scheduled_at" class="search-input" value="${scheduledVal}">
+                    </div>
+                    ${isEdit ? `
+                    <div class="iv-form-section" style="flex:0.8">
+                        <label class="iv-form-label">Status</label>
+                        <select name="status" class="filter-select" style="width:100%">
+                            ${['scheduled', 'completed', 'cancelled', 'no_show'].map(s =>
+                                `<option value="${s}" ${(existingRound?.status || 'scheduled') === s ? 'selected' : ''}>${s.replace('_', ' ')}</option>`
+                            ).join('')}
+                        </select>
+                    </div>
+                    ` : '<input type="hidden" name="status" value="scheduled">'}
+                </div>
+
+                <div class="iv-form-section">
+                    <label class="iv-form-label">Duration</label>
+                    <div class="iv-duration-pills">${durationOptions}</div>
+                    <input type="hidden" name="duration_min" id="iv-duration-val" value="${existingRound?.duration_min || 60}">
+                </div>
+
+                <div class="iv-form-section">
+                    <label class="iv-form-label">Interviewer</label>
+                    <div class="iv-form-row">
+                        <div style="flex:1">
+                            <input type="text" name="interviewer_name" class="search-input" value="${escapeHtml(existingRound?.interviewer_name || '')}" placeholder="Name">
+                        </div>
+                        <div style="flex:1">
+                            <input type="text" name="interviewer_title" class="search-input" value="${escapeHtml(existingRound?.interviewer_title || '')}" placeholder="Title or role">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="iv-form-section">
+                    <label class="iv-form-label">Location / Meeting Link</label>
+                    <input type="text" name="location" class="search-input" value="${escapeHtml(existingRound?.location || '')}" placeholder="Office address or https://zoom.us/j/...">
+                </div>
+
+                <div class="iv-form-section">
+                    <label class="iv-form-label">Notes</label>
+                    <textarea name="notes" class="search-input" rows="2" style="resize:vertical;min-height:48px" placeholder="Prep topics, questions to ask, things to remember...">${escapeHtml(existingRound?.notes || '')}</textarea>
+                </div>
+
+                <div class="iv-form-actions">
+                    <button type="submit" class="btn btn-primary btn-sm" id="iv-form-submit">${isEdit ? 'Save Changes' : 'Add Round'}</button>
+                    <button type="button" class="btn btn-ghost btn-sm" id="cancel-interview-form-bottom">Cancel</button>
+                </div>
+            </form>
+        </div>
+    `;
+
+    // Label pill click → fills text input
+    formContainer.querySelectorAll('.iv-label-pill').forEach(pill => {
+        pill.addEventListener('click', () => {
+            formContainer.querySelectorAll('.iv-label-pill').forEach(p => p.classList.remove('active'));
+            pill.classList.add('active');
+            formContainer.querySelector('#interview-label-input').value = pill.dataset.label;
+        });
+    });
+
+    // Custom label input clears pill selection if text differs
+    formContainer.querySelector('#interview-label-input').addEventListener('input', (e) => {
+        const val = e.target.value;
+        formContainer.querySelectorAll('.iv-label-pill').forEach(p => {
+            p.classList.toggle('active', p.dataset.label === val);
+        });
+    });
+
+    // Duration pill click
+    formContainer.querySelectorAll('.iv-duration-pill').forEach(pill => {
+        pill.addEventListener('click', () => {
+            formContainer.querySelectorAll('.iv-duration-pill').forEach(p => p.classList.remove('active'));
+            pill.classList.add('active');
+            formContainer.querySelector('#iv-duration-val').value = pill.dataset.duration;
+        });
+    });
+
+    // Cancel buttons
+    const cancelForm = () => {
+        formContainer.style.display = 'none';
+        formContainer.innerHTML = '';
+    };
+    formContainer.querySelector('#cancel-interview-form').addEventListener('click', cancelForm);
+    formContainer.querySelector('#cancel-interview-form-bottom').addEventListener('click', cancelForm);
+
+    // Submit
+    formContainer.querySelector('#interview-round-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+
+        const data = {
+            label: fd.get('label') || '',
+            scheduled_at: fd.get('scheduled_at') || null,
+            duration_min: parseInt(fd.get('duration_min') || '60', 10),
+            status: fd.get('status') || 'scheduled',
+            interviewer_name: fd.get('interviewer_name') || '',
+            interviewer_title: fd.get('interviewer_title') || '',
+            location: fd.get('location') || '',
+            notes: fd.get('notes') || '',
+        };
+
+        const submitBtn = formContainer.querySelector('#iv-form-submit');
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = `<span class="spinner"></span> ${isEdit ? 'Saving...' : 'Adding...'}`;
+
+        try {
+            if (isEdit) {
+                await api.updateInterview(existingRound.id, data);
+                showToast('Interview round updated', 'success');
+            } else {
+                await api.createInterview(jobId, data);
+                showToast('Interview round added', 'success');
+            }
+            formContainer.style.display = 'none';
+            formContainer.innerHTML = '';
+            await loadInterviewTimeline(jobId, container, profile, companyInfo, resumes);
+        } catch (err) {
+            showToast(`Failed: ${err.message}`, 'error');
+            submitBtn.disabled = false;
+            submitBtn.textContent = isEdit ? 'Save Changes' : 'Add Round';
+        }
+    });
+
+    // Focus label input on open
+    formContainer.querySelector('#interview-label-input').focus();
 }

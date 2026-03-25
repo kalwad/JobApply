@@ -2538,6 +2538,113 @@ kbd {
     border: 1px solid var(--border);
 }
 
+/* === Interview Form (Add/Edit Round) === */
+
+.iv-form-panel {
+    margin-bottom: 16px;
+    background: var(--bg-surface);
+    border: 2px solid var(--accent);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+.iv-form-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: var(--accent-light);
+    border-bottom: 1px solid var(--border);
+}
+
+.iv-form-header h3 {
+    margin: 0;
+    font-size: 0.9375rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.iv-form-panel form {
+    padding: 20px;
+}
+
+.iv-form-section {
+    margin-bottom: 16px;
+}
+
+.iv-form-label {
+    display: block;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+
+.iv-form-row {
+    display: flex;
+    gap: 12px;
+}
+
+.iv-label-pills,
+.iv-duration-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.iv-label-pill,
+.iv-duration-pill {
+    padding: 5px 12px;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: var(--bg-surface-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    cursor: pointer;
+    transition: all 150ms ease;
+    white-space: nowrap;
+}
+
+.iv-label-pill:hover,
+.iv-duration-pill:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-light);
+}
+
+.iv-label-pill.active,
+.iv-duration-pill.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+    box-shadow: var(--shadow-sm);
+}
+
+.iv-form-actions {
+    display: flex;
+    gap: 8px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+}
+
+@media (max-width: 480px) {
+    .iv-form-row {
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .iv-label-pills {
+        gap: 4px;
+    }
+
+    .iv-label-pill,
+    .iv-duration-pill {
+        font-size: 0.75rem;
+        padding: 4px 10px;
+    }
+}
+
 /* === Interview Detail Drawer === */
 
 .interview-drawer-backdrop {
