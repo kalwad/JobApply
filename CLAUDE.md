@@ -50,6 +50,7 @@ docker compose up -d
 ## Environment Variables
 Required in `.env` (all optional — can configure via UI instead):
 - `JOBFINDER_ANTHROPIC_API_KEY` — AI scoring key (Anthropic); use UI for other providers
+- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — AWS credentials for Bedrock provider (or use `~/.aws/credentials`, instance profile, etc.)
 - `JOBFINDER_USAJOBS_API_KEY` — USAJobs.gov API key (optional, for federal listings)
 - `JOBFINDER_DB_PATH` — default: `data/jobfinder.db`
 - `JOBFINDER_RESUME_PATH` — default: `data/resume.txt`
