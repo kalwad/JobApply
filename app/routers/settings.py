@@ -347,7 +347,7 @@ async def get_ai_settings(request: Request):
         return {
             "provider": "anthropic" if env_key else "",
             "api_key": _mask_key(env_key),
-            "model": "", "base_url": "",
+            "model": "", "base_url": "", "region": "",
             "has_key": bool(env_key), "updated_at": None,
         }
     return {
@@ -355,6 +355,7 @@ async def get_ai_settings(request: Request):
         "api_key": _mask_key(settings["api_key"]),
         "model": settings["model"],
         "base_url": settings["base_url"],
+        "region": settings.get("region", ""),
         "has_key": bool(settings["api_key"]),
         "updated_at": settings["updated_at"],
     }
@@ -368,6 +369,7 @@ async def update_ai_settings(request: Request):
     api_key = body.get("api_key", "")
     model = body.get("model", "")
     base_url = body.get("base_url", "")
+    region = body.get("region", "")
     if provider not in ALL_PROVIDERS:
         raise HTTPException(400, f"Provider must be one of: {', '.join(ALL_PROVIDERS)}")
     if api_key.startswith("****"):
@@ -377,10 +379,11 @@ async def update_ai_settings(request: Request):
         else:
             env_key = getattr(getattr(request.app.state, "settings", None), "anthropic_api_key", "") or ""
             api_key = env_key
-    await request.app.state.db.save_ai_settings(provider, api_key, model, base_url)
+    await request.app.state.db.save_ai_settings(provider, api_key, model, base_url, region=region)
     from app.main import _build_ai_client
     client = _build_ai_client({"provider": provider, "api_key": api_key,
-                                "model": model, "base_url": base_url})
+                                "model": model, "base_url": base_url,
+                                "region": region})
     config = await request.app.state.db.get_search_config()
     resume_text = config.get("resume_text", "") if config else ""
     request.app.state.reinit_ai_services(client, resume_text)
@@ -410,6 +413,7 @@ async def test_ai_connection(request: Request):
     api_key = body.get("api_key", "")
     model = body.get("model", "")
     base_url = body.get("base_url", "")
+    region = body.get("region", "")
     if api_key.startswith("****"):
         existing = await request.app.state.db.get_ai_settings()
         if existing:
@@ -418,11 +422,18 @@ async def test_ai_connection(request: Request):
             env_key = getattr(getattr(request.app.state, "settings", None), "anthropic_api_key", "") or ""
             api_key = env_key
     try:
-        client = AIClient(provider, api_key=api_key, model=model, base_url=base_url)
+        client = AIClient(provider, api_key=api_key, model=model, base_url=base_url, region=region)
+        logger.info("Testing AI connection: provider=%s, model=%s, base_url=%s, region=%s",
+                     provider, model, client.base_url, region)
         response = await client.chat("Reply with exactly: OK", max_tokens=10)
         return {"ok": True, "response": (response or "").strip()[:50]}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        logger.exception("AI connection test failed for provider=%s", provider)
+        detail = str(e)
+        cause = e.__cause__ or e.__context__
+        if cause:
+            detail = f"{detail} — {type(cause).__name__}: {cause}"
+        return {"ok": False, "error": detail}
 
 
 @router.get("/settings/embeddings")

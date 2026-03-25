@@ -25,10 +25,15 @@ def _build_ai_client(ai_settings: dict | None, env_key: str = "") -> AIClient | 
         api_key = ai_settings.get("api_key", "")
         model = ai_settings.get("model", "")
         base_url = ai_settings.get("base_url", "")
+        region = ai_settings.get("region", "")
+        if provider == "bedrock":
+            return AIClient(provider, api_key=api_key, model=model,
+                            base_url=base_url, region=region)
         if provider == "ollama":
             return AIClient(provider, model=model, base_url=base_url)
         if api_key:
-            return AIClient(provider, api_key=api_key, model=model, base_url=base_url)
+            return AIClient(provider, api_key=api_key, model=model,
+                            base_url=base_url, region=region)
     if env_key:
         return AIClient("anthropic", api_key=env_key)
     return None
