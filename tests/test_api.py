@@ -239,6 +239,40 @@ async def test_add_event(client, app):
 
 
 @pytest.mark.asyncio
+async def test_add_event_with_type(client, app):
+    db = app.state.db
+    job_id = await db.insert_job(
+        title="Engineer", company="Acme", location="Remote",
+        salary_min=150000, salary_max=200000,
+        description="Build things", url="https://example.com/job-event-type",
+        posted_date="2026-01-01", application_method="url",
+        contact_email=None,
+    )
+    call_detail = '{"who": "Jane", "duration": "15 min", "notes": "Discussed role"}'
+    resp = await client.post(f"/api/jobs/{job_id}/events", json={"detail": call_detail, "event_type": "call"})
+    assert resp.status_code == 200
+
+    resp = await client.get(f"/api/jobs/{job_id}")
+    data = resp.json()
+    assert data["events"][0]["event_type"] == "call"
+    assert "Jane" in data["events"][0]["detail"]
+
+
+@pytest.mark.asyncio
+async def test_add_event_invalid_type(client, app):
+    db = app.state.db
+    job_id = await db.insert_job(
+        title="Engineer", company="Acme", location="Remote",
+        salary_min=150000, salary_max=200000,
+        description="Build things", url="https://example.com/job-event-bad-type",
+        posted_date="2026-01-01", application_method="url",
+        contact_email=None,
+    )
+    resp = await client.post(f"/api/jobs/{job_id}/events", json={"detail": "test", "event_type": "invalid"})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_add_event_empty_detail(client, app):
     db = app.state.db
     job_id = await db.insert_job(

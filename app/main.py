@@ -379,7 +379,7 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
     app.state.save_parsed_profile = _save_parsed_profile
 
     # --- Register routers ---
-    from app.routers import jobs, tailoring, pipeline, queue, contacts, analytics, settings, alerts, scraping, autofill
+    from app.routers import jobs, tailoring, pipeline, queue, contacts, analytics, settings, alerts, scraping, autofill, interviews, calendar
     app.include_router(jobs.router)
     app.include_router(tailoring.router)
     app.include_router(pipeline.router)
@@ -390,6 +390,8 @@ def create_app(db_path: str = "data/jobfinder.db", testing: bool = False) -> Fas
     app.include_router(alerts.router)
     app.include_router(scraping.router)
     app.include_router(autofill.router)
+    app.include_router(interviews.router)
+    app.include_router(calendar.router)
 
     # --- Static files ---
     if not testing:

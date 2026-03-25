@@ -68,8 +68,8 @@ const api = {
         return this.request('POST', `/api/jobs/${id}/generate-cover-letter`);
     },
 
-    addEvent(id, detail) {
-        return this.request('POST', `/api/jobs/${id}/events`, { detail });
+    addEvent(id, detail, eventType = 'note') {
+        return this.request('POST', `/api/jobs/${id}/events`, { detail, event_type: eventType });
     },
 
     getSearchConfig() {

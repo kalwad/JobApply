@@ -29,6 +29,7 @@ function getRoute() {
         return { view: 'detail', id: parseInt(id, 10) };
     }
     if (hash === '#/stats') return { view: 'stats' };
+    if (hash === '#/calendar') return { view: 'calendar' };
     if (hash === '#/pipeline') return { view: 'pipeline' };
     if (hash === '#/queue') return { view: 'queue' };
     if (hash === '#/network') return { view: 'network' };
@@ -48,6 +49,7 @@ function updateActiveNav() {
         link.classList.toggle('active',
             (r === 'feed' && route.view === 'feed') ||
             (r === 'stats' && route.view === 'stats') ||
+            (r === 'calendar' && route.view === 'calendar') ||
             (r === 'pipeline' && route.view === 'pipeline') ||
             (r === 'queue' && route.view === 'queue') ||
             (r === 'network' && route.view === 'network') ||
@@ -67,6 +69,8 @@ async function handleRoute() {
         await renderJobDetail(app, route.id);
     } else if (route.view === 'stats') {
         await renderStats(app);
+    } else if (route.view === 'calendar') {
+        await renderCalendar(app);
     } else if (route.view === 'pipeline') {
         await renderPipeline(app);
     } else if (route.view === 'queue') {

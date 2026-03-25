@@ -179,3 +179,97 @@ describe('showInterviewForm', () => {
         expect(formContainer.innerHTML).toBe('');
     });
 });
+
+describe('renderQuickActions', () => {
+    it('shows action bar for interviewing jobs', () => {
+        const job = { id: 1, application: { status: 'interviewing' }, events: [] };
+        const html = renderQuickActions(job);
+        const container = document.createElement('div');
+        container.innerHTML = html;
+        expect(container.querySelectorAll('.crm-action-btn').length).toBe(3);
+        expect(container.querySelector('[data-action="call"]')).not.toBeNull();
+        expect(container.querySelector('[data-action="email"]')).not.toBeNull();
+        expect(container.querySelector('[data-action="note"]')).not.toBeNull();
+    });
+
+    it('hides action bar for non-interviewing jobs', () => {
+        const job = { id: 1, application: { status: 'interested' }, events: [] };
+        const html = renderQuickActions(job);
+        const container = document.createElement('div');
+        container.innerHTML = html;
+        expect(container.querySelectorAll('.crm-action-btn').length).toBe(0);
+    });
+
+    it('shows default note input', () => {
+        const job = { id: 1, events: [] };
+        const html = renderQuickActions(job);
+        const container = document.createElement('div');
+        container.innerHTML = html;
+        expect(container.querySelector('#add-note-input')).not.toBeNull();
+        expect(container.querySelector('#add-note-btn')).not.toBeNull();
+    });
+});
+
+describe('getCrmFormHtml', () => {
+    it('returns call form', () => {
+        const html = getCrmFormHtml('call');
+        const container = document.createElement('div');
+        container.innerHTML = html;
+        expect(container.querySelector('[name="who"]')).not.toBeNull();
+        expect(container.querySelector('[name="duration"]')).not.toBeNull();
+        expect(container.querySelector('[name="notes"]')).not.toBeNull();
+    });
+
+    it('returns email form', () => {
+        const html = getCrmFormHtml('email');
+        const container = document.createElement('div');
+        container.innerHTML = html;
+        expect(container.querySelector('[name="direction"]')).not.toBeNull();
+        expect(container.querySelector('[name="subject"]')).not.toBeNull();
+    });
+
+    it('returns note form', () => {
+        const html = getCrmFormHtml('note');
+        const container = document.createElement('div');
+        container.innerHTML = html;
+        expect(container.querySelector('#add-note-input')).not.toBeNull();
+    });
+});
+
+describe('renderTimeline with structured events', () => {
+    it('renders call events with structured display', () => {
+        const events = [{
+            event_type: 'call',
+            detail: JSON.stringify({ who: 'Jane', duration: '15 min', notes: 'Discussed role' }),
+            created_at: '2026-03-24T10:00:00',
+        }];
+        const html = renderTimeline(events);
+        expect(html).toContain('Call');
+        expect(html).toContain('Jane');
+        expect(html).toContain('15 min');
+        expect(html).toContain('Discussed role');
+    });
+
+    it('renders email events with structured display', () => {
+        const events = [{
+            event_type: 'email_log',
+            detail: JSON.stringify({ direction: 'Sent', subject: 'Follow up', notes: 'Asked about timeline' }),
+            created_at: '2026-03-24T10:00:00',
+        }];
+        const html = renderTimeline(events);
+        expect(html).toContain('Email');
+        expect(html).toContain('Sent');
+        expect(html).toContain('Follow up');
+        expect(html).toContain('Asked about timeline');
+    });
+
+    it('falls back to plain text for malformed JSON', () => {
+        const events = [{
+            event_type: 'call',
+            detail: 'plain text call log',
+            created_at: '2026-03-24T10:00:00',
+        }];
+        const html = renderTimeline(events);
+        expect(html).toContain('plain text call log');
+    });
+});

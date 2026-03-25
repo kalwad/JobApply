@@ -220,10 +220,7 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
                 })()}
                 <div class="card sidebar-section">
                     <h3>Timeline</h3>
-                    <div class="flex gap-8 mb-16">
-                        <input type="text" class="search-input" id="add-note-input" placeholder="Add a note..." style="flex:1">
-                        <button class="btn btn-primary btn-sm" id="add-note-btn">Add</button>
-                    </div>
+                    ${renderQuickActions(job)}
                     <div class="timeline" id="timeline-container">
                         ${renderTimeline(job.events || [])}
                     </div>
@@ -493,24 +490,7 @@ function renderJobDetailContent(container, job, profile = {}, companyInfo = null
         });
     }
 
-    const addNoteBtn = document.getElementById('add-note-btn');
-    const addNoteInput = document.getElementById('add-note-input');
-    addNoteBtn.addEventListener('click', async () => {
-        const detail = addNoteInput.value.trim();
-        if (!detail) return;
-        try {
-            await api.addEvent(job.id, detail);
-            addNoteInput.value = '';
-            const updated = await api.getJob(job.id);
-            document.getElementById('timeline-container').innerHTML = renderTimeline(updated.events || []);
-            showToast('Note added', 'success');
-        } catch (err) {
-            showToast(err.message, 'error');
-        }
-    });
-    addNoteInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') addNoteBtn.click();
-    });
+    wireCrmQuickActions(job, container, profile, companyInfo, resumes);
 
     const emailBtn = document.getElementById('email-btn');
     if (emailBtn) {
@@ -660,20 +640,225 @@ function renderTimeline(events) {
     }
     const icons = {
         note: '\u{1F4DD}',
+        call: '\u{1F4DE}',
+        email_log: '\u{1F4E7}',
         status_change: '\u{1F504}',
         prepared: '\u{1F4C4}',
         email_drafted: '\u2709\uFE0F',
         pdf_downloaded: '\u2B07\uFE0F',
     };
-    return events.map(e => `
-        <div class="timeline-event">
-            <span class="timeline-icon">${icons[e.event_type] || '\u{1F4DD}'}</span>
-            <div>
-                <div class="timeline-detail">${escapeHtml(e.detail)}</div>
-                <div class="timeline-time">${formatDate(e.created_at)}</div>
+    return events.map(e => {
+        const icon = icons[e.event_type] || '\u{1F4DD}';
+        let detail = '';
+        if (e.event_type === 'call' || e.event_type === 'email_log') {
+            try {
+                const d = JSON.parse(e.detail);
+                if (e.event_type === 'call') {
+                    detail = `<div class="timeline-structured">
+                        <span class="timeline-tag">Call</span>
+                        ${d.who ? `<span class="timeline-meta">with ${escapeHtml(d.who)}</span>` : ''}
+                        ${d.duration ? `<span class="timeline-meta">${escapeHtml(d.duration)}</span>` : ''}
+                        ${d.notes ? `<div class="timeline-notes">${escapeHtml(d.notes)}</div>` : ''}
+                    </div>`;
+                } else {
+                    detail = `<div class="timeline-structured">
+                        <span class="timeline-tag">Email</span>
+                        ${d.direction ? `<span class="timeline-meta">${escapeHtml(d.direction)}</span>` : ''}
+                        ${d.subject ? `<div class="timeline-notes"><strong>${escapeHtml(d.subject)}</strong></div>` : ''}
+                        ${d.notes ? `<div class="timeline-notes">${escapeHtml(d.notes)}</div>` : ''}
+                    </div>`;
+                }
+            } catch {
+                detail = `<div class="timeline-detail">${escapeHtml(e.detail)}</div>`;
+            }
+        } else {
+            detail = `<div class="timeline-detail">${escapeHtml(e.detail)}</div>`;
+        }
+        return `
+            <div class="timeline-event">
+                <span class="timeline-icon">${icon}</span>
+                <div>
+                    ${detail}
+                    <div class="timeline-time">${formatDate(e.created_at)}</div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderQuickActions(job) {
+    const status = job.application?.status || '';
+    const isInterviewing = ['interviewing', 'applied', 'offered'].includes(status);
+    return `
+        <div class="crm-quick-actions">
+            ${isInterviewing ? `
+            <div class="crm-action-bar">
+                <button class="crm-action-btn" data-action="call" title="Log a call">
+                    <span class="crm-action-icon">\u{1F4DE}</span> Call
+                </button>
+                <button class="crm-action-btn" data-action="email" title="Log an email">
+                    <span class="crm-action-icon">\u{1F4E7}</span> Email
+                </button>
+                <button class="crm-action-btn crm-action-btn-active" data-action="note" title="Add a note">
+                    <span class="crm-action-icon">\u{1F4DD}</span> Note
+                </button>
+            </div>
+            ` : ''}
+            <div id="crm-form-area">
+                <div class="flex gap-8 mb-16">
+                    <input type="text" class="search-input" id="add-note-input" placeholder="Add a note..." style="flex:1">
+                    <button class="btn btn-primary btn-sm" id="add-note-btn">Add</button>
+                </div>
             </div>
         </div>
-    `).join('');
+    `;
+}
+
+function getCrmFormHtml(action) {
+    if (action === 'call') {
+        return `
+            <div class="crm-inline-form" data-type="call">
+                <div class="crm-form-row">
+                    <input type="text" class="search-input crm-field" name="who" placeholder="Who did you talk to?">
+                    <select class="filter-select crm-field" name="duration" style="width:auto;min-width:90px">
+                        <option value="">Duration</option>
+                        <option value="5 min">5 min</option>
+                        <option value="10 min">10 min</option>
+                        <option value="15 min">15 min</option>
+                        <option value="30 min">30 min</option>
+                        <option value="45 min">45 min</option>
+                        <option value="1 hr">1 hr</option>
+                    </select>
+                </div>
+                <textarea class="search-input crm-field" name="notes" placeholder="Call notes..." rows="2" style="resize:vertical"></textarea>
+                <div class="crm-form-footer">
+                    <button class="btn btn-primary btn-sm crm-submit-btn">Log Call</button>
+                    <button class="btn btn-secondary btn-sm crm-cancel-btn">Cancel</button>
+                </div>
+            </div>
+        `;
+    }
+    if (action === 'email') {
+        return `
+            <div class="crm-inline-form" data-type="email_log">
+                <div class="crm-form-row">
+                    <select class="filter-select crm-field" name="direction" style="width:auto;min-width:110px">
+                        <option value="Sent">Sent</option>
+                        <option value="Received">Received</option>
+                    </select>
+                    <input type="text" class="search-input crm-field" name="subject" placeholder="Subject" style="flex:1">
+                </div>
+                <textarea class="search-input crm-field" name="notes" placeholder="Email notes..." rows="2" style="resize:vertical"></textarea>
+                <div class="crm-form-footer">
+                    <button class="btn btn-primary btn-sm crm-submit-btn">Log Email</button>
+                    <button class="btn btn-secondary btn-sm crm-cancel-btn">Cancel</button>
+                </div>
+            </div>
+        `;
+    }
+    // note (default)
+    return `
+        <div class="flex gap-8 mb-16">
+            <input type="text" class="search-input" id="add-note-input" placeholder="Add a note..." style="flex:1">
+            <button class="btn btn-primary btn-sm" id="add-note-btn">Add</button>
+        </div>
+    `;
+}
+
+function wireCrmQuickActions(job, container, profile, companyInfo, resumes) {
+    const formArea = document.getElementById('crm-form-area');
+    const actionBtns = document.querySelectorAll('.crm-action-btn');
+
+    function refreshTimeline() {
+        return api.getJob(job.id).then(updated => {
+            document.getElementById('timeline-container').innerHTML = renderTimeline(updated.events || []);
+        });
+    }
+
+    function wireNoteForm() {
+        const addNoteBtn = document.getElementById('add-note-btn');
+        const addNoteInput = document.getElementById('add-note-input');
+        if (!addNoteBtn || !addNoteInput) return;
+        addNoteBtn.addEventListener('click', async () => {
+            const detail = addNoteInput.value.trim();
+            if (!detail) return;
+            addNoteBtn.disabled = true;
+            try {
+                await api.addEvent(job.id, detail, 'note');
+                addNoteInput.value = '';
+                await refreshTimeline();
+                showToast('Note added', 'success');
+            } catch (err) {
+                showToast(err.message, 'error');
+            } finally {
+                addNoteBtn.disabled = false;
+            }
+        });
+        addNoteInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') addNoteBtn.click();
+        });
+        addNoteInput.focus();
+    }
+
+    function wireInlineForm(type) {
+        const form = formArea.querySelector('.crm-inline-form');
+        if (!form) return;
+        const submitBtn = form.querySelector('.crm-submit-btn');
+        const cancelBtn = form.querySelector('.crm-cancel-btn');
+
+        cancelBtn.addEventListener('click', () => {
+            formArea.innerHTML = getCrmFormHtml('note');
+            wireNoteForm();
+            actionBtns.forEach(b => b.classList.toggle('crm-action-btn-active', b.dataset.action === 'note'));
+        });
+
+        submitBtn.addEventListener('click', async () => {
+            const data = {};
+            form.querySelectorAll('.crm-field').forEach(f => {
+                if (f.value.trim()) data[f.name] = f.value.trim();
+            });
+            if (type === 'call' && !data.who && !data.notes) {
+                showToast('Add who you talked to or notes', 'error');
+                return;
+            }
+            if (type === 'email_log' && !data.subject && !data.notes) {
+                showToast('Add a subject or notes', 'error');
+                return;
+            }
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<span class="spinner"></span>';
+            try {
+                await api.addEvent(job.id, JSON.stringify(data), type);
+                await refreshTimeline();
+                showToast(type === 'call' ? 'Call logged' : 'Email logged', 'success');
+                formArea.innerHTML = getCrmFormHtml('note');
+                wireNoteForm();
+                actionBtns.forEach(b => b.classList.toggle('crm-action-btn-active', b.dataset.action === 'note'));
+            } catch (err) {
+                showToast(err.message, 'error');
+                submitBtn.disabled = false;
+                submitBtn.textContent = type === 'call' ? 'Log Call' : 'Log Email';
+            }
+        });
+
+        const firstInput = form.querySelector('input, textarea');
+        if (firstInput) firstInput.focus();
+    }
+
+    actionBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const action = btn.dataset.action;
+            actionBtns.forEach(b => b.classList.toggle('crm-action-btn-active', b === btn));
+            formArea.innerHTML = getCrmFormHtml(action);
+            if (action === 'note') {
+                wireNoteForm();
+            } else {
+                wireInlineForm(action === 'call' ? 'call' : 'email_log');
+            }
+        });
+    });
+
+    wireNoteForm();
 }
 
 function renderPreparedSection(data, jobId) {

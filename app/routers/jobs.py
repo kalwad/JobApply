@@ -214,7 +214,11 @@ async def add_event(request: Request, job_id: int):
     detail = body.get("detail", "")
     if not detail.strip():
         raise HTTPException(400, "Detail is required")
-    await db.add_event(job_id, "note", detail)
+    allowed_types = {"note", "call", "email_log", "status_change", "prepared", "email_drafted", "pdf_downloaded"}
+    event_type = body.get("event_type", "note")
+    if event_type not in allowed_types:
+        raise HTTPException(400, f"Invalid event_type: {event_type}")
+    await db.add_event(job_id, event_type, detail)
     return {"ok": True}
 
 

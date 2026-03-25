@@ -740,6 +740,33 @@ class Database:
             )
         """)
 
+        await self.db.execute("""
+            CREATE TABLE IF NOT EXISTS interview_rounds (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                round_number INTEGER NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                scheduled_at TEXT,
+                duration_min INTEGER DEFAULT 60,
+                interviewer_name TEXT DEFAULT '',
+                interviewer_title TEXT DEFAULT '',
+                contact_id INTEGER,
+                location TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                status TEXT DEFAULT 'scheduled',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE,
+                FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE SET NULL
+            )
+        """)
+        await self.db.execute("""
+            CREATE TABLE IF NOT EXISTS ical_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL
+            )
+        """)
+
         # Reminders table migrations for follow-up automation
         rem_cursor = await self.db.execute("PRAGMA table_info(reminders)")
         rem_columns = {row[1] for row in await rem_cursor.fetchall()}
@@ -1560,6 +1587,118 @@ class Database:
         d["star_stories"] = json.loads(d["star_stories"])
         d["talking_points"] = json.loads(d["talking_points"])
         return d
+
+    # --- Interview Rounds ---
+
+    async def create_interview_round(self, job_id: int, label: str = "",
+                                      scheduled_at: str | None = None,
+                                      duration_min: int = 60,
+                                      interviewer_name: str = "",
+                                      interviewer_title: str = "",
+                                      location: str = "",
+                                      notes: str = "") -> int:
+        cursor = await self.db.execute(
+            "SELECT COALESCE(MAX(round_number), 0) + 1 FROM interview_rounds WHERE job_id = ?",
+            (job_id,))
+        row = await cursor.fetchone()
+        next_num = row[0]
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self.db.execute(
+            """INSERT INTO interview_rounds
+               (job_id, round_number, label, scheduled_at, duration_min,
+                interviewer_name, interviewer_title, location, notes, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)""",
+            (job_id, next_num, label, scheduled_at, duration_min,
+             interviewer_name, interviewer_title, location, notes, now))
+        await self.db.commit()
+        return cursor.lastrowid
+
+    async def get_interview_rounds(self, job_id: int) -> list[dict]:
+        cursor = await self.db.execute(
+            """SELECT * FROM interview_rounds WHERE job_id = ?
+               ORDER BY round_number""", (job_id,))
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_interview_round(self, round_id: int) -> dict | None:
+        cursor = await self.db.execute(
+            "SELECT * FROM interview_rounds WHERE id = ?", (round_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def update_interview_round(self, round_id: int, **kwargs) -> None:
+        allowed = {"label", "scheduled_at", "duration_min", "interviewer_name",
+                    "interviewer_title", "contact_id", "location", "notes", "status"}
+        updates = {k: v for k, v in kwargs.items() if k in allowed}
+        if not updates:
+            return
+        sets = ", ".join(f"{k} = ?" for k in updates)
+        vals = list(updates.values()) + [round_id]
+        await self.db.execute(f"UPDATE interview_rounds SET {sets} WHERE id = ?", vals)
+        await self.db.commit()
+
+    async def delete_interview_round(self, round_id: int) -> None:
+        await self.db.execute("DELETE FROM interview_rounds WHERE id = ?", (round_id,))
+        await self.db.commit()
+
+    # --- iCal Tokens ---
+
+    async def create_ical_token(self) -> str:
+        import secrets
+        token = secrets.token_hex(32)
+        now = datetime.now(timezone.utc).isoformat()
+        await self.db.execute(
+            "INSERT INTO ical_tokens (token, created_at) VALUES (?, ?)", (token, now))
+        await self.db.commit()
+        return token
+
+    async def validate_ical_token(self, token: str) -> bool:
+        cursor = await self.db.execute(
+            "SELECT id FROM ical_tokens WHERE token = ?", (token,))
+        return await cursor.fetchone() is not None
+
+    async def get_or_create_ical_token(self) -> str:
+        cursor = await self.db.execute(
+            "SELECT token FROM ical_tokens ORDER BY id DESC LIMIT 1")
+        row = await cursor.fetchone()
+        if row:
+            return row[0]
+        return await self.create_ical_token()
+
+    async def regenerate_ical_token(self) -> str:
+        await self.db.execute("DELETE FROM ical_tokens")
+        await self.db.commit()
+        return await self.create_ical_token()
+
+    # --- Calendar Queries ---
+
+    async def get_calendar_events(self, start: str, end: str) -> list[dict]:
+        events = []
+        # Interview rounds
+        cursor = await self.db.execute(
+            """SELECT ir.*, j.title as job_title, j.company, j.salary_min, j.salary_max
+               FROM interview_rounds ir
+               JOIN jobs j ON ir.job_id = j.id
+               WHERE ir.scheduled_at >= ? AND ir.scheduled_at <= ?
+               AND ir.status = 'scheduled'
+               ORDER BY ir.scheduled_at""", (start, end))
+        for row in await cursor.fetchall():
+            d = dict(row)
+            d["event_type"] = "interview"
+            events.append(d)
+        # Reminders
+        cursor = await self.db.execute(
+            """SELECT r.*, j.title as job_title, j.company
+               FROM reminders r
+               JOIN jobs j ON r.job_id = j.id
+               WHERE r.remind_at >= ? AND r.remind_at <= ?
+               AND r.status = 'pending'
+               ORDER BY r.remind_at""", (start, end))
+        for row in await cursor.fetchall():
+            d = dict(row)
+            d["event_type"] = "reminder"
+            events.append(d)
+        events.sort(key=lambda e: e.get("scheduled_at") or e.get("remind_at", ""))
+        return events
 
     async def get_events(self, job_id: int) -> list[dict]:
         cursor = await self.db.execute(

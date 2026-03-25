@@ -26,17 +26,24 @@ async function renderPipeline(container) {
         const hasOfferedJobs = results[offeredIdx] && results[offeredIdx].count > 0;
 
         container.innerHTML = `
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px">
                 <h1 style="font-size:1.5rem;font-weight:700;letter-spacing:-0.02em;margin:0">Pipeline</h1>
-                <div class="tab-bar">
-                    <button class="tab-btn ${pipelineActiveTab === 'board' ? 'active' : ''}" data-pipeline-tab="board">Board</button>
-                    <button class="tab-btn ${pipelineActiveTab === 'offers' ? 'active' : ''}" data-pipeline-tab="offers">
-                        Offers${hasOffers ? ` <span class="badge badge-sm">${offersData.offers.length}</span>` : ''}
-                    </button>
+                <div style="display:flex;align-items:center;gap:12px">
+                    <button id="add-external-job-btn" class="btn btn-primary btn-sm">+ Add Job</button>
+                    <div class="tab-bar">
+                        <button class="tab-btn ${pipelineActiveTab === 'board' ? 'active' : ''}" data-pipeline-tab="board">Board</button>
+                        <button class="tab-btn ${pipelineActiveTab === 'offers' ? 'active' : ''}" data-pipeline-tab="offers">
+                            Offers${hasOffers ? ` <span class="badge badge-sm">${offersData.offers.length}</span>` : ''}
+                        </button>
+                    </div>
                 </div>
             </div>
             <div id="pipeline-tab-content"></div>
         `;
+
+        container.querySelector('#add-external-job-btn').addEventListener('click', () => {
+            showAddExternalJobModal(container, statuses, statusLabels);
+        });
 
         container.querySelectorAll('[data-pipeline-tab]').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -76,6 +83,12 @@ function renderPipelineBoard(tabContent, results, statuses, statusLabels, status
                                     <div class="pipeline-card-title">${escapeHtml(job.title)}</div>
                                     <div class="pipeline-card-company">${escapeHtml(job.company)}</div>
                                     ${job.match_score ? `<span class="score-badge ${getScoreClass(job.match_score)}" style="font-size:0.7rem">${job.match_score}</span>` : ''}
+                                    ${status === 'interviewing' ? `
+                                    <div class="pipeline-quick-actions" onclick="event.stopPropagation()">
+                                        <button class="pipeline-qa-btn" data-qa="call" data-job-id="${job.id}" title="Log call">\u{1F4DE}</button>
+                                        <button class="pipeline-qa-btn" data-qa="email" data-job-id="${job.id}" title="Log email">\u{1F4E7}</button>
+                                        <button class="pipeline-qa-btn" data-qa="note" data-job-id="${job.id}" title="Add note">\u{1F4DD}</button>
+                                    </div>` : ''}
                                 </div>
                             `).join('')}
                         </div>
@@ -150,6 +163,101 @@ function renderPipelineBoard(tabContent, results, statuses, statusLabels, status
                 }
             });
         });
+
+        // Pipeline quick-action buttons
+        tabContent.querySelectorAll('.pipeline-qa-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const jobId = btn.dataset.jobId;
+                const action = btn.dataset.qa;
+                showPipelineQuickAction(btn.closest('.pipeline-card'), jobId, action);
+            });
+        });
+}
+
+function showPipelineQuickAction(card, jobId, action) {
+    const existing = card.querySelector('.pipeline-qa-form');
+    if (existing) existing.remove();
+
+    let formHtml = '';
+    if (action === 'call') {
+        formHtml = `
+            <div class="pipeline-qa-form" onclick="event.stopPropagation()">
+                <input type="text" class="search-input" name="who" placeholder="Who?" style="font-size:0.75rem">
+                <select class="filter-select" name="duration" style="font-size:0.75rem;padding:4px">
+                    <option value="">Duration</option>
+                    <option value="5 min">5m</option><option value="15 min">15m</option>
+                    <option value="30 min">30m</option><option value="1 hr">1h</option>
+                </select>
+                <textarea class="search-input" name="notes" placeholder="Notes..." rows="2" style="font-size:0.75rem;resize:vertical"></textarea>
+                <div style="display:flex;gap:4px">
+                    <button class="btn btn-primary btn-sm pqa-submit" style="flex:1;font-size:0.7rem;padding:3px 6px">Log</button>
+                    <button class="btn btn-secondary btn-sm pqa-cancel" style="font-size:0.7rem;padding:3px 6px">X</button>
+                </div>
+            </div>`;
+    } else if (action === 'email') {
+        formHtml = `
+            <div class="pipeline-qa-form" onclick="event.stopPropagation()">
+                <select class="filter-select" name="direction" style="font-size:0.75rem;padding:4px">
+                    <option value="Sent">Sent</option><option value="Received">Received</option>
+                </select>
+                <input type="text" class="search-input" name="subject" placeholder="Subject" style="font-size:0.75rem">
+                <textarea class="search-input" name="notes" placeholder="Notes..." rows="2" style="font-size:0.75rem;resize:vertical"></textarea>
+                <div style="display:flex;gap:4px">
+                    <button class="btn btn-primary btn-sm pqa-submit" style="flex:1;font-size:0.7rem;padding:3px 6px">Log</button>
+                    <button class="btn btn-secondary btn-sm pqa-cancel" style="font-size:0.7rem;padding:3px 6px">X</button>
+                </div>
+            </div>`;
+    } else {
+        formHtml = `
+            <div class="pipeline-qa-form" onclick="event.stopPropagation()">
+                <textarea class="search-input" name="notes" placeholder="Add a note..." rows="2" style="font-size:0.75rem;resize:vertical"></textarea>
+                <div style="display:flex;gap:4px">
+                    <button class="btn btn-primary btn-sm pqa-submit" style="flex:1;font-size:0.7rem;padding:3px 6px">Add</button>
+                    <button class="btn btn-secondary btn-sm pqa-cancel" style="font-size:0.7rem;padding:3px 6px">X</button>
+                </div>
+            </div>`;
+    }
+
+    card.insertAdjacentHTML('beforeend', formHtml);
+    const form = card.querySelector('.pipeline-qa-form');
+    const firstInput = form.querySelector('input, textarea');
+    if (firstInput) firstInput.focus();
+
+    form.querySelector('.pqa-cancel').addEventListener('click', (e) => {
+        e.stopPropagation();
+        form.remove();
+    });
+
+    form.querySelector('.pqa-submit').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const submitBtn = e.target;
+        submitBtn.disabled = true;
+
+        const eventType = action === 'call' ? 'call' : action === 'email' ? 'email_log' : 'note';
+        let detail = '';
+
+        if (action === 'note') {
+            detail = form.querySelector('[name="notes"]').value.trim();
+            if (!detail) { submitBtn.disabled = false; return; }
+        } else {
+            const data = {};
+            form.querySelectorAll('input, select, textarea').forEach(f => {
+                if (f.name && f.value.trim()) data[f.name] = f.value.trim();
+            });
+            if (!data.notes && !data.who && !data.subject) { submitBtn.disabled = false; return; }
+            detail = JSON.stringify(data);
+        }
+
+        try {
+            await api.addEvent(jobId, detail, eventType);
+            showToast(action === 'call' ? 'Call logged' : action === 'email' ? 'Email logged' : 'Note added', 'success');
+            form.remove();
+        } catch (err) {
+            showToast(err.message, 'error');
+            submitBtn.disabled = false;
+        }
+    });
 }
 
 // === Offers Tab ===
@@ -484,4 +592,193 @@ async function showOfferComparison(tabContent) {
     } catch (err) {
         compContainer.innerHTML = `<div class="empty-state"><div class="empty-state-desc">Failed to compare: ${escapeHtml(err.message)}</div></div>`;
     }
+}
+
+// === Add External Job Modal ===
+
+function showAddExternalJobModal(container, statuses, statusLabels) {
+    const existing = document.getElementById('add-job-modal');
+    if (existing) existing.remove();
+
+    const statusOptions = statuses.map(s =>
+        `<option value="${s}" ${s === 'interested' ? 'selected' : ''}>${escapeHtml(statusLabels[s])}</option>`
+    ).join('');
+
+    const modal = document.createElement('div');
+    modal.id = 'add-job-modal';
+    modal.innerHTML = `
+        <div class="modal-overlay" onclick="document.getElementById('add-job-modal')?.remove()">
+            <div class="modal-content" style="max-width:540px" onclick="event.stopPropagation()">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                    <h2 class="modal-title" style="margin:0">Add External Job</h2>
+                    <button class="btn btn-ghost btn-sm" onclick="document.getElementById('add-job-modal')?.remove()">Close</button>
+                </div>
+                <form id="add-job-form">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                        <div style="grid-column:1/-1">
+                            <label class="form-label">Job URL</label>
+                            <input type="url" name="url" class="form-input" id="add-job-url" placeholder="https://..." autocomplete="off">
+                            <div id="add-job-fetch-status" style="font-size:0.75rem;color:var(--text-tertiary);margin-top:4px"></div>
+                        </div>
+                        <div>
+                            <label class="form-label">Title *</label>
+                            <input type="text" name="title" class="form-input" id="add-job-title" required>
+                        </div>
+                        <div>
+                            <label class="form-label">Company *</label>
+                            <input type="text" name="company" class="form-input" id="add-job-company" required>
+                        </div>
+                        <div style="grid-column:1/-1">
+                            <label class="form-label">Description</label>
+                            <textarea name="description" class="form-input" id="add-job-description" rows="3" placeholder="Paste or auto-filled from URL..."></textarea>
+                        </div>
+                        <div>
+                            <label class="form-label">Location</label>
+                            <input type="text" name="location" class="form-input" id="add-job-location" placeholder="City, State or Remote">
+                        </div>
+                        <div>
+                            <label class="form-label">Salary</label>
+                            <input type="text" name="salary" class="form-input" id="add-job-salary" placeholder="e.g. 150000 or 150k-180k">
+                        </div>
+                        <div>
+                            <label class="form-label">Initial Status</label>
+                            <select name="status" class="form-input" id="add-job-status">${statusOptions}</select>
+                        </div>
+                        <div style="display:flex;align-items:flex-end">
+                            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.875rem">
+                                <input type="checkbox" id="add-job-interview-toggle" style="width:16px;height:16px">
+                                Add First Interview
+                            </label>
+                        </div>
+                    </div>
+                    <div id="add-job-interview-fields" style="display:none;margin-top:12px;padding:12px;background:var(--bg-surface-secondary);border-radius:var(--radius-sm)">
+                        <div style="font-size:0.8125rem;font-weight:600;margin-bottom:8px">Interview Details</div>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                            <div>
+                                <label class="form-label">Round Label</label>
+                                <input type="text" name="interview_label" class="form-input" placeholder="e.g. Phone Screen">
+                            </div>
+                            <div>
+                                <label class="form-label">Date & Time</label>
+                                <input type="datetime-local" name="interview_date" class="form-input">
+                            </div>
+                            <div>
+                                <label class="form-label">Duration (min)</label>
+                                <input type="number" name="interview_duration" class="form-input" value="60" min="15" step="15">
+                            </div>
+                            <div>
+                                <label class="form-label">Interviewer Name</label>
+                                <input type="text" name="interviewer_name" class="form-input" placeholder="Optional">
+                            </div>
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+                        <button type="button" class="btn btn-ghost btn-sm" onclick="document.getElementById('add-job-modal')?.remove()">Cancel</button>
+                        <button type="submit" class="btn btn-primary btn-sm" id="add-job-submit">Add Job</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+
+    // Toggle interview fields
+    modal.querySelector('#add-job-interview-toggle').addEventListener('change', (e) => {
+        modal.querySelector('#add-job-interview-fields').style.display = e.target.checked ? 'block' : 'none';
+    });
+
+    // Auto-fetch on URL blur
+    const urlInput = modal.querySelector('#add-job-url');
+    const fetchStatus = modal.querySelector('#add-job-fetch-status');
+    let fetchAbort = null;
+
+    urlInput.addEventListener('blur', async () => {
+        const url = urlInput.value.trim();
+        if (!url || !url.startsWith('http')) return;
+
+        if (fetchAbort) fetchAbort.abort();
+        fetchAbort = new AbortController();
+        fetchStatus.textContent = 'Fetching job details...';
+
+        try {
+            const data = await api.request('POST', '/api/jobs/lookup', { url });
+            if (data.title) modal.querySelector('#add-job-title').value = data.title;
+            if (data.company) modal.querySelector('#add-job-company').value = data.company;
+            if (data.description) modal.querySelector('#add-job-description').value = data.description;
+            if (data.location) modal.querySelector('#add-job-location').value = data.location;
+            if (data.salary) modal.querySelector('#add-job-salary').value = data.salary;
+            fetchStatus.textContent = 'Details auto-filled from URL';
+            fetchStatus.style.color = 'var(--score-green)';
+        } catch {
+            fetchStatus.textContent = 'Could not fetch details — fill in manually';
+            fetchStatus.style.color = 'var(--score-amber)';
+        }
+    });
+
+    // Submit handler
+    modal.querySelector('#add-job-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const submitBtn = modal.querySelector('#add-job-submit');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Adding...';
+
+        const fd = new FormData(e.target);
+        const salaryRaw = fd.get('salary') || '';
+        let salaryMin = null, salaryMax = null;
+        const salaryMatch = salaryRaw.match(/(\d[\d,]*)/g);
+        if (salaryMatch) {
+            salaryMin = parseInt(salaryMatch[0].replace(/,/g, ''), 10);
+            if (salaryMatch[1]) salaryMax = parseInt(salaryMatch[1].replace(/,/g, ''), 10);
+            // Handle shorthand like 150k
+            if (salaryMin < 1000 && salaryRaw.toLowerCase().includes('k')) salaryMin *= 1000;
+            if (salaryMax && salaryMax < 1000 && salaryRaw.toLowerCase().includes('k')) salaryMax *= 1000;
+        }
+
+        const jobData = {
+            title: fd.get('title'),
+            company: fd.get('company'),
+            url: fd.get('url') || '',
+            description: fd.get('description') || '',
+            location: fd.get('location') || '',
+            salary_min: salaryMin,
+            salary_max: salaryMax,
+            source: 'external',
+        };
+
+        try {
+            const result = await api.saveExternalJob(jobData);
+            const jobId = result.job_id;
+
+            // Apply status if not default
+            const status = fd.get('status');
+            if (status && status !== 'interested') {
+                await api.updateApplication(jobId, status);
+            } else if (status === 'interested') {
+                await api.updateApplication(jobId, 'interested');
+            }
+
+            // Create interview if toggled
+            if (modal.querySelector('#add-job-interview-toggle').checked) {
+                const interviewData = {
+                    label: fd.get('interview_label') || 'Round 1',
+                    scheduled_at: fd.get('interview_date') || null,
+                    duration_min: parseInt(fd.get('interview_duration') || '60', 10),
+                    interviewer_name: fd.get('interviewer_name') || '',
+                };
+                try {
+                    await api.createInterview(jobId, interviewData);
+                } catch {
+                    // Interview API may not be ready yet
+                }
+            }
+
+            modal.remove();
+            showToast('Job added to pipeline', 'success');
+            await renderPipeline(container);
+        } catch (err) {
+            showToast(`Failed to add job: ${err.message}`, 'error');
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Add Job';
+        }
+    });
 }

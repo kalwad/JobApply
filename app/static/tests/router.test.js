@@ -8,6 +8,7 @@ beforeAll(() => {
             <a class="nav-link" data-route="feed">Jobs</a>
             <a class="nav-link" data-route="stats">Dashboard</a>
             <a class="nav-link" data-route="pipeline">Pipeline</a>
+            <a class="nav-link" data-route="calendar">Calendar</a>
             <a class="nav-link" data-route="queue">Queue</a>
             <a class="nav-link" data-route="network">Network</a>
             <a class="nav-link" data-route="calculator">Calculator</a>
@@ -26,6 +27,7 @@ beforeAll(() => {
     globalThis.renderQueue = async () => {};
     globalThis.renderNetwork = async () => {};
     globalThis.renderSettings = async () => {};
+    globalThis.renderCalendar = async () => {};
     globalThis.renderSalaryCalculator = async () => {};
 
     // Stub triage globals referenced by app.js keyboard shortcuts
@@ -77,6 +79,11 @@ describe('getRoute', () => {
     it('returns settings for #/settings', () => {
         window.location.hash = '#/settings';
         expect(getRoute()).toEqual({ view: 'settings' });
+    });
+
+    it('returns calendar for #/calendar', () => {
+        window.location.hash = '#/calendar';
+        expect(getRoute()).toEqual({ view: 'calendar' });
     });
 
     it('returns calculator for #/calculator', () => {
