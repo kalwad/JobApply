@@ -1218,6 +1218,7 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
     const aiBaseUrl = aiSettings.base_url || '';
     const aiRegion = aiSettings.region || '';
     const hasKey = aiSettings.has_key || false;
+    const hasSecret = aiSettings.has_secret || false;
     const keys = scraperKeys || {};
 
     container.innerHTML = `
@@ -1270,11 +1271,11 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
                     <div>
                         <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">AWS Access Key ID</label>
-                        <input type="password" class="search-input" id="ai-aws-access-key" placeholder="${hasKey ? 'Configured (leave blank to keep)' : 'AKIA...'}" value="${aiProvider === 'bedrock' ? escapeHtml(aiKey) : ''}" style="width:100%">
+                        <input type="password" class="search-input" id="ai-aws-access-key" placeholder="${hasKey ? 'Configured (leave blank to keep)' : 'AKIA...'}" style="width:100%">
                     </div>
                     <div>
                         <label style="display:block;font-size:0.8125rem;font-weight:600;color:var(--text-tertiary);margin-bottom:4px">AWS Secret Access Key</label>
-                        <input type="password" class="search-input" id="ai-aws-secret-key" placeholder="${aiProvider === 'bedrock' && aiBaseUrl ? 'Configured (leave blank to keep)' : 'Enter secret key'}" value="${aiProvider === 'bedrock' ? escapeHtml(aiBaseUrl) : ''}" style="width:100%">
+                        <input type="password" class="search-input" id="ai-aws-secret-key" placeholder="${hasSecret ? 'Configured (leave blank to keep)' : 'Enter secret key'}" style="width:100%">
                     </div>
                 </div>
                 <div style="font-size:0.75rem;color:var(--text-tertiary);margin-bottom:12px">Leave blank to use default AWS credentials (~/.aws/credentials or environment variables)</div>
@@ -1545,8 +1546,10 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
         }
         let api_key, base_url, region;
         if (provider === 'bedrock') {
-            api_key = document.getElementById('ai-aws-access-key').value;
-            base_url = document.getElementById('ai-aws-secret-key').value;
+            const accessKey = document.getElementById('ai-aws-access-key').value;
+            const secretKey = document.getElementById('ai-aws-secret-key').value;
+            api_key = accessKey || (hasKey ? '****' : '');
+            base_url = secretKey || (hasSecret ? '****' : '');
             region = document.getElementById('ai-region').value;
         } else {
             api_key = document.getElementById('ai-api-key').value;
