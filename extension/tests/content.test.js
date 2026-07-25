@@ -749,6 +749,77 @@ describe('fillField — Workday state dropdown', () => {
     expect(result.selectedText).toBe('California');
     expect(selected.text).toBe('California');
   });
+
+  it('selects Michigan via Workday searchBox without clearing the selection', async () => {
+    const { button, popup, selected } = createWorkdayStateField([
+      'Maine', 'Massachusetts', 'Michigan', 'Minnesota', 'Mississippi', 'Missouri',
+    ]);
+
+    // Real Workday prompts include a filter input; typing must not leave State as "Select One".
+    const search = document.createElement('input');
+    search.setAttribute('data-automation-id', 'searchBox');
+    search.type = 'text';
+    popup.insertBefore(search, popup.firstChild);
+
+    // Simulate the old failure mode: aggressive outside-click clears an uncommitted value.
+    button.addEventListener('blur', () => {
+      if (selected.text && document.activeElement !== button) {
+        // Keep selection — Workday commits on option click; blur alone must not reset.
+      }
+    });
+
+    const result = await api.fillField('#stateBtn', 'Michigan', 'select_dropdown');
+    expect(result.success).toBe(true);
+    expect(result.selectedText).toBe('Michigan');
+    expect(selected.text).toBe('Michigan');
+    expect(button.textContent).toBe('Michigan');
+  });
+
+  it('fills state when the mapped node is a Workday container wrapping the button', async () => {
+    const wrap = document.createElement('div');
+    wrap.id = 'stateWrap';
+    wrap.setAttribute('data-automation-id', 'addressSection_stateProvince');
+    document.body.appendChild(wrap);
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.setAttribute('aria-haspopup', 'listbox');
+    button.textContent = 'Select One';
+    wrap.appendChild(button);
+
+    const popup = document.createElement('div');
+    popup.setAttribute('data-automation-widget', 'wd-popup');
+    popup.style.display = 'none';
+    for (const s of ['Michigan', 'Ohio', 'Illinois']) {
+      const opt = document.createElement('div');
+      opt.setAttribute('role', 'option');
+      opt.setAttribute('data-automation-id', 'promptOption');
+      opt.textContent = s;
+      opt.style.height = '30px';
+      Object.defineProperty(opt, 'offsetHeight', { value: 30, configurable: true });
+      Object.defineProperty(opt, 'offsetWidth', { value: 200, configurable: true });
+      popup.appendChild(opt);
+    }
+    document.body.appendChild(popup);
+
+    button.addEventListener('click', () => {
+      popup.style.display = 'block';
+      Object.defineProperty(popup, 'offsetParent', { value: document.body, configurable: true });
+      Object.defineProperty(popup, 'offsetHeight', { value: 200, configurable: true });
+      for (const opt of popup.querySelectorAll('[role="option"]')) {
+        Object.defineProperty(opt, 'offsetParent', { value: popup, configurable: true });
+      }
+    });
+    for (const opt of popup.querySelectorAll('[role="option"]')) {
+      opt.addEventListener('click', () => {
+        button.textContent = opt.textContent;
+      });
+    }
+
+    const result = await api.fillField('#stateWrap', 'MI', 'select_dropdown');
+    expect(result.success).toBe(true);
+    expect(button.textContent).toBe('Michigan');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -2201,6 +2272,32 @@ describe('sanitizeMappings / getNearbyHeading', () => {
     expect(cleaned.map(m => m.selector)).toEqual(['#phone', '#linkedin']);
   });
 
+  it('collapses duplicate City and Phone DOM proposals to one each', () => {
+    const cleaned = api.sanitizeMappings([
+      { selector: '[data-automation-id="city"]', field_label: 'City', value: 'Testville', action: 'fill_text', confidence: 1 },
+      { selector: '#city-dup', field_label: 'City *', value: 'Testville', action: 'fill_text', confidence: 0.85 },
+      { selector: '[data-automation-id="phone-number"]', field_label: 'Phone Number', value: '5551234567', action: 'fill_text', confidence: 1 },
+      { selector: '#phone-alt', field_label: 'Phone', value: '5551234567', action: 'fill_text', confidence: 0.7 },
+      { selector: '#phone-sms-opt-in', field_label: 'Phone SMS Opt In', value: 'true', action: 'check_checkbox', confidence: 0.9 },
+      { selector: '#email', field_label: 'Email', value: 'user@example.com', action: 'fill_text', confidence: 1 },
+    ]);
+    const cities = cleaned.filter(m => /city/i.test(m.field_label || '') && m.action === 'fill_text');
+    const phones = cleaned.filter(m => mappingIsPhoneNumberProposal(m));
+    expect(cities).toHaveLength(1);
+    expect(cities[0].selector).toBe('[data-automation-id="city"]');
+    expect(phones).toHaveLength(1);
+    expect(phones[0].selector).toBe('[data-automation-id="phone-number"]');
+    expect(cleaned.some(m => m.selector === '#phone-sms-opt-in')).toBe(true);
+    expect(cleaned.some(m => m.selector === '#email')).toBe(true);
+  });
+
+  function mappingIsPhoneNumberProposal(m) {
+    const text = `${m.field_label || ''} ${m.selector || ''}`.toLowerCase();
+    if (/sms|opt[-_]?in/.test(text)) return false;
+    if (/country|device/.test(text)) return false;
+    return /\bphone\b/.test(text);
+  }
+
   it('uses the nearest preceding section heading, not the first heading in the form', () => {
     const form = createForm();
     const hPhone = document.createElement('h2');
@@ -2373,4 +2470,140 @@ describe('fillForm iteration limit', () => {
     // With max 5 iterations, it would be called up to 4 times
     expect(reAnalyzeCount).toBeLessThanOrEqual(1);
   });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Review overlay UX + Workday state failure reporting
+// ═══════════════════════════════════════════════════════════════
+
+describe('review overlay Fill/Cancel and Expand', () => {
+  afterEach(() => {
+    window.__jaAutofillTest = true;
+    window.__jaSkipReview = true;
+    document.getElementById('ja-autofill-overlay')?.remove();
+  });
+
+  it('keeps Fill and Cancel visible for a long review list', async () => {
+    window.__jaAutofillTest = false;
+    window.__jaSkipReview = false;
+
+    const mappings = Array.from({ length: 40 }, (_, i) => ({
+      selector: `#f${i}`,
+      field_label: `Field ${i}`,
+      value: `Value ${i}`,
+      action: 'fill_text',
+      confidence: 0.95,
+    }));
+
+    const reviewPromise = api.reviewMappingsBeforeFill(mappings);
+    await vi.advanceTimersByTimeAsync(50);
+
+    const overlay = document.getElementById('ja-autofill-overlay');
+    expect(overlay).not.toBeNull();
+    expect(overlay.classList.contains('ja-autofill-overlay-review')).toBe(true);
+
+    const actions = overlay.querySelector('.ja-autofill-review-actions');
+    const approve = overlay.querySelector('.ja-autofill-approve-btn');
+    const cancel = overlay.querySelector('.ja-autofill-cancel-btn');
+    expect(actions).not.toBeNull();
+    expect(approve).not.toBeNull();
+    expect(cancel).not.toBeNull();
+    expect(approve.textContent).toMatch(/Fill approved/i);
+    expect(cancel.textContent).toMatch(/Cancel/i);
+
+    // Actions are siblings of the scrollable panel (not trapped inside the list).
+    const panel = overlay.querySelector('.ja-autofill-review-panel');
+    expect(panel.contains(actions)).toBe(false);
+    expect(overlay.querySelector('.ja-autofill-overlay-body').contains(actions)).toBe(true);
+
+    cancel.click();
+    await expect(reviewPromise).resolves.toBeNull();
+  });
+
+  it('shows a clearly labeled Expand control when the overlay is collapsed', async () => {
+    window.__jaAutofillTest = false;
+    window.__jaSkipReview = false;
+
+    const reviewPromise = api.reviewMappingsBeforeFill([
+      { selector: '#a', field_label: 'Name', value: 'Test', action: 'fill_text', confidence: 1 },
+    ]);
+    await vi.advanceTimersByTimeAsync(50);
+
+    const overlay = document.getElementById('ja-autofill-overlay');
+    const minBtn = overlay.querySelector('.ja-autofill-overlay-minimize');
+    expect(minBtn).not.toBeNull();
+
+    minBtn.click();
+    expect(overlay.classList.contains('ja-autofill-overlay-collapsed')).toBe(true);
+    expect(minBtn.getAttribute('aria-label')).toBe('Expand');
+    expect(minBtn.title).toBe('Expand');
+
+    minBtn.click();
+    expect(overlay.classList.contains('ja-autofill-overlay-collapsed')).toBe(false);
+    expect(minBtn.getAttribute('aria-label')).toBe('Minimize');
+
+    overlay.querySelector('.ja-autofill-cancel-btn').click();
+    await reviewPromise;
+  });
+});
+
+describe('phone-sms-opt-in is never a phone number field', () => {
+  it('isPhoneField is false for Workday phone-sms-opt-in', () => {
+    const form = createForm();
+    const cb = createInput({
+      id: 'phone-sms-opt-in',
+      name: 'phone-sms-opt-in',
+      type: 'checkbox',
+    }, form);
+    const label = document.createElement('label');
+    label.setAttribute('for', 'phone-sms-opt-in');
+    label.textContent = 'Phone SMS Opt In';
+    form.appendChild(label);
+    expect(api.isPhoneField(cb)).toBe(false);
+  });
+});
+
+describe('fillField — Workday state failure reporting', () => {
+  it('reports selection did not stick instead of success when State stays Select One', async () => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.id = 'stateFailBtn';
+    button.setAttribute('aria-haspopup', 'listbox');
+    button.setAttribute('data-automation-id', 'stateProvince');
+    button.setAttribute('aria-label', 'State');
+    button.textContent = 'Select One';
+    document.body.appendChild(button);
+
+    const popup = document.createElement('div');
+    popup.setAttribute('data-automation-widget', 'wd-popup');
+    popup.style.display = 'none';
+    const opt = document.createElement('div');
+    opt.setAttribute('role', 'option');
+    opt.setAttribute('data-automation-id', 'promptOption');
+    opt.textContent = 'Michigan';
+    opt.style.height = '30px';
+    Object.defineProperty(opt, 'offsetHeight', { value: 30, configurable: true });
+    Object.defineProperty(opt, 'offsetWidth', { value: 200, configurable: true });
+    popup.appendChild(opt);
+    document.body.appendChild(popup);
+
+    button.addEventListener('click', () => {
+      popup.style.display = 'block';
+      Object.defineProperty(popup, 'offsetParent', { value: document.body, configurable: true });
+      Object.defineProperty(popup, 'offsetHeight', { value: 200, configurable: true });
+      Object.defineProperty(opt, 'offsetParent', { value: popup, configurable: true });
+    });
+    // Option click intentionally does NOT update the button — simulates Workday race/clear.
+    opt.addEventListener('click', () => {});
+
+    const resultPromise = api.fillField('#stateFailBtn', 'Michigan', 'select_dropdown');
+    // Workday path polls + retries; advance fake timers past waitForControlValue loops.
+    for (let i = 0; i < 80; i++) {
+      await vi.advanceTimersByTimeAsync(200);
+    }
+    const result = await resultPromise;
+    expect(result.success).toBe(false);
+    expect(result.reason).toMatch(/selection did not stick|no matching option/i);
+    expect(button.textContent).toBe('Select One');
+  }, 20000);
 });

@@ -1098,10 +1098,14 @@
     if (role === 'combobox' || role === 'listbox') return true;
 
     const ariaHaspopup = el.getAttribute('aria-haspopup');
-    if (ariaHaspopup === 'listbox' || ariaHaspopup === 'true') return true;
+    if (ariaHaspopup === 'listbox' || ariaHaspopup === 'true' || ariaHaspopup === 'menu') return true;
 
     const ariaExpanded = el.getAttribute('aria-expanded');
     if (ariaExpanded !== null) return true;
+
+    // Workday prompt buttons often expose only data-automation-id (no role/haspopup).
+    const autoId = (el.getAttribute?.('data-automation-id') || '').toLowerCase();
+    if (/stateprovince|countryregion|dropdown|multiselect|prompt/.test(autoId)) return true;
 
     // Check for common custom dropdown class patterns
     const className = (el.className || '').toString().toLowerCase();
@@ -1110,17 +1114,72 @@
     return false;
   }
 
+  function findWorkdayDropdownTrigger(el) {
+    if (!el) return el;
+    if (el.matches?.('button, [role="button"], [role="combobox"], [aria-haspopup]')) return el;
+    try {
+      const nested = el.querySelector?.(
+        'button[aria-haspopup], button[aria-expanded], [role="combobox"], button[data-automation-id], [data-automation-id][aria-haspopup]',
+      );
+      if (nested) return nested;
+    } catch { /* skip */ }
+    return el;
+  }
+
+  function controlDisplaysValue(el, value) {
+    if (!el || value == null) return false;
+    const target = String(value).toLowerCase().trim();
+    if (!target || /^(select|select one|choose|choose one|--)$/i.test(target)) return false;
+    const hay = `${el.textContent || ''} ${el.value || ''} ${el.getAttribute?.('aria-label') || ''} ${el.getAttribute?.('aria-valuetext') || ''}`.toLowerCase();
+    if (hay.includes(target)) return true;
+    // "MI" ↔ "Michigan" via normalize tables when available
+    if (window.__jaNormalize) {
+      try {
+        const idx = window.__jaNormalize.normalizedMatch(
+          [hay],
+          value,
+          [window.__jaNormalize.US_STATES, window.__jaNormalize.CA_PROVINCES],
+        );
+        if (idx >= 0) return true;
+      } catch { /* skip */ }
+    }
+    return false;
+  }
+
+  function collectPromptOptions(excludeVisibleSet) {
+    const found = [];
+    try {
+      for (const opt of document.querySelectorAll('[role="option"], [data-automation-id="promptOption"]')) {
+        if (excludeVisibleSet?.has(opt)) continue;
+        if (isElementVisible(opt) || opt.offsetHeight > 0) found.push(opt);
+      }
+    } catch { /* skip */ }
+    return found;
+  }
+
   async function handleCustomDropdown(el, value, fieldHints) {
     // Pre-normalize the target value via the lookup tables (e.g., "CA" → "California").
     // Workday state dropdowns ship a `searchBox` that filters option text — typing the
     // canonical full name yields the correct single match; typing "CA" matches
     // California, North Carolina, and South Carolina.
+    const trigger = findWorkdayDropdownTrigger(el);
     let effectiveValue = value;
+    const autoId = (
+      trigger.getAttribute?.('data-automation-id')
+      || el.getAttribute?.('data-automation-id')
+      || ''
+    ).toLowerCase();
     if (window.__jaNormalize && fieldHints) {
       try {
         const norm = window.__jaNormalize;
-        const hintValues = [fieldHints.label, fieldHints.name, fieldHints.id, fieldHints.placeholder].filter(Boolean);
+        const hintValues = [
+          fieldHints.label, fieldHints.name, fieldHints.id, fieldHints.placeholder, autoId,
+        ].filter(Boolean);
         const tables = norm.detectFieldCategory(hintValues);
+        // Workday stateProvince controls often lack a "state" label — force US_STATES.
+        if (/state|province|region/.test(autoId) && !tables.includes?.(norm.US_STATES)) {
+          tables.push(norm.US_STATES);
+        }
         for (const t of tables) {
           const canonical = norm.normalizeValue(value, t);
           if (canonical) {
@@ -1128,8 +1187,18 @@
             break;
           }
         }
+        // Title-case full state names when normalizeValue missed (already "Michigan").
+        if (effectiveValue === value && /state|province/i.test(`${hintValues.join(' ')} ${autoId}`)) {
+          const asCanon = norm.normalizeValue(value, norm.US_STATES);
+          if (asCanon) effectiveValue = asCanon.replace(/\b\w/g, c => c.toUpperCase());
+        }
       } catch { /* skip */ }
     }
+
+    const stateHints = {
+      ...fieldHints,
+      label: `${fieldHints?.label || ''} state`.trim(),
+    };
 
     // Snapshot existing *visible* option elements BEFORE clicking, so any
     // newly-appeared (or previously-hidden) options can be treated as part of
@@ -1143,97 +1212,185 @@
       }
     } catch { /* skip */ }
 
-    // Click to open the dropdown. Some Workday builds only respond to a full
-    // pointer sequence (mousedown → mouseup → click), so dispatch them too.
-    try {
-      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-    } catch { /* skip */ }
-    el.click();
-    dispatchEvents(el, ['click', 'focus']);
+    const isWorkday = /myworkdayjobs\.com/i.test(location.href)
+      || !!autoId
+      || !!el.closest?.('[data-automation-id]')
+      || !!trigger.closest?.('[data-automation-id]');
+
+    async function openDropdown() {
+      try {
+        trigger.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        trigger.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+      } catch { /* skip */ }
+      trigger.click();
+      dispatchEvents(trigger, ['click', 'focus']);
+    }
+
+    await openDropdown();
 
     // Wait for new options / dropdown to appear (retry with increasing delays)
     let dd = null;
-    for (let attempt = 0; attempt < 6; attempt++) {
-      await sleep(attempt < 2 ? 200 : 300);
+    let openedOptions = [];
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await sleep(attempt < 2 ? 250 : isWorkday ? 400 : 300);
 
-      // Look for newly-appeared option elements (Workday uses
-      // [data-automation-id="promptOption"]; others use [role="option"])
+      openedOptions = collectPromptOptions(preExistingOptions);
+      // Accept a single newly visible option (filtered lists / slow portals).
+      if (openedOptions.length >= 1) {
+        dd = openedOptions[0].closest('[role="listbox"], [role="menu"], [data-automation-widget*="popup"], [data-automation-widget*="prompt"]')
+          || openedOptions[0].parentElement;
+        if (dd) break;
+      }
+
+      // Workday often leaves the active popup marked with automation widget attrs.
       try {
-        const newOptions = [];
-        for (const opt of document.querySelectorAll('[role="option"], [data-automation-id="promptOption"]')) {
-          if (preExistingOptions.has(opt)) continue;
-          if (isElementVisible(opt) || opt.offsetHeight > 0) newOptions.push(opt);
-        }
-        if (newOptions.length > 1) {
-          // Find the container: nearest listbox/menu/popup ancestor,
-          // else the shared parent of the options.
-          dd = newOptions[0].closest('[role="listbox"], [role="menu"], [data-automation-widget*="popup"], [data-automation-widget*="prompt"]')
-            || newOptions[0].parentElement;
-          if (dd) break;
+        const popup = document.querySelector('[data-automation-widget*="popup"]:not([aria-hidden="true"]), [data-automation-widget*="prompt"]:not([aria-hidden="true"])');
+        if (popup) {
+          const opts = getDropdownOptions(popup);
+          if (opts.length >= 1) { dd = popup; openedOptions = opts; break; }
         }
       } catch { /* skip */ }
 
       // Fallback: use findTypeaheadDropdown but prefer listboxes with multiple options.
-      // Phone-country: never grab an unrelated document-wide listbox.
-      const candidate = findTypeaheadDropdown(el, {
-        allowDocumentWide: !hintsLookLikePhoneCountry(fieldHints),
+      // Phone-country / Workday: never grab an unrelated document-wide listbox.
+      const candidate = findTypeaheadDropdown(trigger, {
+        allowDocumentWide: !hintsLookLikePhoneCountry(fieldHints) && !isWorkday,
       });
       if (candidate) {
         const opts = getDropdownOptions(candidate);
-        if (opts.length > 1) { dd = candidate; break; }
+        if (opts.length >= 1) { dd = candidate; openedOptions = opts; break; }
       }
 
-      // On first failure, try clicking a child trigger
-      if (attempt === 1) {
-        const trigger = el.querySelector('button, [class*="arrow"], [class*="indicator"], [class*="toggle"]');
-        if (trigger && trigger !== el) {
-          trigger.click();
-        }
+      // Retry opening via nested/child trigger
+      if (attempt === 1 || attempt === 3) {
+        const nested = el.querySelector?.(
+          'button, [class*="arrow"], [class*="indicator"], [class*="toggle"], [data-automation-id*="button"]',
+        );
+        if (nested && nested !== trigger) nested.click();
+        else await openDropdown();
       }
     }
 
     if (!dd) {
-      closeOpenDropdowns();
+      closeOpenDropdowns({ gentle: isWorkday });
       return { success: false, reason: 'no dropdown appeared' };
     }
 
-    const options = getDropdownOptions(dd);
+    let options = openedOptions.length ? openedOptions : getDropdownOptions(dd);
     if (!options.length) {
-      closeOpenDropdowns();
+      closeOpenDropdowns({ gentle: isWorkday });
       return { success: false, reason: 'no options in dropdown' };
     }
 
-    // Try typing to filter first (for searchable dropdowns)
-    // Workday uses [data-automation-id="searchBox"] for dropdown search inputs
-    const searchInput = dd.querySelector('[data-automation-id="searchBox"]') || dd.querySelector('input');
+    function findSearchInput() {
+      // Prefer the search box inside the active popup — never a stale document-wide one.
+      const inPopup = dd.querySelector('[data-automation-id="searchBox"], input:not([type="hidden"])');
+      if (inPopup && (isElementVisible(inPopup) || inPopup.offsetHeight > 0)) return inPopup;
+      try {
+        const popup = dd.closest?.('[data-automation-widget]') || dd;
+        const scoped = popup.querySelector?.('[data-automation-id="searchBox"]');
+        if (scoped && (isElementVisible(scoped) || scoped.offsetHeight > 0)) return scoped;
+      } catch { /* skip */ }
+      return null;
+    }
+
+    async function commitOption(match) {
+      const selectedText = match.textContent.trim();
+      clickOption(match);
+      // Workday prompts often confirm on Enter after highlight/click.
+      try {
+        match.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
+        }));
+      } catch { /* skip */ }
+
+      const stuck = await waitForControlValue(
+        trigger,
+        [effectiveValue, selectedText, value],
+        isWorkday ? 10 : 4,
+        isWorkday ? 150 : 80,
+      );
+
+      // Only dismiss if the popup is still open. Aggressive Tab/outside-click
+      // clears Workday state selections before they commit.
+      if (promptStillOpen()) {
+        closeOpenDropdowns({ gentle: isWorkday });
+        if (isWorkday) {
+          await waitForControlValue(trigger, [effectiveValue, selectedText, value], 4, 100);
+        }
+      }
+
+      if (isWorkday && !controlDisplaysValue(trigger, effectiveValue)
+          && !controlDisplaysValue(trigger, selectedText)
+          && !controlDisplaysValue(el, effectiveValue)
+          && !controlDisplaysValue(el, selectedText)) {
+        return { success: false, reason: `selection did not stick for "${effectiveValue}"` };
+      }
+      if (!stuck && isWorkday) {
+        // Value may still have landed on a child label after dismiss.
+        if (!controlDisplaysValue(trigger, selectedText) && !controlDisplaysValue(el, selectedText)) {
+          return { success: false, reason: `selection did not stick for "${effectiveValue}"` };
+        }
+      }
+      return { success: true, selectedText };
+    }
+
+    // Try typing to filter first (for searchable dropdowns).
+    const searchInput = findSearchInput();
     if (searchInput) {
       searchInput.focus();
-      setNativeValue(searchInput, effectiveValue);
-      dispatchEvents(searchInput, ['input']);
-      await sleep(300);
+      try {
+        simulateTyping(searchInput, effectiveValue);
+      } catch {
+        setNativeValue(searchInput, effectiveValue);
+        dispatchEvents(searchInput, ['input']);
+      }
+      await sleep(isWorkday ? 600 : 350);
 
-      // Re-fetch filtered options
-      const filteredOptions = getDropdownOptions(dd);
-      const match = fuzzyMatchDropdownOption(filteredOptions.length ? filteredOptions : options, effectiveValue, fieldHints);
+      const filtered = collectPromptOptions(null).filter(o => isElementVisible(o) || o.offsetHeight > 0);
+      const filteredOptions = filtered.length ? filtered : getDropdownOptions(dd);
+      const match = fuzzyMatchDropdownOption(
+        filteredOptions.length ? filteredOptions : options,
+        effectiveValue,
+        stateHints,
+      );
       if (match) {
-        clickOption(match);
-        await sleep(200);
-        closeOpenDropdowns();
-        return { success: true, selectedText: match.textContent.trim() };
+        const result = await commitOption(match);
+        if (result.success) return result;
+      } else {
+        // Clear filter so the full option list is available for the fallback pass.
+        try {
+          simulateTyping(searchInput, '');
+        } catch {
+          setNativeValue(searchInput, '');
+          dispatchEvents(searchInput, ['input']);
+        }
+        await sleep(isWorkday ? 400 : 200);
       }
     }
 
     // Direct option match without filtering
-    const match = fuzzyMatchDropdownOption(options, effectiveValue, fieldHints);
+    options = collectPromptOptions(null).filter(o => isElementVisible(o) || o.offsetHeight > 0);
+    if (!options.length) options = getDropdownOptions(dd);
+    const match = fuzzyMatchDropdownOption(options, effectiveValue, stateHints);
     if (match) {
-      clickOption(match);
-      await sleep(200);
-      closeOpenDropdowns();
-      return { success: true, selectedText: match.textContent.trim() };
+      const result = await commitOption(match);
+      if (result.success) return result;
+      // One reopen + retry helps when the first click raced Workday's portal.
+      if (isWorkday) {
+        await openDropdown();
+        await sleep(500);
+        const retryOpts = collectPromptOptions(null).filter(o => isElementVisible(o) || o.offsetHeight > 0);
+        const retryMatch = fuzzyMatchDropdownOption(retryOpts.length ? retryOpts : getDropdownOptions(dd), effectiveValue, stateHints);
+        if (retryMatch) {
+          const retryResult = await commitOption(retryMatch);
+          if (retryResult.success) return retryResult;
+        }
+      }
+      return result;
     }
 
-    closeOpenDropdowns();
+    closeOpenDropdowns({ gentle: isWorkday });
     return { success: false, reason: `no matching option for "${value}"` };
   }
 
@@ -1250,10 +1407,32 @@
     optionEl.click();
   }
 
-  function closeOpenDropdowns() {
+  function closeOpenDropdowns(opts = {}) {
+    const gentle = !!opts.gentle;
     try {
       const active = document.activeElement;
-      if (!active || active === document.body) return;
+      if (!active || active === document.body) {
+        if (gentle) {
+          try {
+            document.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true,
+            }));
+          } catch { /* skip */ }
+        }
+        return;
+      }
+
+      if (gentle) {
+        // Workday: Tab / outside-click after option select can clear the value
+        // before the prompt commits. Escape only dismisses the open popup.
+        active.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true,
+        }));
+        active.dispatchEvent(new KeyboardEvent('keyup', {
+          key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true,
+        }));
+        return;
+      }
 
       // Strategy 1: Tab away — this is what real users do to dismiss dropdowns.
       // Frameworks (React, Angular, Workday) handle Tab to close dropdowns and move focus.
@@ -1276,6 +1455,27 @@
       // Strategy 3: Blur active element
       active.blur();
     } catch { /* ignore errors in test/headless environments */ }
+  }
+
+  function promptStillOpen() {
+    try {
+      const opts = collectPromptOptions(null).filter(o => isElementVisible(o));
+      if (opts.length >= 1) return true;
+      return !!document.querySelector(
+        '[data-automation-widget*="popup"]:not([aria-hidden="true"]), [data-automation-widget*="prompt"]:not([aria-hidden="true"])',
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  async function waitForControlValue(el, values, attempts = 8, delayMs = 120) {
+    const targets = (Array.isArray(values) ? values : [values]).filter(Boolean);
+    for (let i = 0; i < attempts; i++) {
+      if (targets.some(v => controlDisplaysValue(el, v))) return true;
+      await sleep(delayMs);
+    }
+    return targets.some(v => controlDisplaysValue(el, v));
   }
 
   // ─── Typeahead handling ────────────────────────────────────
@@ -2620,10 +2820,33 @@
     return digits.length >= 10 && digits.length <= 15;
   }
 
-  /** Drop phone numbers mapped onto GPA / essay / address / etc. */
+  /** Bucket duplicate DOM controls into one logical proposal (City, Phone, …). */
+  function mappingLogicalKey(m) {
+    if (!m || m.action === 'skip') return null;
+    const text = `${m.field_label || ''} ${m.label || ''} ${m.selector || ''}`.toLowerCase();
+    // Keep SMS / opt-in / country-code / device-type out of the phone-number bucket.
+    if (/\bphone[-_]?sms|sms[-_]?opt|opt[-_]?in|text[-_]?me\b/.test(text)) return 'phone_sms_opt_in';
+    if (/\b(phone.?country|country.?phone|country.?code|dial.?code|phone.?code)\b/.test(text)) {
+      return 'phone_country';
+    }
+    if (/\b(phone.?device|device.?type)\b/.test(text)) return 'phone_device';
+    if (/\b(phone|mobile|cell|telephone)\b/.test(text) || /\[type=["']?tel["']?\]/.test(m.selector || '')) {
+      return 'phone';
+    }
+    if (/\bcity\b/.test(text)) return 'city';
+    if (/\b(e-?mail|email)\b/.test(text)) return 'email';
+    if (/\bfirst\s*name\b/.test(text)) return 'first_name';
+    if (/\bmiddle\s*name\b/.test(text)) return 'middle_name';
+    if (/\blast\s*name\b/.test(text)) return 'last_name';
+    if (/\b(state|province)\b/.test(text) || /stateprovince/.test(text)) return 'state';
+    if (/\b(postal|zip)\b/.test(text)) return 'postal_code';
+    return null;
+  }
+
+  /** Drop phone numbers mapped onto GPA / essay / address / etc.; collapse duplicate proposals. */
   function sanitizeMappings(mappings) {
     if (!Array.isArray(mappings)) return [];
-    return mappings.filter((m) => {
+    const filtered = mappings.filter((m) => {
       if (!m || m.action === 'skip') return true;
       if (valueLooksLikePhone(m.value) && !fieldLooksLikePhone(m)) {
         debugLog('Dropped phone-like value on non-phone field', m.selector, m.field_label);
@@ -2631,6 +2854,38 @@
       }
       return true;
     });
+
+    const prefer = (a, b) => {
+      const ca = a.confidence == null ? 1 : a.confidence;
+      const cb = b.confidence == null ? 1 : b.confidence;
+      if (ca !== cb) return ca >= cb ? a : b;
+      return (a.selector || '').length <= (b.selector || '').length ? a : b;
+    };
+
+    const skips = [];
+    const winners = new Map(); // dedupe key → mapping
+    const order = [];
+
+    for (const m of filtered) {
+      if (!m) continue;
+      if (m.action === 'skip') {
+        skips.push(m);
+        continue;
+      }
+      const logical = mappingLogicalKey(m);
+      const key = logical
+        || (m.selector ? `sel:${m.selector}` : `row:${order.length}:${m.field_label || ''}:${m.value || ''}`);
+      if (winners.has(key)) {
+        const prev = winners.get(key);
+        winners.set(key, prefer(prev, m));
+        debugLog('Deduped duplicate mapping', key, prev.selector, 'vs', m.selector);
+      } else {
+        winners.set(key, m);
+        order.push(key);
+      }
+    }
+
+    return [...skips, ...order.map((k) => winners.get(k))];
   }
 
   function reviewMappingsBeforeFill(mappings) {
