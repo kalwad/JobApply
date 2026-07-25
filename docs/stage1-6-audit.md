@@ -272,7 +272,14 @@ Answers API → /api/answers/* (API exists; **no dedicated SPA page** wired beyo
 
 ### Broken / failing under full suite
 
-- Full backend suite still has ~13 scraper-related failures/timeouts (same class as baseline)
+- Full backend suite still has scraper-related failures/timeouts (same class as baseline)
+- Dedicated `tests/test_scrapers` run (timeout=10s): **25 failed**, 76 passed, 5 errors — all in disabled JobApply slim modules:
+  - BuiltIn: `test_builtin_detail_fetch_failure_falls_back`
+  - Dice: `test_dice_parse`, `test_dice_deduplicates`, `test_dice_handles_empty`, `test_dice_handles_error`
+  - Indeed: `test_indeed_handles_error`, `test_indeed_limits_search_terms`, `test_indeed_playwright_*` (4)
+  - LinkedIn: `test_linkedin_parse`, `test_linkedin_deduplicates`, `test_linkedin_handles_empty`, `test_linkedin_handles_error`, `test_linkedin_custom_search_terms`
+  - Wellfound: parse/filter/403/empty/dedup/multiword (9)
+- These do **not** block Stage 1 autofill; they justify keeping scrapers out of default CI, not deleting the tests
 - `pytest-timeout` can `INTERNALERROR` during scraper hangs
 - Frontend suite green but reduced by 2 vs baseline due to router rewrite
 
