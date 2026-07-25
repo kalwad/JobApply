@@ -8,6 +8,8 @@ from fastapi import APIRouter, HTTPException, Request
 logger = logging.getLogger(__name__)
 
 AUTOFILL_ANALYZE_TIMEOUT = 45
+# When profile fields already matched, fail AI sooner so the user gets a partial fill.
+AUTOFILL_ANALYZE_TIMEOUT_PARTIAL = 15
 
 router = APIRouter(prefix="/api")
 
@@ -421,6 +423,8 @@ async def analyze_form(request: Request):
                 f"{f.get('label', '')} {f.get('name', '')} {f.get('id', '')}"
             )
         ]
+        if not remaining_fields:
+            return {"mappings": deterministic_mappings, "fill_eeo": fill_eeo}
 
     client = getattr(request.app.state, "ai_client", None)
     if not client:
@@ -448,10 +452,16 @@ async def analyze_form(request: Request):
         profile=profile,
     )
 
+    ai_timeout = (
+        AUTOFILL_ANALYZE_TIMEOUT_PARTIAL
+        if deterministic_mappings
+        else AUTOFILL_ANALYZE_TIMEOUT
+    )
+
     try:
         response = await asyncio.wait_for(
             client.chat(prompt, max_tokens=2000),
-            timeout=AUTOFILL_ANALYZE_TIMEOUT,
+            timeout=ai_timeout,
         )
         text = response.strip()
         if text.startswith("```"):
@@ -466,10 +476,19 @@ async def analyze_form(request: Request):
             "fill_eeo": fill_eeo,
         }
     except asyncio.TimeoutError:
-        logger.warning("Autofill analyze timed out after %ds", AUTOFILL_ANALYZE_TIMEOUT)
-        return {"mappings": [], "error": f"AI analysis timed out after {AUTOFILL_ANALYZE_TIMEOUT}s"}
+        # Keep deterministic profile matches — do not discard them on AI timeout.
+        logger.warning("Autofill analyze timed out after %ds", ai_timeout)
+        return {
+            "mappings": deterministic_mappings,
+            "fill_eeo": fill_eeo,
+            "error": f"AI analysis timed out after {ai_timeout}s",
+        }
     except json.JSONDecodeError:
-        return {"mappings": [], "error": "Failed to parse AI response"}
+        return {
+            "mappings": deterministic_mappings,
+            "fill_eeo": fill_eeo,
+            "error": "Failed to parse AI response",
+        }
     except Exception as e:
         logger.error(f"Autofill analyze failed: {e}")
         raise HTTPException(500, f"Analysis failed: {str(e)}")
