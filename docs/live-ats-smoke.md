@@ -1,7 +1,7 @@
 # Live ATS supervised smoke test (Stage 1)
 
 **Status:** Greenhouse / Lever — **provisional** (must re-smoke on frozen HEAD) · Workday — **“My Information” page passed on the current local build** (steps 2–7 outstanding).  
-**Frozen branch tip:** run `git rev-parse HEAD` on `stage1/slim-autofill` (acceptance commits include Workday state fix + City/Phone dedupe + review regressions).  
+**Frozen HEAD:** `7ffb7d2` (`7ffb7d2f84c4fa5830abca7c266bfef13f59a14f`) on `stage1/slim-autofill` — Workday state fix, City/Phone dedupe, review regressions, browser fixture green.  
 Automated tests cover only synthetic fixtures under `fixtures/`. Do **not** claim full live ATS verification until Greenhouse, Lever, and Workday are all re-smoked on the **same frozen HEAD**.  
 **PR #1:** do not merge until that same-HEAD live verification completes and the owner explicitly confirms. Do not resume Stages 2–6.  
 **Phone-country:** Stage 1 keeps manual-review skip ([Issue #2](https://github.com/kalwad/JobApply/issues/2)). Do not re-automate in PR #1.  

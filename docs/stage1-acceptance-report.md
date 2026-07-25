@@ -1,7 +1,7 @@
 # Stage 1 acceptance report
 
 Branch: `stage1/slim-autofill`  
-**Freeze HEAD (automated suites):** `661fc0e` + follow-up commits on this branch — see **Current freeze** below.  
+**Freeze HEAD (automated suites + docs):** `7ffb7d2`  
 PR: https://github.com/kalwad/JobApply/pull/1 — **not approved for merge** until same-HEAD live ATS re-smoke completes and the owner explicitly confirms.
 
 WIP / audit refs preserved: `grok/stage1-6-checkpoint`, `audit/stage1-6`, `baseline/untouched`, tag `baseline/careerpulse-upstream`.
@@ -13,7 +13,7 @@ Record after each push of Stage 1 acceptance work:
 | Item | Value |
 |------|--------|
 | Branch | `stage1/slim-autofill` |
-| Frozen commit (report when suites last ran) | see latest `git rev-parse HEAD` on this branch after acceptance commits |
+| Frozen commit | `7ffb7d2f84c4fa5830abca7c266bfef13f59a14f` |
 | Workday live status | **My Information page passed on the current local build** — steps 2–7 not passed |
 | Greenhouse / Lever live status | **Provisional** on older HEADs — must re-smoke on frozen HEAD |
 | Merge | **Blocked** until owner confirms |
