@@ -153,6 +153,11 @@ async function analyzeForm(formHtml, adapterFields, structuredFields, meta = {})
       payload.ats_field_map = meta.atsFieldMap;
     }
     if (meta.pageUrl) payload.page_url = meta.pageUrl;
+    if (meta.jobContext && typeof meta.jobContext === 'object') {
+      payload.job_context = meta.jobContext;
+    }
+    // Default Fill never blocks on Qwen; opt-in only.
+    payload.include_ai = meta.includeAi === true;
     const resp = await apiFetch('/api/autofill/analyze', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -488,6 +493,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               atsName: message.atsName || message.ats_name,
               atsFieldMap: message.atsFieldMap || message.ats_field_map,
               pageUrl: message.pageUrl || message.page_url,
+              jobContext: message.jobContext || message.job_context,
+              includeAi: message.includeAi === true || message.include_ai === true,
             },
           );
         case 'getResumeForJob':

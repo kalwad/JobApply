@@ -38,8 +38,65 @@ def mock_ai_client():
     return client
 
 
-async def test_autofill_analyze_timeout(app, client, mock_ai_client):
-    """AI timeout should keep deterministic mappings and surface an error."""
+async def test_autofill_analyze_default_skips_blocking_ai(app, client, mock_ai_client):
+    """Default Fill returns Phase A immediately — Qwen is never awaited."""
+
+    async def slow_chat(*args, **kwargs):
+        await asyncio.sleep(30)
+        return '[]'
+
+    mock_ai_client.chat = AsyncMock(side_effect=slow_chat)
+    app.state.ai_client = mock_ai_client
+
+    await app.state.db.save_user_profile(
+        full_name="Jane Doe",
+        email="jane@example.com",
+        phone="555-0100",
+    )
+
+    fields = [
+        {
+            "selector": "#email",
+            "name": "email",
+            "id": "email",
+            "label": "Email",
+            "tag": "input",
+            "type": "email",
+            "placeholder": "",
+            "currentValue": "",
+            "semanticType": "email",
+        },
+        {
+            "selector": "#custom_question",
+            "name": "custom_question",
+            "id": "custom_question",
+            "label": "Why do you want this role?",
+            "tag": "textarea",
+            "type": "",
+            "placeholder": "",
+            "currentValue": "",
+            "semanticType": "open_ended_question",
+        },
+    ]
+
+    resp = await client.post(
+        "/api/autofill/analyze",
+        json={"form_html": "<form></form>", "fields": fields},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data.get("phase") == "deterministic"
+    assert "error" not in data
+    mock_ai_client.chat.assert_not_called()
+    fillable = [m for m in data["mappings"] if m.get("action") != "skip"]
+    assert any(m["selector"] == "#email" and m["value"] == "jane@example.com" for m in fillable)
+    skips = [m for m in data["mappings"] if m.get("action") == "skip"]
+    assert any(m.get("inventoryCategory") == "ai_draft_available" for m in skips)
+
+
+async def test_autofill_analyze_opt_in_ai_timeout_keeps_deterministic(app, client, mock_ai_client):
+    """Opt-in include_ai may time out; deterministic mappings are preserved."""
 
     async def slow_chat(*args, **kwargs):
         await asyncio.sleep(5)
@@ -64,6 +121,7 @@ async def test_autofill_analyze_timeout(app, client, mock_ai_client):
             "type": "email",
             "placeholder": "",
             "currentValue": "",
+            "semanticType": "email",
         },
         {
             "selector": "#custom_question",
@@ -77,40 +135,68 @@ async def test_autofill_analyze_timeout(app, client, mock_ai_client):
         },
     ]
 
-    with patch("app.routers.autofill.AUTOFILL_ANALYZE_TIMEOUT", 1), \
-         patch("app.routers.autofill.AUTOFILL_ANALYZE_TIMEOUT_PARTIAL", 1):
+    with patch("app.routers.autofill.AUTOFILL_ANALYZE_TIMEOUT", 1):
         resp = await client.post(
             "/api/autofill/analyze",
-            json={"form_html": "<form></form>", "fields": fields},
+            json={"form_html": "<form></form>", "fields": fields, "include_ai": True},
         )
 
     assert resp.status_code == 200
     data = resp.json()
     assert "error" in data
     assert "timed out" in data["error"].lower()
-    assert len(data["mappings"]) == 1
-    assert data["mappings"][0]["selector"] == "#email"
-    assert data["mappings"][0]["value"] == "jane@example.com"
+    fillable = [m for m in data["mappings"] if m.get("action") != "skip"]
+    assert any(m["selector"] == "#email" for m in fillable)
 
 
 async def test_autofill_analyze_no_timeout_on_fast_response(app, client, mock_ai_client):
-    """A fast AI response should succeed normally, no timeout error."""
+    """Opt-in AI path succeeds when the model responds quickly."""
 
     mock_ai_client.chat = AsyncMock(return_value=json.dumps([
-        {"field_name": "email", "value": "test@example.com", "confidence": 0.9}
+        {
+            "selector": "#custom_question",
+            "value": "I love building products",
+            "action": "fill_text",
+            "confidence": 0.9,
+            "field_label": "Why",
+        }
     ]))
     app.state.ai_client = mock_ai_client
 
+    await app.state.db.save_user_profile(email="jane@example.com")
+
     resp = await client.post(
         "/api/autofill/analyze",
-        json={"form_html": "<form><input name='email'></form>", "fields": [{"name": "email"}]},
+        json={
+            "form_html": "<form></form>",
+            "include_ai": True,
+            "fields": [
+                {
+                    "selector": "#email",
+                    "name": "email",
+                    "label": "Email",
+                    "tag": "input",
+                    "type": "email",
+                    "currentValue": "",
+                    "semanticType": "email",
+                },
+                {
+                    "selector": "#custom_question",
+                    "name": "custom_question",
+                    "label": "Why do you want this role?",
+                    "tag": "textarea",
+                    "currentValue": "",
+                },
+            ],
+        },
     )
 
     assert resp.status_code == 200
     data = resp.json()
     assert "error" not in data
+    assert data.get("phase") == "with_ai"
     assert isinstance(data["mappings"], list)
-    assert len(data["mappings"]) == 1
+    assert any(m.get("selector") == "#email" for m in data["mappings"])
 
 
 # ─── _deterministic_fill phone field matching ──────────────────
@@ -304,6 +390,7 @@ def test_phone_sms_opt_in_not_filled_with_phone_number():
 
 
 def test_work_auth_not_filled_with_country_name():
+    """Generic 'this country' auth must not use US answers or address country name."""
     profile = {
         **PROFILE,
         "address_country_name": "United States",
@@ -323,11 +410,32 @@ def test_work_auth_not_filled_with_country_name():
     ]
     mappings, _remaining = _deterministic_fill(fields, profile)
     work = next(m for m in mappings if "work_auth" in m["selector"])
-    assert work["value"] == "yes"
-    assert work["action"] == "click_radio"
-    assert work["value"] != "United States"
+    assert work["action"] == "skip"
+    assert work["reason"] == "application_country_unknown"
+    assert work["value"] in ("", None)
     addr = next(m for m in mappings if m["selector"] == "#address_country")
     assert addr["value"] == "United States"
     phone_cc = next(m for m in mappings if m["selector"] == "#phone_country_trigger")
     assert phone_cc["action"] == "skip"
     assert phone_cc["fieldKind"] == "phone_country"
+
+
+def test_work_auth_fills_when_job_country_us_explicit():
+    profile = {
+        **PROFILE,
+        "authorized_to_work_us": "yes",
+    }
+    fields = [
+        {"selector": "input[name='work_auth']", "name": "work_auth", "id": "",
+         "label": "Are you currently authorized to work in this country?",
+         "tag": "input", "type": "radio", "placeholder": "", "currentValue": "",
+         "semanticType": "work_authorization",
+         "options": [{"value": "yes", "label": "Yes"}, {"value": "no", "label": "No"}]},
+    ]
+    mappings, _ = _deterministic_fill(
+        fields, profile, job_context={"application_country": "US"},
+    )
+    work = next(m for m in mappings if "work_auth" in m["selector"])
+    assert work["action"] == "click_radio"
+    assert str(work["value"]).lower() in ("yes", "true", "1")
+    assert work["value"] != "United States"

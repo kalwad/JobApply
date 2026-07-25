@@ -231,6 +231,96 @@ describe('fixture adapter detect + extract', () => {
     expect(input.value).toMatch(/Sterling Heights/i);
   });
 
+  it('Greenhouse portal location ignores phone-country listbox and commits via owned portal', async () => {
+    const html = readFileSync(join(FIXTURES, 'greenhouse', 'location-portal-phone.html'), 'utf-8');
+    const match = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    document.body.innerHTML = match ? match[1] : html;
+
+    const input = document.getElementById('candidate-location');
+    const list = document.getElementById('gh-location-portal-list');
+    const hidden = document.getElementById('candidate-location-id');
+    const phoneList = document.getElementById('iti-0__country-listbox');
+    phoneList.hidden = false; // already visible before location opens
+    Object.defineProperty(phoneList, 'offsetParent', { value: document.body, configurable: true });
+    Object.defineProperty(phoneList, 'offsetHeight', { value: 80, configurable: true });
+
+    const SUGGESTIONS = [
+      { id: 'place-1', text: 'Sterling Heights, Michigan, United States' },
+      { id: 'place-2', text: 'Toronto, Ontario, Canada' },
+    ];
+    input.addEventListener('input', () => {
+      const q = (input.value || '').toLowerCase();
+      list.innerHTML = '';
+      hidden.value = '';
+      const matches = SUGGESTIONS.filter(s => s.text.toLowerCase().includes(q.split(',')[0].trim()));
+      if (!q || !matches.length) {
+        list.hidden = true;
+        input.setAttribute('aria-expanded', 'false');
+        return;
+      }
+      matches.forEach(s => {
+        const li = document.createElement('li');
+        li.setAttribute('role', 'option');
+        li.textContent = s.text;
+        li.dataset.id = s.id;
+        Object.defineProperty(li, 'offsetHeight', { value: 24, configurable: true });
+        Object.defineProperty(li, 'offsetParent', { value: list, configurable: true });
+        li.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          input.value = s.text;
+          hidden.value = s.id;
+          list.hidden = true;
+          input.setAttribute('aria-expanded', 'false');
+        });
+        list.appendChild(li);
+      });
+      list.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+      Object.defineProperty(list, 'offsetParent', { value: document.body, configurable: true });
+      Object.defineProperty(list, 'offsetHeight', { value: 80, configurable: true });
+    });
+    input.addEventListener('blur', () => {
+      setTimeout(() => {
+        if (!hidden.value) input.value = '';
+        list.hidden = true;
+        input.setAttribute('aria-expanded', 'false');
+      }, 150);
+    });
+
+    expect(ctx.api.isGreenhouseLocationControl(input)).toBe(true);
+    expect(ctx.api.isPhoneCountryListbox(phoneList)).toBe(true);
+
+    // Ownership must resolve to the location portal, never the phone listbox.
+    const owned = ctx.api.findOwnedLocationDropdown(input);
+    expect(owned).toBe(list);
+    expect(owned).not.toBe(phoneList);
+
+    // Typed text without place ID fails requireCommit (hidden companion required).
+    input.value = 'Sterling Heights';
+    hidden.value = '';
+    const typed = await ctx.api.withVerification(
+      { selector: '#candidate-location', success: true, action: 'fill_text' },
+      input,
+      'Sterling Heights',
+      'fill_text',
+      { requireCommit: true },
+    );
+    expect(typed.success).toBe(false);
+    expect(typed.inventoryCategory).toBe('failed_verification');
+
+    // Fresh commit path via owned portal listbox
+    hidden.value = '';
+    input.value = '';
+    list.innerHTML = '';
+    list.hidden = true;
+    const filled = await ctx.api.fillGreenhouseLocation(input, 'Sterling Heights, Michigan');
+    expect(filled.success).toBe(true);
+    expect(hidden.value).toBe('place-1');
+    expect(input.value).toMatch(/Sterling Heights/i);
+    // Phone country must remain untouched
+    expect(phoneList.querySelector('[aria-selected="true"]')).toBeNull();
+  });
+
   it('failed location verification does not count as filled in overlay state', async () => {
     const html = readFileSync(join(FIXTURES, 'greenhouse', 'location-autocomplete.html'), 'utf-8');
     const match = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);

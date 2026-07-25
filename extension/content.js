@@ -1894,6 +1894,47 @@
   }
 
   /**
+   * Job/application country context for work-auth — never the candidate's home address.
+   */
+  function extractJobContext(lookedUpJob) {
+    const ctx = {};
+    try {
+      if (lookedUpJob && typeof lookedUpJob === 'object') {
+        if (lookedUpJob.location) ctx.job_location = String(lookedUpJob.location);
+        if (lookedUpJob.country) ctx.job_country = String(lookedUpJob.country);
+        if (lookedUpJob.region) ctx.region = String(lookedUpJob.region);
+      }
+      const locEl = document.querySelector(
+        '.posting-categories .location, .sorting-bar-location, '
+        + '[class*="posting-category"][class*="location"], '
+        + '.job__location, .job-location, [data-qa="location"], '
+        + '#header .location, .app-title + .location, '
+        + '[class*="JobLocation"], [class*="job-location"]'
+      );
+      if (locEl?.textContent) {
+        ctx.posting_location = locEl.textContent.trim().replace(/\s+/g, ' ').slice(0, 200);
+        ctx.job_location = ctx.job_location || ctx.posting_location;
+      }
+      const heading = document.querySelector(
+        'h1.posting-headline, .posting-headline h2, h1, .app-title, [data-qa="posting-name"]'
+      );
+      if (heading?.textContent) {
+        ctx.heading = heading.textContent.trim().replace(/\s+/g, ' ').slice(0, 200);
+      }
+      // Lever / Greenhouse often put "London, United Kingdom" near the title.
+      const hero = `${ctx.posting_location || ''} ${ctx.heading || ''} ${document.title || ''}`;
+      if (/united\s+kingdom|\blondon\b|\bu\.?k\.?\b/i.test(hero)) {
+        ctx.application_country = ctx.application_country || 'GB';
+      } else if (/\bcanada\b|\bontario\b/i.test(hero)) {
+        ctx.application_country = ctx.application_country || 'CA';
+      } else if (/united\s+states|\busa\b/i.test(hero)) {
+        ctx.application_country = ctx.application_country || 'US';
+      }
+    } catch { /* ignore */ }
+    return ctx;
+  }
+
+  /**
    * Post-fill verification: a dispatched event is not a successful fill.
    * Returns { ok, reason, actual }.
    */
@@ -1958,10 +1999,13 @@
       if (!actual || actual.length < 2) {
         return { ok: false, reason: 'location/autocomplete value did not stick', actual };
       }
-      const words = exp.split(/[\s,/|-]+/).filter(w => w.length > 2);
-      const hit = words.length === 0
-        ? actual.includes(exp) || exp.includes(actual)
-        : words.some(w => actual.includes(w));
+      const cityExp = exp.split(',')[0].trim();
+      const cityAct = actual.split(',')[0].trim();
+      const hit = cityExp
+        && (cityAct === cityExp
+          || cityAct.startsWith(cityExp)
+          || cityExp.startsWith(cityAct)
+          || actual.includes(cityExp));
       if (!hit) {
         return { ok: false, reason: 'committed autocomplete value does not match', actual };
       }
@@ -1982,17 +2026,20 @@
 
   function findLocationHiddenCompanion(el) {
     try {
-      const scope = el?.closest?.('form, .autocomplete, [class*="autocomplete"], fieldset, div')
-        || document;
-      const scoped = scope.querySelector(
-        '#job_application_location_id, #selected-location, '
-        + 'input[name="selectedLocation"], input[name="job_application[location_id]"]'
+      const scope = el?.closest?.(
+        '.autocomplete, [class*="autocomplete"], [data-testid*="location"], '
+        + 'li.application-question, .application-question, fieldset'
+      ) || el?.parentElement || document;
+      const sel = (
+        '#job_application_location_id, #candidate-location-id, #selected-location, '
+        + 'input[name="selectedLocation"], input[name="job_application[location_id]"], '
+        + 'input[name="candidate_location_id"], input[id*="location"][type="hidden"], '
+        + 'input[name*="location_id"][type="hidden"]'
       );
+      const scoped = scope.querySelector(sel);
       if (scoped) return scoped;
-      return document.querySelector(
-        '#job_application_location_id, #selected-location, '
-        + 'input[name="selectedLocation"], input[name="job_application[location_id]"]'
-      );
+      // Never search the whole document for a random hidden — stay near the control.
+      return el?.parentElement?.querySelector?.(sel) || null;
     } catch {
       return null;
     }
@@ -2066,19 +2113,43 @@
     return result;
   }
 
+  function isPhoneCountryListbox(node) {
+    if (!node) return false;
+    try {
+      const id = (node.id || '').toLowerCase();
+      const cls = `${node.className || ''}`.toLowerCase();
+      if (/^iti[-_]|iti__|intl-tel|phone.?country|country.?list/.test(id)) return true;
+      if (/\biti\b|iti__|intl-tel-input|phone-country|country-list/.test(cls)) return true;
+      if (node.closest?.('.iti, .iti__country-list, [class*="iti__"], [id^="iti-"]')) return true;
+      // Phone dial-code widgets near a tel input
+      const phoneWidget = findSharedPhoneComponent(node);
+      if (phoneWidget && phoneWidget.contains(node)) return true;
+      const trigger = document.querySelector(
+        `[aria-controls="${CSS.escape(node.id || '')}"], [aria-owns="${CSS.escape(node.id || '')}"]`
+      );
+      if (trigger && (isPhoneCountryCodeField(trigger) || isSelectCountryInPhoneWidget(trigger))) {
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   function isGreenhouseLocationControl(el) {
     if (!el) return false;
     const id = (el.id || '').toLowerCase();
     const name = (el.name || '').toLowerCase();
     const label = `${findLabel(el) || ''}`.toLowerCase();
-    if (id === 'job_application_location' || name === 'job_application[location]') return true;
+    if (id === 'job_application_location' || id === 'candidate-location') return true;
     if (name === 'job_application[location]' || /job_application.*location/.test(name)) return true;
+    if (name === 'candidate-location' || /candidate.?location/.test(name)) return true;
     // Live Greenhouse Remix: location city autocomplete (not phone country)
     if (/\blocation\b|\bcity\b/.test(label) && !/\bphone\b|\bdial\b/.test(label)
         && (el.getAttribute('role') === 'combobox' || el.getAttribute('aria-autocomplete')
           || el.closest('[class*="autocomplete"], [class*="typeahead"], [class*="select"]'))) {
       return /greenhouse|boards\.greenhouse|job-boards\.greenhouse/i.test(location.href)
-        || !!document.querySelector('#grnhse_app, #app_form, #application_form');
+        || !!document.querySelector('#grnhse_app, #app_form, #application_form, #candidate-location');
     }
     return false;
   }
@@ -2090,44 +2161,111 @@
       || (el.classList?.contains?.('location-input'));
   }
 
-  function findOwnedLocationDropdown(el) {
-    // Only listboxes / results owned by this control or inside its question card.
+  function listVisibleListboxes() {
+    const nodes = Array.from(document.querySelectorAll(
+      '[role="listbox"], .dropdown-results, [class*="dropdown-results"], [class*="suggestion"]'
+    ));
+    return nodes.filter((n) => {
+      if (isPhoneCountryListbox(n)) return false;
+      try {
+        if (n.hasAttribute('hidden') || n.getAttribute('aria-hidden') === 'true') return false;
+        const style = window.getComputedStyle?.(n);
+        if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+        return (n.offsetParent !== null) || (n.offsetHeight > 0) || (n.getClientRects?.().length > 0);
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  function findOwnedLocationDropdown(el, opts = {}) {
+    // Never use the whole <form> — phone-country listboxes live in the same form.
+    const beforeIds = opts.beforeIds instanceof Set ? opts.beforeIds : null;
     const listId = el.getAttribute('aria-controls') || el.getAttribute('aria-owns');
     if (listId) {
       try {
         const owned = document.getElementById(listId);
-        if (owned) return owned;
+        if (owned && !isPhoneCountryListbox(owned)) return owned;
       } catch { /* skip */ }
     }
+
+    // Local component container only (no form).
     const card = el.closest?.(
-      'li.application-question, .application-question, .autocomplete, [class*="autocomplete"], form'
+      'li.application-question, .application-question, .autocomplete, '
+      + '[class*="autocomplete"], [class*="typeahead"], [data-testid*="location"]'
     ) || el.parentElement;
-    if (!card) return null;
-    const local = card.querySelector(
-      '[role="listbox"], .dropdown-results, [class*="dropdown-results"], '
-      + 'ul[id*="list"], [class*="suggestion"]'
-    );
-    return local || null;
+    if (card && card.tagName !== 'FORM') {
+      const locals = Array.from(card.querySelectorAll(
+        '[role="listbox"], .dropdown-results, [class*="dropdown-results"], '
+        + '[class*="suggestion"]'
+      )).filter((n) => !isPhoneCountryListbox(n));
+      const visible = locals.find((n) => {
+        try {
+          if (n.hasAttribute('hidden') && el.getAttribute('aria-expanded') !== 'true') return false;
+          return true;
+        } catch { return true; }
+      });
+      if (visible) return visible;
+      if (locals[0]) return locals[0];
+    }
+
+    // Newly visible listbox after interacting with this control (portal-safe).
+    const visible = listVisibleListboxes();
+    const fresh = beforeIds
+      ? visible.filter((n) => !beforeIds.has(n.id || n))
+      : visible;
+    const candidates = fresh.length ? fresh : visible;
+    // Prefer listboxes near the input (same viewport band / next sibling portal)
+    const rect = el.getBoundingClientRect?.();
+    if (rect && candidates.length) {
+      let best = null;
+      let bestDist = Infinity;
+      for (const n of candidates) {
+        const r = n.getBoundingClientRect?.();
+        if (!r) continue;
+        const dist = Math.abs(r.top - rect.bottom) + Math.abs(r.left - rect.left) * 0.25;
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = n;
+        }
+      }
+      if (best && bestDist < 600) return best;
+    }
+    return candidates[0] || null;
   }
 
   function locationCommitLooksGood(el, expected, hidden) {
     const visible = String(el?.value || el?.textContent || '').trim();
     if (!visible) return false;
-    const exp = String(expected || '').trim().toLowerCase();
-    const city = exp.split(',')[0].trim();
-    const vis = visible.toLowerCase();
-    if (city && !vis.includes(city) && !exp.includes(vis.slice(0, Math.min(12, vis.length)))) {
-      // Visible text unrelated to what we asked for
-      if (!vis.includes(exp.slice(0, 8))) return false;
+    const cityExp = cityToken(expected);
+    const cityVis = cityToken(visible);
+    if (cityExp && cityVis && cityExp !== cityVis && !cityVis.startsWith(cityExp) && !cityExp.startsWith(cityVis)) {
+      return false;
     }
     // If a companion identity field exists, it must be nonempty.
     if (hidden && !String(hidden.value || '').trim()) return false;
     return true;
   }
 
+  function cityToken(value) {
+    return String(value || '').split(',')[0].trim().toLowerCase();
+  }
+
+  function locationOptionMatchesQuery(optionText, query) {
+    const t = String(optionText || '').trim().toLowerCase();
+    const q = String(query || '').trim().toLowerCase();
+    if (!t || !q) return false;
+    if (t === q) return true;
+    const cityQ = cityToken(q);
+    const cityT = cityToken(t);
+    if (cityQ && cityT === cityQ) return true;
+    if (cityQ && cityT.startsWith(cityQ) && cityQ.length >= 4) return true;
+    return false;
+  }
+
   /**
    * Greenhouse-specific location: type → owned listbox only → click suggestion →
-   * verify visible commit (+ hidden ID when present). Never document-wide / first-option.
+   * verify visible commit (+ hidden ID when present). Never form-wide / first-option.
    */
   async function fillGreenhouseLocation(el, value) {
     const query = String(value || '').trim();
@@ -2135,34 +2273,44 @@
       return { success: false, reason: 'empty location value' };
     }
 
+    const beforeIds = new Set(
+      listVisibleListboxes().map((n) => n.id || n)
+    );
+
     setNativeValue(el, '');
-    dispatchEvents(el, ['focus', 'input']);
+    dispatchEvents(el, ['focus', 'click', 'input']);
     el.focus?.();
     await sleep(50);
     const typeQuery = query.split(',')[0].trim() || query;
     simulateTyping(el, typeQuery);
+    dispatchEvents(el, ['input', 'keydown', 'keyup']);
 
     let matched = null;
     let dropdown = null;
-    for (let wait = 0; wait < 8; wait++) {
+    for (let wait = 0; wait < 10; wait++) {
       await sleep(wait < 3 ? 200 : 350);
-      dropdown = findOwnedLocationDropdown(el);
-      if (!dropdown) continue;
+      dropdown = findOwnedLocationDropdown(el, { beforeIds });
+      if (!dropdown || isPhoneCountryListbox(dropdown)) continue;
       try {
         if (dropdown.hasAttribute?.('hidden') && el.getAttribute('aria-expanded') === 'true') {
           dropdown.hidden = false;
         }
       } catch { /* skip */ }
-      const options = getDropdownOptions(dropdown);
+      const options = getDropdownOptions(dropdown).filter((o) => !isPhoneCountryListbox(o));
       if (!options.length) continue;
-      matched = fuzzyMatchDropdownOption(options, query, { label: 'Location (City)', id: el.id })
+      matched = options.find((o) => locationOptionMatchesQuery(o.textContent, query))
+        || options.find((o) => locationOptionMatchesQuery(o.textContent, typeQuery))
+        || fuzzyMatchDropdownOption(options, query, { label: 'Location (City)', id: el.id })
         || fuzzyMatchDropdownOption(options, typeQuery, { label: 'Location (City)', id: el.id });
-      if (!matched) {
-        const tq = typeQuery.toLowerCase();
-        matched = options.find((o) => {
-          const t = (o.textContent || '').trim().toLowerCase();
-          return t === query.toLowerCase() || t.startsWith(tq) || t.includes(tq);
-        }) || null;
+      // Reject loose "starts with first letters of United/Sterling" false positives later via city token
+      if (matched && !locationOptionMatchesQuery(matched.textContent, query)
+          && !locationOptionMatchesQuery(matched.textContent, typeQuery)) {
+        // Keep fuzzy only when city token overlaps
+        const city = cityToken(typeQuery);
+        const mt = cityToken(matched.textContent);
+        if (!(city && mt && (mt === city || mt.startsWith(city) || city.startsWith(mt)))) {
+          matched = null;
+        }
       }
       if (matched) break;
     }
@@ -2173,7 +2321,7 @@
     }
 
     clickOption(matched);
-    await sleep(350);
+    await sleep(400);
     const selectedText = (matched.textContent || '').trim() || query;
     const hidden = findLocationHiddenCompanion(el);
     // When the component exposes a place ID, require it. Otherwise require stable visible text.
@@ -2187,8 +2335,8 @@
     if (!locationCommitLooksGood(el, query, hidden)) {
       return { success: false, reason: 'visible location not committed', selectedText };
     }
-    dispatchEvents(el, ['blur']);
-    await sleep(400);
+    dispatchEvents(el, ['blur', 'change']);
+    await sleep(900);
     if (!locationCommitLooksGood(el, query, hidden)) {
       return {
         success: false,
@@ -2196,7 +2344,13 @@
         selectedText,
       };
     }
-    return { success: true, selectedText: el.value || selectedText };
+    const committed = String(el.value || '').trim() || selectedText;
+    // Prefer highlighting the outer location container, not a zero-width inner input.
+    try {
+      const shell = el.closest?.('.autocomplete, [class*="autocomplete"], [class*="location"]') || el;
+      shell.classList?.add(`${PREFIX}-filled`);
+    } catch { /* skip */ }
+    return { success: true, selectedText: committed };
   }
 
   /**
@@ -2843,12 +2997,35 @@
       closeOpenDropdowns();
       await sleep(100);
 
-      const fieldLabel = mapping.label || mapping.field_label || mapping.selector;
-      const proposed = String(mapping.value ?? '');
+      // Languages: keep "Language: English" as the row label; value is the option name.
+      const langLabel = (() => {
+        const fl = String(mapping.field_label || '');
+        if (/^language:\s*/i.test(fl)) return fl;
+        if (mapping.optionLabel) return `Language: ${mapping.optionLabel}`;
+        if (mapping.displayValue && mapping.semanticType === 'languages') {
+          return `Language: ${mapping.displayValue}`;
+        }
+        return '';
+      })();
+      const fieldLabel = langLabel || mapping.field_label || mapping.label || mapping.selector;
+      const displayProposed = (() => {
+        if (langLabel || mapping.semanticType === 'languages' || mapping.optionLabel) {
+          return String(
+            mapping.displayValue || mapping.optionLabel
+            || String(mapping.field_label || '').replace(/^language:\s*/i, '')
+            || 'checked'
+          );
+        }
+        const raw = String(mapping.value ?? '');
+        if (mapping.action === 'check_checkbox' && /^(yes|true|1)$/i.test(raw)) {
+          return mapping.optionLabel || mapping.displayValue || 'checked';
+        }
+        return raw;
+      })();
       if (result.alreadyCompleted) {
         setFieldResult(mapping.selector, {
           label: fieldLabel,
-          proposedValue: proposed,
+          proposedValue: displayProposed,
           status: 'already_completed',
           reason: result.reason || 'already completed',
           confidence: mapping.confidence || 1,
@@ -2857,7 +3034,7 @@
       } else if (result.skipped) {
         setFieldResult(mapping.selector, {
           label: fieldLabel,
-          proposedValue: proposed,
+          proposedValue: displayProposed,
           status: 'skipped',
           reason: result.reason || 'skipped',
           confidence: mapping.confidence || 1,
@@ -2877,28 +3054,33 @@
           originalValues.set(mapping.selector, {
             originalValue: prev?.originalValue ?? '',
             label: fieldLabel,
-            value: proposed,
+            value: displayProposed,
             confidence: mapping.confidence || 1,
             action: mapping.action,
             undone: false,
           });
           if (el) {
             const confidence = mapping.confidence || 1;
-            el.classList.add(confidence >= 0.8 ? `${PREFIX}-filled` : `${PREFIX}-review`);
+            const shell = (looksLikeLocationField(el, fieldLabel)
+              && el.closest?.('.autocomplete, [class*="autocomplete"], [class*="location"]')) || el;
+            shell.classList.add(confidence >= 0.8 ? `${PREFIX}-filled` : `${PREFIX}-review`);
           }
         } catch { /* skip */ }
         setFieldResult(mapping.selector, {
           label: fieldLabel,
-          proposedValue: proposed,
+          proposedValue: displayProposed || result.selectedText || '',
           status: 'filled',
           reason: '',
           confidence: mapping.confidence || 1,
           action: mapping.action,
         });
       } else {
+        const failedLabel = /location|city/i.test(fieldLabel)
+          ? (fieldLabel.match(/location/i) ? fieldLabel : 'Location (City)')
+          : fieldLabel;
         setFieldResult(mapping.selector, {
-          label: fieldLabel,
-          proposedValue: proposed,
+          label: failedLabel,
+          proposedValue: displayProposed,
           status: 'failed',
           reason: result.reason || 'verification failed',
           confidence: mapping.confidence || 1,
@@ -2951,6 +3133,8 @@
         formHtml,
         structuredFields,
         pageUrl: location.href,
+        jobContext: extractJobContext(null),
+        includeAi: false,
       };
       if (atsAdapter) {
         payload.atsName = atsAdapter.name;
@@ -3358,10 +3542,16 @@
       if (entry.status === 'filled') {
         dotClass = entry.confidence < 0.8 ? 'yellow' : 'green';
         displayValue = entry.proposedValue || '';
+        // Never show bare yes/true for language checkboxes in the completion panel.
+        if (/^(yes|true|1)$/i.test(String(displayValue)) && /language/i.test(String(entry.label || ''))) {
+          displayValue = String(entry.label).replace(/^language:\s*/i, '') || displayValue;
+        }
         undoBtnHtml = `<button class="${PREFIX}-undo-btn" data-selector="${escapeHtml(selector)}" title="Undo">&#x21A9;</button>`;
       } else if (entry.status === 'failed') {
         dotClass = 'red';
-        displayValue = `failed to commit — manual entry required`;
+        displayValue = /location|city/i.test(String(entry.label || ''))
+          ? 'manual entry required'
+          : 'failed to commit — manual entry required';
       } else if (entry.status === 'undone') {
         dotClass = 'gray';
         displayValue = `(undone)`;
@@ -3506,8 +3696,12 @@
     preSubmitValues = {};
     overlayMode = 'status';
     try {
-      document.querySelectorAll(`.${PREFIX}-highlight`).forEach(el => {
-        el.classList.remove(`${PREFIX}-highlight`);
+      document.querySelectorAll(
+        `.${PREFIX}-highlight, .${PREFIX}-filled, .${PREFIX}-review, .${PREFIX}-failed`
+      ).forEach(el => {
+        el.classList.remove(
+          `${PREFIX}-highlight`, `${PREFIX}-filled`, `${PREFIX}-review`, `${PREFIX}-failed`
+        );
       });
     } catch { /* ignore */ }
     if (!opts.keepCumulative) {
@@ -4085,6 +4279,7 @@
       currentState = 'analyzing';
 
       // Look up the job ID by URL if not already set (enables resume/cover letter downloads)
+      let lookedUpJob = null;
       if (!currentJobId) {
         try {
           const lookupResult = await chrome.runtime.sendMessage({
@@ -4093,6 +4288,7 @@
           });
           if (lookupResult?.ok && lookupResult.data?.id) {
             currentJobId = lookupResult.data.id;
+            lookedUpJob = lookupResult.data;
           }
         } catch { /* skip — job may not be saved yet */ }
       }
@@ -4180,12 +4376,15 @@
           optionCount: f.options?.length || 0,
         })));
 
-        // Include ATS metadata in the analysis request (background must forward these)
+        // Include ATS metadata + job country context (never candidate home address).
         const analyzePayload = {
           type: 'analyzeForm',
           formHtml,
           structuredFields,
           pageUrl: location.href,
+          jobContext: extractJobContext(lookedUpJob),
+          // Stage 1: deterministic Phase A only — do not wait on Qwen.
+          includeAi: false,
         };
         if (atsAdapter) {
           analyzePayload.atsName = atsAdapter.name;
@@ -5343,6 +5542,8 @@
       fillLeverLocation,
       isGreenhouseLocationControl,
       isLeverLocationControl,
+      isPhoneCountryListbox,
+      extractJobContext,
       findLocationHiddenCompanion,
       findOwnedLocationDropdown,
       buildSanitizedDiagnostics,

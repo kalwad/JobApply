@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Greenhouse — Location portal + phone country</title></head>
+<body>
+  <!-- Live-shaped: #candidate-location, inner search input, phone iti listbox in same form,
+       location results rendered in a body-level portal. -->
+  <form id="application_form">
+    <label for="first_name">First Name</label>
+    <input id="first_name" name="first_name" type="text" />
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" />
+
+    <div class="phone-widget iti">
+      <button type="button" id="country" class="iti__selected-country" aria-haspopup="listbox"
+        aria-controls="iti-0__country-listbox" aria-label="Selected country">+1</button>
+      <input id="iti-0__search" class="iti__search-input" type="text" placeholder="Search country" />
+      <ul id="iti-0__country-listbox" class="iti__country-list" role="listbox" hidden>
+        <li role="option" data-country-code="us" class="iti__country">United States (+1)</li>
+        <li role="option" data-country-code="al" class="iti__country">Albania (+355)</li>
+        <li role="option" data-country-code="gb" class="iti__country">United Kingdom (+44)</li>
+      </ul>
+      <input id="phone" name="phone" type="tel" />
+    </div>
+
+    <label for="candidate-location">Location (City)*</label>
+    <div class="select__control autocomplete" data-testid="location-container">
+      <!-- Outer visible control -->
+      <input
+        id="candidate-location"
+        name="candidate-location"
+        type="text"
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded="false"
+        aria-controls="gh-location-portal-list"
+        autocomplete="off"
+      />
+      <!-- Narrow internal input some Greenhouse builds expose -->
+      <input
+        id="candidate-location-search"
+        class="select__input"
+        type="text"
+        aria-hidden="true"
+        tabindex="-1"
+        style="width:1px;opacity:0"
+      />
+      <input type="hidden" id="candidate-location-id" name="candidate_location_id" value="" />
+    </div>
+
+    <label for="linkedin">LinkedIn Profile</label>
+    <input id="linkedin" name="job_application[answers_attributes][0][text_value]" type="text" />
+
+    <button type="submit" id="gh-submit">Submit Application</button>
+  </form>
+
+  <!-- Portal: outside the form, connected via aria-controls -->
+  <ul id="gh-location-portal-list" role="listbox" hidden></ul>
+
+  <script>
+    const input = document.getElementById('candidate-location');
+    const list = document.getElementById('gh-location-portal-list');
+    const hidden = document.getElementById('candidate-location-id');
+    const phoneBtn = document.getElementById('country');
+    const phoneList = document.getElementById('iti-0__country-listbox');
+    const SUGGESTIONS = [
+      { id: 'place-1', text: 'Sterling Heights, Michigan, United States' },
+      { id: 'place-2', text: 'Toronto, Ontario, Canada' },
+      { id: 'place-3', text: 'Ann Arbor, Michigan, United States' },
+    ];
+
+    phoneBtn.addEventListener('click', () => {
+      phoneList.hidden = !phoneList.hidden;
+    });
+
+    // Greenhouse: typed text without selecting a suggestion clears after blur.
+    input.addEventListener('input', () => {
+      const q = (input.value || '').toLowerCase();
+      list.innerHTML = '';
+      hidden.value = '';
+      const matches = SUGGESTIONS.filter(s =>
+        s.text.toLowerCase().includes(q.split(',')[0].trim())
+      );
+      if (!q || !matches.length) {
+        list.hidden = true;
+        input.setAttribute('aria-expanded', 'false');
+        return;
+      }
+      matches.forEach(s => {
+        const li = document.createElement('li');
+        li.setAttribute('role', 'option');
+        li.textContent = s.text;
+        li.dataset.id = s.id;
+        li.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          input.value = s.text;
+          hidden.value = s.id;
+          list.hidden = true;
+          input.setAttribute('aria-expanded', 'false');
+        });
+        list.appendChild(li);
+      });
+      list.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+    });
+    input.addEventListener('blur', () => {
+      setTimeout(() => {
+        if (!hidden.value) input.value = '';
+        list.hidden = true;
+        input.setAttribute('aria-expanded', 'false');
+      }, 150);
+    });
+  </script>
+</body>
+</html>

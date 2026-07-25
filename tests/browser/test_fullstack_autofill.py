@@ -67,7 +67,14 @@ def test_fullstack_greenhouse_real_analyze_endpoint(
     assert "mappings" in analyze
     selectors = {m.get("selector") for m in analyze["mappings"]}
     assert "#first_name" in selectors
-    assert any("sponsorship" in (m.get("selector") or "") for m in analyze["mappings"])
+    # Sponsorship is present but manual unless application country is known.
+    sponsor = next(m for m in analyze["mappings"] if "sponsorship" in (m.get("selector") or ""))
+    assert sponsor.get("action") == "skip"
+    assert sponsor.get("reason") in (
+        "application_country_unknown",
+        "sponsorship_UNKNOWN_unknown",
+        "sponsorship_US_unknown",
+    ) or sponsor.get("inventoryCategory") == "legal_or_consent_manual"
     assert any("contact_by_email" in (m.get("selector") or "") or "contact me by email" in (m.get("field_label") or "").lower()
                 for m in analyze["mappings"])
 
@@ -120,7 +127,8 @@ def test_fullstack_greenhouse_real_analyze_endpoint(
         assert state["first"] == "Ada"
         assert state["last"] == "Lovelace"
         assert state["email"] == "existing@example.com"
-        assert state["sponsorship"] == "no"
+        # Generic sponsorship without known job country must stay manual.
+        assert state["sponsorship"] is None
         assert state["contact_pref"] == "email"
         assert state["contact_email"] is True
         assert state["newsletter"] is True

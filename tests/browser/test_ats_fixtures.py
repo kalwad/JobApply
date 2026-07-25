@@ -155,6 +155,8 @@ def test_ats_fixture_approve_controls_report_and_submit(ats_page, extension_cont
         assert state["phone"] == before["phone"]
 
     # --- radios ---
+    # Browser mock still proposes US work-auth; live analyze now leaves generic
+    # "this country" auth manual unless JobContext country is known.
     if ats in ("workday", "lever"):
         assert state["work_auth"] == "yes", "empty trusted work_auth must fill after approve"
     if ats == "greenhouse":
@@ -178,10 +180,11 @@ def test_ats_fixture_approve_controls_report_and_submit(ats_page, extension_cont
     assert_no_submit(ats_page)
 
     # --- exact fill report (mocked analyze path) ---
+    # legal/consent skips count as needsReview + legal_or_consent_manual (not skippedSensitive).
     expected = {
-        "workday": {"filled": 5, "alreadyCompleted": 2, "skippedSensitive": 4, "needsReview": 1, "failed": 0},
-        "greenhouse": {"filled": 5, "alreadyCompleted": 3, "skippedSensitive": 3, "needsReview": 1, "failed": 0},
-        "lever": {"filled": 4, "alreadyCompleted": 2, "skippedSensitive": 3, "needsReview": 1, "failed": 0},
+        "workday": {"filled": 5, "alreadyCompleted": 2, "skippedSensitive": 3, "needsReview": 1, "failed": 0},
+        "greenhouse": {"filled": 5, "alreadyCompleted": 3, "skippedSensitive": 2, "needsReview": 1, "failed": 0},
+        "lever": {"filled": 4, "alreadyCompleted": 2, "skippedSensitive": 2, "needsReview": 1, "failed": 0},
     }[ats]
     for key, value in expected.items():
         assert report[key] == value, f"{ats} report[{key}]={report.get(key)} expected {value}; full={report}"

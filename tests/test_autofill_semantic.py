@@ -7,10 +7,13 @@ from app.routers.autofill import (
     _current_company,
     _deterministic_fill,
     _expand_language_mappings,
+    _infer_auth_country,
     _match_language_option,
     _normalize_url,
     _semantic_mapping_for_field,
+    _sponsorship_value,
     _strip_blank_mappings,
+    _work_auth_value,
 )
 
 
@@ -213,6 +216,123 @@ def test_semantic_beats_fuzzy_for_org():
     assert not remaining
     assert mappings[0]["value"] == "PulseMo"
     assert mappings[0]["inventoryCategory"] == "filled_from_profile"
+
+
+def test_infer_auth_country_unknown_without_signal():
+    assert _infer_auth_country(
+        "Are you legally authorized to work in the country for which you are applying?",
+        "https://jobs.lever.co/palantir/abc-123",
+    ) == "UNKNOWN"
+
+
+def test_infer_auth_country_from_job_context_gb():
+    assert _infer_auth_country(
+        "Are you legally authorized to work in the country for which you are applying?",
+        "https://jobs.lever.co/palantir/abc-123",
+        {"job_location": "London, United Kingdom", "application_country": "GB"},
+    ) == "GB"
+
+
+def test_generic_work_auth_manual_when_country_unknown():
+    profile = {"authorized_to_work_us": "Yes", "requires_sponsorship": "No"}
+    fields = [{
+        "selector": 'input[name="cards[work_auth]"]',
+        "name": "cards[work_auth]",
+        "label": "Are you legally authorized to work in the country for which you are applying?",
+        "type": "radio",
+        "tag": "input",
+        "semanticType": "work_authorization",
+        "currentValue": "",
+        "options": [{"value": "yes", "label": "Yes"}, {"value": "no", "label": "No"}],
+    }]
+    mappings, _ = _deterministic_fill(
+        fields, profile, page_url="https://jobs.lever.co/palantir/abc-123",
+    )
+    assert mappings[0]["action"] == "skip"
+    assert mappings[0]["reason"] == "application_country_unknown"
+    assert mappings[0]["inventoryCategory"] == "legal_or_consent_manual"
+
+
+def test_gb_work_auth_manual_when_only_us_profile_values():
+    profile = {"authorized_to_work_us": "Yes", "requires_sponsorship": "No"}
+    fields = [{
+        "selector": 'input[name="cards[work_auth]"]',
+        "name": "cards[work_auth]",
+        "label": "Are you legally authorized to work in the country for which you are applying?",
+        "type": "radio",
+        "tag": "input",
+        "semanticType": "work_authorization",
+        "currentValue": "",
+    }]
+    mappings, _ = _deterministic_fill(
+        fields,
+        profile,
+        page_url="https://jobs.lever.co/palantir/abc",
+        job_context={"job_location": "London, United Kingdom"},
+    )
+    assert mappings[0]["action"] == "skip"
+    assert mappings[0]["applicationCountry"] == "GB"
+    assert "unknown" in (mappings[0].get("reason") or "")
+
+
+def test_gb_work_auth_uses_explicit_gb_profile_values():
+    profile = {
+        "authorized_to_work_us": "Yes",
+        "requires_sponsorship": "No",
+        "work_authorization": {"GB": "Yes"},
+        "sponsorship_required": {"GB": "No"},
+    }
+    auth = {
+        "selector": "#auth",
+        "name": "work_auth",
+        "label": "Are you legally authorized to work in the country for which you are applying?",
+        "type": "radio",
+        "tag": "input",
+        "semanticType": "work_authorization",
+        "currentValue": "",
+    }
+    sponsor = {
+        "selector": "#sponsor",
+        "name": "sponsorship",
+        "label": "Will you now or in the future require sponsorship for employment visa status?",
+        "type": "radio",
+        "tag": "input",
+        "semanticType": "sponsorship",
+        "currentValue": "",
+    }
+    mappings, _ = _deterministic_fill(
+        [auth, sponsor],
+        profile,
+        job_context={"application_country": "GB", "job_location": "London, UK"},
+    )
+    fillable = [m for m in mappings if m.get("action") != "skip"]
+    assert len(fillable) == 2
+    auth_m = next(m for m in fillable if m.get("semanticType") == "work_authorization")
+    sponsor_m = next(m for m in fillable if m.get("semanticType") == "sponsorship")
+    assert str(auth_m["value"]).lower() in ("yes", "true", "1")
+    assert str(sponsor_m["value"]).lower() in ("no", "false", "0")
+    assert auth_m["applicationCountry"] == "GB"
+    assert "work_auth" in auth_m["selector"]
+
+
+def test_us_work_auth_uses_us_profile_when_country_us():
+    profile = {"authorized_to_work_us": "Yes", "requires_sponsorship": "No"}
+    assert _work_auth_value(profile, "US") == "Yes"
+    assert _sponsorship_value(profile, "US") == "No"
+    assert _work_auth_value(profile, "UNKNOWN") is None
+    fields = [{
+        "selector": "#auth",
+        "name": "work_auth",
+        "label": "Are you authorized to work in the United States?",
+        "type": "radio",
+        "tag": "input",
+        "semanticType": "work_authorization",
+        "currentValue": "",
+    }]
+    mappings, _ = _deterministic_fill(fields, profile)
+    assert mappings[0]["action"] != "skip"
+    assert str(mappings[0]["value"]).lower() in ("yes", "true", "1")
+    assert mappings[0]["applicationCountry"] == "US"
 
 
 def test_canada_work_auth_not_filled_from_us():

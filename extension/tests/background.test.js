@@ -203,12 +203,16 @@ describe('onMessage router', () => {
       atsName: 'Lever',
       atsFieldMap: { 'input[name="urls[LinkedIn]"]': 'linkedin_url' },
       pageUrl: 'https://jobs.lever.co/acme/abc',
+      jobContext: { job_location: 'London, United Kingdom', application_country: 'GB' },
+      includeAi: false,
     });
     const body = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
     expect(body.ats_name).toBe('Lever');
     expect(body.ats_field_map['input[name="urls[LinkedIn]"]']).toBe('linkedin_url');
     expect(body.page_url).toBe('https://jobs.lever.co/acme/abc');
     expect(body.fields[0].semanticType).toBe('linkedin_url');
+    expect(body.job_context.application_country).toBe('GB');
+    expect(body.include_ai).toBe(false);
   });
 
   it('routes analyzeForm with adapter fields when no structured fields', async () => {

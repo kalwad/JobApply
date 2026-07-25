@@ -420,19 +420,62 @@ def _expand_language_mappings(field: dict, profile: dict) -> list[dict]:
     }]
 
 
-def _infer_auth_country(searchable: str, page_url: str = "") -> str:
-    blob = f"{searchable} {page_url}".lower()
-    if _re.search(r"\bcanada\b|\bcanadian\b|\bontario\b|\bcad\b", blob):
+def _infer_auth_country(
+    searchable: str = "",
+    page_url: str = "",
+    job_context: dict | None = None,
+) -> str:
+    """Return US | CA | GB | UNKNOWN.
+
+    Never default to US when no country is found. Prefer explicit job/application
+    location context over a generic question label or the candidate's home address.
+    """
+    ctx = job_context if isinstance(job_context, dict) else {}
+    # Explicit ISO-style codes from JobContext win immediately.
+    for key in ("application_country", "job_country", "country"):
+        code = str(ctx.get(key) or "").strip().upper()
+        if code in ("US", "CA", "GB", "UK"):
+            return "GB" if code == "UK" else code
+
+    parts: list[str] = []
+    for key in (
+        "job_location",
+        "location",
+        "heading",
+        "posting_location",
+    ):
+        val = ctx.get(key)
+        if val:
+            parts.append(str(val))
+    # Field label may name a country ("legal right to work in Canada").
+    if searchable:
+        parts.append(str(searchable))
+    if page_url:
+        parts.append(str(page_url))
+    blob = " ".join(parts).lower()
+
+    if _re.search(r"\bcanada\b|\bcanadian\b|\bontario\b", blob):
         return "CA"
-    if _re.search(r"\bunited\s+kingdom\b|\buk\b|\blondon\b|\bgb\b", blob):
+    # Prefer full phrases; allow London / United Kingdom / path /uk/ on job boards.
+    if _re.search(
+        r"\bunited\s+kingdom\b|\bu\.?\s*k\.?\b|\blondon\b|\bengland\b|"
+        r"\bgreat\s+britain\b|\bgb\b|jobs?/uk\b|/uk/jobs?\b",
+        blob,
+    ):
         return "GB"
-    if _re.search(r"\bunited\s+states\b|\busa\b|\bu\.s\b|\bamerican\b", blob):
+    if _re.search(
+        r"\bunited\s+states\b|\busa\b|\bu\.s\.a\.?\b|\bu\.s\.\b|"
+        r"\bamerican\b|jobs?/us\b|/us/jobs?\b",
+        blob,
+    ):
         return "US"
-    return "US"  # legacy default only when unspecified
+    return "UNKNOWN"
 
 
 def _work_auth_value(profile: dict, country: str) -> str | None:
-    """Country-indexed auth. Never reuse US answer for CA/GB questions."""
+    """Country-indexed auth. Never reuse US answers for CA/GB/UNKNOWN."""
+    if not country or country == "UNKNOWN":
+        return None
     indexed = profile.get("work_authorization") or {}
     if isinstance(indexed, dict) and country in indexed:
         val = indexed.get(country)
@@ -446,6 +489,9 @@ def _work_auth_value(profile: dict, country: str) -> str | None:
 
 
 def _sponsorship_value(profile: dict, country: str) -> str | None:
+    """Country-indexed sponsorship. Never reuse US answers for CA/GB/UNKNOWN."""
+    if not country or country == "UNKNOWN":
+        return None
     indexed = profile.get("sponsorship_required") or {}
     if isinstance(indexed, dict) and country in indexed:
         val = indexed.get(country)
@@ -456,6 +502,26 @@ def _sponsorship_value(profile: dict, country: str) -> str | None:
         us = profile.get("requires_sponsorship")
         return str(us) if us not in (None, "") else None
     return None
+
+
+def _auth_skip_mapping(field: dict, st: str, country: str) -> dict:
+    reason = (
+        "application_country_unknown"
+        if country == "UNKNOWN"
+        else f"{st}_{country}_unknown"
+    )
+    return {
+        "selector": field["selector"],
+        "value": "",
+        "action": "skip",
+        "confidence": 0.0,
+        "field_label": field.get("label") or "",
+        "reason": reason,
+        "inventoryCategory": "legal_or_consent_manual",
+        "semanticType": st,
+        "applicationCountry": country,
+        "supportingFactIds": [],
+    }
 
 
 def _is_blank_value(value) -> bool:
@@ -469,6 +535,7 @@ def _semantic_mapping_for_field(
     field: dict,
     profile: dict,
     page_url: str = "",
+    job_context: dict | None = None,
 ) -> dict | None:
     """Exact semanticType → profile fill. Returns a mapping dict or None to fall through."""
     st = (field.get("semanticType") or field.get("semantic_type") or "").strip().lower()
@@ -563,20 +630,10 @@ def _semantic_mapping_for_field(
 
     if st == "work_authorization":
         searchable = f"{label} {field.get('name') or ''} {field.get('id') or ''}"
-        country = _infer_auth_country(searchable, page_url)
+        country = _infer_auth_country(searchable, page_url, job_context)
         val = _work_auth_value(profile, country)
         if _is_blank_value(val):
-            return {
-                "selector": field["selector"],
-                "value": "",
-                "action": "skip",
-                "confidence": 0.0,
-                "field_label": label,
-                "reason": f"work_authorization_{country}_unknown",
-                "inventoryCategory": "legal_or_consent_manual",
-                "semanticType": st,
-                "supportingFactIds": [],
-            }
+            return _auth_skip_mapping(field, st, country)
         action = "click_radio" if (field.get("type") or "").lower() == "radio" else None
         return {
             "selector": field["selector"],
@@ -586,25 +643,16 @@ def _semantic_mapping_for_field(
             "field_label": label,
             "inventoryCategory": "filled_from_profile",
             "semanticType": st,
+            "applicationCountry": country,
             "supportingFactIds": [],
         }
 
     if st == "sponsorship":
         searchable = f"{label} {field.get('name') or ''} {field.get('id') or ''}"
-        country = _infer_auth_country(searchable, page_url)
+        country = _infer_auth_country(searchable, page_url, job_context)
         val = _sponsorship_value(profile, country)
         if _is_blank_value(val):
-            return {
-                "selector": field["selector"],
-                "value": "",
-                "action": "skip",
-                "confidence": 0.0,
-                "field_label": label,
-                "reason": f"sponsorship_{country}_unknown",
-                "inventoryCategory": "legal_or_consent_manual",
-                "semanticType": st,
-                "supportingFactIds": [],
-            }
+            return _auth_skip_mapping(field, st, country)
         return {
             "selector": field["selector"],
             "value": val,
@@ -613,6 +661,7 @@ def _semantic_mapping_for_field(
             "field_label": label,
             "inventoryCategory": "filled_from_profile",
             "semanticType": st,
+            "applicationCountry": country,
             "supportingFactIds": [],
         }
 
@@ -690,10 +739,12 @@ def _deterministic_fill(
     fields: list[dict],
     profile: dict,
     page_url: str = "",
+    job_context: dict | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Match common form fields to profile data without AI. Returns (mappings, remaining_fields)."""
     if not fields or not profile:
         return [], fields or []
+    job_context = job_context if isinstance(job_context, dict) else {}
 
     first_name, middle_name, last_name = _name_components(profile)
     full_name = (profile.get("full_name") or "").strip() or " ".join(
@@ -785,7 +836,7 @@ def _deterministic_fill(
             continue
 
         # Exact ATS semantic type wins over fuzzy label matching.
-        semantic = _semantic_mapping_for_field(field, profile, page_url)
+        semantic = _semantic_mapping_for_field(field, profile, page_url, job_context)
         if semantic is not None:
             # Resolve deferred action for radios/selects
             if semantic.get("action") is None and semantic.get("value"):
@@ -841,36 +892,18 @@ def _deterministic_fill(
             ):
                 # Country-indexed work auth / sponsorship placeholders
                 if value == "__WORK_AUTH__":
-                    country = _infer_auth_country(searchable, page_url)
+                    country = _infer_auth_country(searchable, page_url, job_context)
                     value = _work_auth_value(profile, country)
                     if _is_blank_value(value):
-                        mappings.append({
-                            "selector": field["selector"],
-                            "value": "",
-                            "action": "skip",
-                            "confidence": 0.0,
-                            "field_label": field.get("label", ""),
-                            "reason": f"work_authorization_{country}_unknown",
-                            "inventoryCategory": "legal_or_consent_manual",
-                            "supportingFactIds": [],
-                        })
+                        mappings.append(_auth_skip_mapping(field, "work_authorization", country))
                         matched_selectors.add(field["selector"])
                         matched = True
                         break
                 elif value == "__SPONSORSHIP__":
-                    country = _infer_auth_country(searchable, page_url)
+                    country = _infer_auth_country(searchable, page_url, job_context)
                     value = _sponsorship_value(profile, country)
                     if _is_blank_value(value):
-                        mappings.append({
-                            "selector": field["selector"],
-                            "value": "",
-                            "action": "skip",
-                            "confidence": 0.0,
-                            "field_label": field.get("label", ""),
-                            "reason": f"sponsorship_{country}_unknown",
-                            "inventoryCategory": "legal_or_consent_manual",
-                            "supportingFactIds": [],
-                        })
+                        mappings.append(_auth_skip_mapping(field, "sponsorship", country))
                         matched_selectors.add(field["selector"])
                         matched = True
                         break
@@ -1205,6 +1238,42 @@ def _build_field_inventory(fields: list[dict], mappings: list[dict]) -> dict:
     return {"counts": counts, "fields": items, "detected": len(items)}
 
 
+def _classify_remaining_as_manual(remaining_fields: list[dict], fill_eeo: bool) -> list[dict]:
+    """Stage 1: unresolved fields become inventory skips — never block on Qwen."""
+    out = []
+    for f in remaining_fields or []:
+        if _is_phone_country_field(f):
+            continue
+        label = f.get("label") or ""
+        name = f.get("name") or ""
+        fid = f.get("id") or ""
+        blob = f"{label} {name} {fid}"
+        st = (f.get("semanticType") or f.get("semantic_type") or "").strip().lower()
+        if not fill_eeo and _EEO_PATTERNS.search(blob):
+            cat = "eeo_skipped"
+        elif st in ("open_ended_question", "additional_info") or (
+            (f.get("tag") or "").lower() == "textarea"
+            or ((f.get("type") or "").lower() in ("", "text", "textarea") and len(label) > 40)
+        ):
+            cat = "ai_draft_available"
+        elif st in ("legal_acknowledgment", "consent", "work_authorization", "sponsorship"):
+            cat = "legal_or_consent_manual"
+        else:
+            cat = "ai_draft_available" if st in ("", "unknown") else "legal_or_consent_manual"
+        out.append({
+            "selector": f.get("selector") or "",
+            "value": "",
+            "action": "skip",
+            "confidence": 0.0,
+            "field_label": label,
+            "reason": cat,
+            "inventoryCategory": cat,
+            "semanticType": st or None,
+            "supportingFactIds": [],
+        })
+    return out
+
+
 @router.post("/autofill/analyze")
 async def analyze_form(request: Request):
     body = await request.json()
@@ -1212,6 +1281,11 @@ async def analyze_form(request: Request):
     form_fields = body.get("fields", [])
     page_url = body.get("page_url", "")
     ats_name = body.get("ats_name") or body.get("atsName") or ""
+    job_context = body.get("job_context") or body.get("jobContext") or {}
+    if not isinstance(job_context, dict):
+        job_context = {}
+    # Opt-in only — default Fill Application never blocks on the LLM.
+    include_ai = bool(body.get("include_ai") or body.get("includeAi"))
     # ats_field_map is applied client-side into semanticType; accept for diagnostics.
     _ = body.get("ats_field_map") or body.get("atsFieldMap") or {}
 
@@ -1223,7 +1297,7 @@ async def analyze_form(request: Request):
     )
 
     deterministic_mappings, remaining_fields = _deterministic_fill(
-        form_fields, profile, page_url=page_url,
+        form_fields, profile, page_url=page_url, job_context=job_context,
     )
     deterministic_mappings = _filter_eeo_mappings(deterministic_mappings, fill_eeo)
     deterministic_mappings = _strip_blank_mappings(deterministic_mappings)
@@ -1256,7 +1330,23 @@ async def analyze_form(request: Request):
             ((profile or {}).get("timezone") or "")
             or ((profile or {}).get("time_zone") or "")
         ).strip()),
+        "applicationCountry": _infer_auth_country("", page_url, job_context),
     }
+
+    # Phase A (default): return deterministic matches immediately. Unresolved
+    # questions are classified for inventory / future inline Generate — never wait on Qwen.
+    if not include_ai:
+        classified = _classify_remaining_as_manual(remaining_fields, fill_eeo)
+        combined = deterministic_mappings + classified
+        return {
+            "mappings": combined,
+            "fill_eeo": fill_eeo,
+            "ats_name": ats_name,
+            "phase": "deterministic",
+            "inventory": _build_field_inventory(form_fields, combined),
+            "profile_presence": profile_presence,
+            "remaining_unresolved": len(remaining_fields),
+        }
 
     if not remaining_fields:
         inventory = _build_field_inventory(form_fields, deterministic_mappings)
@@ -1264,6 +1354,7 @@ async def analyze_form(request: Request):
             "mappings": deterministic_mappings,
             "fill_eeo": fill_eeo,
             "ats_name": ats_name,
+            "phase": "deterministic",
             "inventory": inventory,
             "profile_presence": profile_presence,
         }
@@ -1282,18 +1373,21 @@ async def analyze_form(request: Request):
                 "mappings": deterministic_mappings,
                 "fill_eeo": fill_eeo,
                 "ats_name": ats_name,
+                "phase": "deterministic",
                 "inventory": inventory,
                 "profile_presence": profile_presence,
             }
 
     client = getattr(request.app.state, "ai_client", None)
     if not client:
-        inventory = _build_field_inventory(form_fields, deterministic_mappings)
+        classified = _classify_remaining_as_manual(remaining_fields, fill_eeo)
+        combined = deterministic_mappings + classified
         return {
-            "mappings": deterministic_mappings,
+            "mappings": combined,
             "fill_eeo": fill_eeo,
             "ats_name": ats_name,
-            "inventory": inventory,
+            "phase": "deterministic",
+            "inventory": _build_field_inventory(form_fields, combined),
             "profile_presence": profile_presence,
             "error": "No AI provider for remaining fields",
         }
@@ -1316,11 +1410,8 @@ async def analyze_form(request: Request):
         profile=profile,
     )
 
-    ai_timeout = (
-        AUTOFILL_ANALYZE_TIMEOUT_PARTIAL
-        if deterministic_mappings
-        else AUTOFILL_ANALYZE_TIMEOUT
-    )
+    # Opt-in AI path only — never use the short partial timeout to block Phase A.
+    ai_timeout = AUTOFILL_ANALYZE_TIMEOUT
 
     try:
         response = await asyncio.wait_for(
@@ -1353,26 +1444,33 @@ async def analyze_form(request: Request):
             "mappings": combined,
             "fill_eeo": fill_eeo,
             "ats_name": ats_name,
+            "phase": "with_ai",
             "inventory": _build_field_inventory(form_fields, combined),
             "profile_presence": profile_presence,
         }
     except asyncio.TimeoutError:
         # Keep deterministic profile matches — do not discard them on AI timeout.
         logger.warning("Autofill analyze timed out after %ds", ai_timeout)
+        classified = _classify_remaining_as_manual(remaining_fields, fill_eeo)
+        combined = deterministic_mappings + classified
         return {
-            "mappings": deterministic_mappings,
+            "mappings": combined,
             "fill_eeo": fill_eeo,
             "ats_name": ats_name,
-            "inventory": _build_field_inventory(form_fields, deterministic_mappings),
+            "phase": "deterministic",
+            "inventory": _build_field_inventory(form_fields, combined),
             "profile_presence": profile_presence,
             "error": f"AI analysis timed out after {ai_timeout}s",
         }
     except json.JSONDecodeError:
+        classified = _classify_remaining_as_manual(remaining_fields, fill_eeo)
+        combined = deterministic_mappings + classified
         return {
-            "mappings": deterministic_mappings,
+            "mappings": combined,
             "fill_eeo": fill_eeo,
             "ats_name": ats_name,
-            "inventory": _build_field_inventory(form_fields, deterministic_mappings),
+            "phase": "deterministic",
+            "inventory": _build_field_inventory(form_fields, combined),
             "profile_presence": profile_presence,
             "error": "Failed to parse AI response",
         }
