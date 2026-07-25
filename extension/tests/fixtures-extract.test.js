@@ -98,8 +98,9 @@ describe('fixture adapter detect + extract', () => {
     const fields = ctx.core.extractWithAdapter(adapter, document, (root) => ctx.api.extractFormData(root));
     const byName = Object.fromEntries(fields.map(f => [f.name, f]));
     expect(byName['urls[LinkedIn]']?.semanticType).toBe('linkedin_url');
-    expect(byName['urls[GitHub]']?.semanticType).toBe('github_url');
+    expect(byName['urls[Github]']?.semanticType).toBe('github_url');
     expect(byName['urls[Portfolio]']?.semanticType).toBe('portfolio_url');
+    expect(byName['urls[Other Website]']?.semanticType).toBe('website');
     expect(byName.org?.semanticType).toBe('current_company');
     expect(byName.location?.semanticType).toBe('current_location');
   });

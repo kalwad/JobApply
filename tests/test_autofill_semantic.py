@@ -69,6 +69,53 @@ def test_semantic_linkedin_and_portfolio():
     assert portfolio["value"] == "https://tanishkalwad.com"
 
 
+def test_lever_github_lowercase_h_and_other_website():
+    """Live Lever uses urls[Github] and urls[Other Website], not urls[GitHub]/urls[Portfolio]."""
+    profile = {
+        "full_name": "Tanish Kalwad",
+        "email": "t@example.com",
+        "linkedin_url": "https://www.linkedin.com/in/tanish",
+        "github_url": "https://github.com/kalwad",
+        "portfolio_url": "tanishkalwad.com",
+        "website_url": "tanishkalwad.com",
+    }
+    fields = [
+        {
+            "selector": 'input[name="urls[LinkedIn]"]',
+            "name": "urls[LinkedIn]",
+            "label": "LinkedIn URL",
+            "type": "text",
+            "tag": "input",
+            "semanticType": "linkedin_url",
+            "currentValue": "",
+        },
+        {
+            "selector": 'input[name="urls[Github]"]',
+            "name": "urls[Github]",
+            "label": "Github URL",
+            "type": "text",
+            "tag": "input",
+            "semanticType": "github_url",
+            "currentValue": "",
+        },
+        {
+            "selector": 'input[name="urls[Other Website]"]',
+            "name": "urls[Other Website]",
+            "label": "Other Website URL",
+            "type": "text",
+            "tag": "input",
+            "semanticType": "website",
+            "currentValue": "",
+        },
+    ]
+    mappings, remaining = _deterministic_fill(fields, profile)
+    assert not remaining
+    by = {m["selector"]: m for m in mappings}
+    assert "linkedin.com" in by['input[name="urls[LinkedIn]"]']["value"]
+    assert "github.com" in by['input[name="urls[Github]"]']["value"]
+    assert by['input[name="urls[Other Website]"]']["value"].startswith("https://")
+
+
 def test_semantic_beats_fuzzy_for_org():
     profile = {
         "full_name": "Tanish Kalwad",

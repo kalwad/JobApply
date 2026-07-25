@@ -280,19 +280,24 @@
     },
 
     getFieldMap() {
+      // Live Lever uses urls[Github] (lowercase h), urls[Portfolio], urls[Other Website], etc.
       return {
         'input[name="name"]': 'full_name',
         'input[name="email"]': 'email',
         'input[name="phone"]': 'phone',
         'input[name="org"]': 'current_company',
         'input[name="location"]': 'current_location',
+        '#location-input': 'current_location',
         'input[name="urls[LinkedIn]"]': 'linkedin_url',
         'input[name="urls[GitHub]"]': 'github_url',
+        'input[name="urls[Github]"]': 'github_url',
         'input[name="urls[Portfolio]"]': 'portfolio_url',
         'input[name="urls[Twitter]"]': 'twitter_url',
         'input[name="urls[Other]"]': 'website',
+        'input[name="urls[Other Website]"]': 'website',
         'textarea[name="comments"]': 'open_ended_question',
         'input[name="resume"]': 'resume_file',
+        '#resume-upload-input': 'resume_file',
       };
     },
 
@@ -311,6 +316,17 @@
               ? 'legal_acknowledgment'
               : 'open_ended_question';
           }
+        }
+        // Label-based URL tagging (covers custom Lever link titles)
+        if (!field.semanticType && /\blinkedin\b/.test(text)) field.semanticType = 'linkedin_url';
+        if (!field.semanticType && /\bgithub\b|\bgit\s*hub\b/.test(text)) field.semanticType = 'github_url';
+        if (!field.semanticType && /\bportfolio\b/.test(text)) field.semanticType = 'portfolio_url';
+        if (!field.semanticType && /\b(other\s+)?website\b|\bpersonal\s+site\b/.test(text)
+            && !/\bvideo\b/.test(text)) {
+          field.semanticType = 'website';
+        }
+        if (!field.semanticType && /\bcurrent\s+company\b|\borg\b/.test(text)) {
+          field.semanticType = 'current_company';
         }
         if (!field.semanticType && /\bcurrent\s+location\b|\blocation\b/.test(text)
             && !/\bphone\b/.test(text)) {

@@ -314,13 +314,19 @@
     }
   }
 
+  function cssAttrValue(value) {
+    // Quote attribute values safely. Do NOT use CSS.escape inside quotes —
+    // that is for identifiers and can break names like urls[LinkedIn].
+    return String(value ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  }
+
   function buildSelector(el) {
     try {
       if (el.id) return `#${CSS.escape(el.id)}`;
       if (el.name) {
         const tag = el.tagName.toLowerCase();
-        const type = el.type ? `[type="${el.type}"]` : '';
-        const sel = `${tag}[name="${CSS.escape(el.name)}"]${type}`;
+        const type = el.type ? `[type="${cssAttrValue(el.type)}"]` : '';
+        const sel = `${tag}[name="${cssAttrValue(el.name)}"]${type}`;
         if (document.querySelectorAll(sel).length === 1) return sel;
       }
       // Fallback: build a path
@@ -1538,8 +1544,12 @@
       }
     }
 
-    // Keyboard fallback is unsafe for phone-country widgets.
-    if (!hintsLookLikePhoneCountry(fieldHints)) {
+    // Keyboard fallback is unsafe for phone-country and location/autocomplete —
+    // it often leaves a transient value that React clears a moment later.
+    const locationLike = /\blocation\b|\bcity\b/.test(
+      `${fieldHints?.label || ''} ${fieldHints?.name || ''} ${fieldHints?.id || ''}`
+    );
+    if (!hintsLookLikePhoneCountry(fieldHints) && !locationLike) {
       try {
         el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', bubbles: true }));
         await sleep(100);
@@ -1811,14 +1821,35 @@
     return { ok: false, reason: 'value did not stick', actual };
   }
 
-  function withVerification(result, el, expected, action, opts = {}) {
+  async function withVerification(result, el, expected, action, opts = {}) {
     if (!result?.success || result.skipped) return result;
     const verifyOpts = {
       ...opts,
       selectedValue: opts.selectedValue || result.selectedValue || result.selectedText,
     };
-    // Allow framework state to settle (Greenhouse React location clears on blur).
-    const verified = verifyFilled(el, expected, action, verifyOpts);
+    // Greenhouse/Lever location: React often accepts a typed value then clears it.
+    // Re-check after settle delay when requireCommit is set.
+    if (opts.requireCommit) {
+      await sleep(550);
+    }
+    let verified = verifyFilled(el, expected, action, verifyOpts);
+    if (verified.ok && opts.requireCommit) {
+      // Companion hidden IDs (Greenhouse location_id / Lever selectedLocation)
+      const hidden = document.querySelector(
+        '#job_application_location_id, #selected-location, input[name="selectedLocation"], '
+        + 'input[name="job_application[location_id]"]'
+      );
+      if (hidden && !String(hidden.value || '').trim()) {
+        // Visible text alone is not enough if the ATS stores a separate place ID.
+        const visibleOk = verifyFilled(el, expected, action, verifyOpts);
+        if (!visibleOk.ok || !String(el.value || '').trim()) {
+          verified = { ok: false, reason: 'location autocomplete not committed', actual: el.value || '' };
+        }
+      }
+      // Re-read after another tick — catches delayed clears.
+      await sleep(200);
+      verified = verifyFilled(el, expected, action, verifyOpts);
+    }
     if (!verified.ok) {
       return {
         ...result,
@@ -2259,23 +2290,24 @@
   }
 
   function showUploadHelper(fileInput, type) {
-    const label = type === 'cover-letter' ? 'Cover letter' : 'Tailored resume';
+    const kind = type === 'cover-letter' ? 'cover letter' : 'resume';
     const messageType = type === 'cover-letter' ? 'downloadCoverLetter' : 'downloadResume';
 
-    // Highlight the file input
-    fileInput.classList.add(`${PREFIX}-upload-highlight`);
-
-    // Create tooltip container
+    // Create a compact sibling banner — do not mutate ATS parent positioning
+    // (Lever/Greenhouse layout breaks when parents become position:relative).
     const helper = document.createElement('div');
     helper.className = `${PREFIX}-upload-helper`;
+    helper.setAttribute('data-ja-upload-helper', type);
 
     const text = document.createElement('span');
     text.className = `${PREFIX}-upload-helper-text`;
-    text.textContent = `${label} ready -- download from JobApply, then upload here`;
+    text.textContent = currentJobId
+      ? `Optional: download a ${kind} from JobApply, then use Attach above.`
+      : `File attach is manual for now (Stage 1.1). Use the site's Attach control.`;
 
     const btn = document.createElement('button');
     btn.className = `${PREFIX}-upload-helper-btn`;
-    btn.textContent = `Download ${label}`;
+    btn.textContent = currentJobId ? `Download ${kind}` : 'Dismiss';
     btn.type = 'button';
 
     btn.addEventListener('click', async (e) => {
@@ -2283,7 +2315,7 @@
       e.stopPropagation();
 
       if (!currentJobId) {
-        text.textContent = 'No job ID available. Open this page from JobApply first.';
+        helper.remove();
         return;
       }
 
@@ -2298,32 +2330,29 @@
 
         if (response && response.ok) {
           helper.classList.add(`${PREFIX}-upload-helper-downloaded`);
-          text.textContent = 'Downloaded! Now upload it above.';
-          btn.textContent = 'Downloaded';
+          text.textContent = 'Downloaded. Now click Attach above and choose the file.';
+          btn.textContent = 'Done';
         } else {
-          text.textContent = `Download failed: ${response?.error || 'unknown error'}`;
+          text.textContent = `Download failed: ${response?.error || 'unknown error'}. Attach a file manually.`;
           btn.disabled = false;
-          btn.textContent = `Retry Download`;
+          btn.textContent = 'Retry download';
         }
       } catch (err) {
-        text.textContent = `Download failed: ${err.message}`;
+        text.textContent = `Download failed: ${err.message}. Attach a file manually.`;
         btn.disabled = false;
-        btn.textContent = `Retry Download`;
+        btn.textContent = 'Retry download';
       }
     });
 
     helper.appendChild(text);
-    helper.appendChild(btn);
+    if (currentJobId) helper.appendChild(btn);
+    else helper.appendChild(btn);
 
-    // Position the helper near the file input
-    const parent = fileInput.parentElement;
-    if (parent) {
-      // Ensure parent has relative positioning for absolute placement
-      const parentPos = getComputedStyle(parent).position;
-      if (parentPos === 'static') {
-        parent.style.position = 'relative';
-      }
-      parent.appendChild(helper);
+    // Prefer placing after the visible attach row, never inside transformed parents.
+    const row = fileInput.closest('li, .application-question, .field, [class*="upload"], [class*="resume"]')
+      || fileInput.parentElement;
+    if (row && row.parentElement) {
+      row.insertAdjacentElement('afterend', helper);
     } else {
       fileInput.insertAdjacentElement('afterend', helper);
     }
@@ -2334,75 +2363,58 @@
   async function fillForm(mappings, atsAdapter) {
     const results = [];
     let filledCount = 0;
-    const totalMappable = mappings.filter(m => m.action !== 'skip').length;
-    const failedSelectors = new Set();
-    const atsFormRoot = atsAdapter?.getFormRoot?.(document) || null;
+    // Only fill what the user approved in review — never silent AI second-pass
+    // (that caused 15s pauses and 10/6 progress after the review panel).
+    const approved = (mappings || []).filter(m => m && m.action !== 'skip');
+    const totalMappable = approved.length;
     const mappingBySelector = Object.fromEntries(
-      mappings.filter(m => m.selector).map(m => [m.selector, m])
+      (mappings || []).filter(m => m.selector).map(m => [m.selector, m])
     );
 
-    for (let iteration = 0; iteration < 2; iteration++) {
-      const currentMappings = iteration === 0 ? mappings : await getNewMappings();
-      if (!currentMappings || !currentMappings.length) break;
-
-      for (const mapping of currentMappings) {
-        if (failedSelectors.has(mapping.selector) && iteration > 0) continue;
-
-        if (mapping.action === 'skip') {
-          results.push({
-            selector: mapping.selector,
-            success: true,
-            skipped: true,
-            reason: mapping.reason || 'skipped',
-            action: 'skip',
-            mapping,
-          });
-          continue;
-        }
-
-        let result;
-        try {
-          result = await withTimeout(
-            fillField(mapping.selector, mapping.value, mapping.action, mapping.confidence, mapping.label || mapping.field_label),
-            FIELD_TIMEOUT_MS,
-            `filling ${mapping.selector}`
-          );
-        } catch (err) {
-          result = { selector: mapping.selector, success: false, reason: err.message };
-        }
-
-        result.mapping = mapping;
-        results.push(result);
-
-        // Close any dropdowns left open by the previous fill
-        closeOpenDropdowns();
-        await sleep(100);
-
-        if (result.success && !result.skipped) {
-          filledCount++;
-          updateOverlay('filling', `Filling ${filledCount}/${totalMappable} fields...`);
-
-          try {
-            const el = resolveElement(mapping.selector);
-            if (el) {
-              const confidence = mapping.confidence || 1;
-              el.classList.add(confidence >= 0.8 ? `${PREFIX}-filled` : `${PREFIX}-review`);
-            }
-          } catch { /* skip */ }
-        } else if (!result.success) {
-          failedSelectors.add(mapping.selector);
-        }
+    for (const mapping of mappings || []) {
+      if (mapping.action === 'skip') {
+        results.push({
+          selector: mapping.selector,
+          success: true,
+          skipped: true,
+          reason: mapping.reason || 'skipped',
+          action: 'skip',
+          inventoryCategory: mapping.inventoryCategory,
+          mapping,
+        });
+        continue;
       }
 
-      // Wait for dynamic fields
-      await sleep(500);
+      let result;
+      try {
+        result = await withTimeout(
+          fillField(mapping.selector, mapping.value, mapping.action, mapping.confidence, mapping.label || mapping.field_label),
+          FIELD_TIMEOUT_MS,
+          `filling ${mapping.selector}`
+        );
+      } catch (err) {
+        result = { selector: mapping.selector, success: false, reason: err.message };
+      }
 
-      // Check if new fields appeared (use ATS form root if available)
-      const newFields = extractFormData(atsFormRoot);
-      const previousSelectors = new Set(currentMappings.map(m => m.selector));
-      const newUnmapped = newFields.filter(f => !previousSelectors.has(f.selector) && !f.currentValue);
+      result.mapping = mapping;
+      results.push(result);
 
-      if (newUnmapped.length === 0) break;
+      // Close any dropdowns left open by the previous fill
+      closeOpenDropdowns();
+      await sleep(100);
+
+      if (result.success && !result.skipped) {
+        filledCount++;
+        updateOverlay('filling', `Filling ${filledCount}/${totalMappable} fields...`);
+
+        try {
+          const el = resolveElement(mapping.selector);
+          if (el) {
+            const confidence = mapping.confidence || 1;
+            el.classList.add(confidence >= 0.8 ? `${PREFIX}-filled` : `${PREFIX}-review`);
+          }
+        } catch { /* skip */ }
+      }
     }
 
     // After filling, detect file upload fields that need user help

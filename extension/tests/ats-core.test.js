@@ -98,6 +98,20 @@ describe('adapter contract', () => {
 });
 
 describe('extractWithAdapter / applyFieldMapHints', () => {
+  it('stamps urls[Github] via case-insensitive Lever name match', () => {
+    document.body.innerHTML = `<form><input name="urls[Github]" type="text" /><input name="urls[LinkedIn]" type="text" /></form>`;
+    const fields = [
+      { selector: 'input[name="urls[Github]"]', name: 'urls[Github]', tag: 'input', type: 'text' },
+      { selector: 'input[name="urls[LinkedIn]"]', name: 'urls[LinkedIn]', tag: 'input', type: 'text' },
+    ];
+    const out = core.applyFieldMapHints(fields, {
+      'input[name="urls[GitHub]"]': 'github_url',
+      'input[name="urls[LinkedIn]"]': 'linkedin_url',
+    }, document);
+    expect(out.find(f => f.name === 'urls[Github]').semanticType).toBe('github_url');
+    expect(out.find(f => f.name === 'urls[LinkedIn]').semanticType).toBe('linkedin_url');
+  });
+
   it('stamps semanticType from field map and preserves fieldKind', () => {
     document.body.innerHTML = `
       <form id="app_form">

@@ -2447,56 +2447,27 @@ describe('getNewMappings error logging', () => {
   });
 });
 
-describe('fillForm iteration limit', () => {
-  it('iterates at most 2 times (not 5)', async () => {
-    // Track how many times getNewMappings is called (called on iterations > 0)
+describe('fillForm approved-only (no silent second pass)', () => {
+  it('does not call getNewMappings / re-analyze after filling approved mappings', async () => {
     let reAnalyzeCount = 0;
-    let dynamicFieldId = 0;
-
-    // After each fill, add a new empty field to simulate dynamic form expansion
-    // This forces the loop to keep iterating (new unmapped fields appear)
-    const origFillField = api.fillField;
-
-    // Mock sendMessage to return new mappings for dynamically appearing fields
     globalThis.chrome.runtime.sendMessage = vi.fn().mockImplementation(() => {
       reAnalyzeCount++;
-      const id = `dynamic-${reAnalyzeCount}`;
       return Promise.resolve({
         ok: true,
-        data: {
-          mappings: [
-            { selector: `#${id}`, value: `val-${reAnalyzeCount}`, action: 'fill_text', confidence: 0.9 },
-          ],
-        },
+        data: { mappings: [{ selector: '#extra', value: 'x', action: 'fill_text', confidence: 0.9 }] },
       });
     });
 
-    // Create initial field
     createInput({ id: 'f1', type: 'text' });
-
-    // Hook into the 500ms sleep between iterations to inject new fields
-    // We do this by adding a MutationObserver-like behavior: after each fill, add new fields
-    const originalSleep = globalThis.setTimeout;
-    let fillCallCount = 0;
-
-    // Use an event listener on input to add new dynamic fields after each fill
-    document.body.addEventListener('input', () => {
-      fillCallCount++;
-      const newId = `dynamic-${fillCallCount}`;
-      if (!document.getElementById(newId)) {
-        createInput({ id: newId, type: 'text', name: newId });
-      }
-    });
-
     const mappings = [
       { selector: '#f1', value: 'initial', action: 'fill_text', confidence: 0.9 },
     ];
 
     const result = await api.fillForm(mappings);
-
-    // With max 2 iterations (0 and 1), getNewMappings is called at most 1 time
-    // With max 5 iterations, it would be called up to 4 times
-    expect(reAnalyzeCount).toBeLessThanOrEqual(1);
+    expect(result.filledCount).toBe(1);
+    expect(result.total).toBe(1);
+    // Silent post-review AI pass removed — progress must stay N/N, not 10/6.
+    expect(reAnalyzeCount).toBe(0);
   });
 });
 

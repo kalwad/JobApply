@@ -354,7 +354,9 @@ describe('Lever adapter', () => {
     expect(map['input[name="email"]']).toBe('email');
     expect(map['input[name="urls[LinkedIn]"]']).toBe('linkedin_url');
     expect(map['input[name="urls[GitHub]"]']).toBe('github_url');
+    expect(map['input[name="urls[Github]"]']).toBe('github_url');
     expect(map['input[name="urls[Portfolio]"]']).toBe('portfolio_url');
+    expect(map['input[name="urls[Other Website]"]']).toBe('website');
     expect(map['input[name="org"]']).toBe('current_company');
   });
 

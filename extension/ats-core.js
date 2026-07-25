@@ -111,21 +111,49 @@
   function applyFieldMapHints(fields, fieldMap, doc) {
     if (!fieldMap || !fields?.length) return fields;
     const root = doc || document;
+
+    function stamp(field, semantic) {
+      if (!field.semanticType) field.semanticType = semantic;
+      if (semantic === 'phone_country_code' || semantic === 'phone_country') {
+        field.fieldKind = field.fieldKind || 'phone_country';
+      }
+    }
+
+    function nameFromSelector(selector) {
+      const m = String(selector || '').match(/\[name=["']([^"']+)["']\]/i);
+      return m ? m[1] : '';
+    }
+
     for (const field of fields) {
+      // 1) Exact DOM match via map selector
       for (const [selector, semantic] of Object.entries(fieldMap)) {
         try {
           const el = root.querySelector(selector);
           if (!el) continue;
           let fieldEl = null;
           try { fieldEl = root.querySelector(field.selector); } catch { /* skip */ }
-          if (fieldEl === el) {
-            // Prefer dedicated semanticType; do not overwrite atsHint content tags.
-            if (!field.semanticType) field.semanticType = semantic;
-            if (semantic === 'phone_country_code' || semantic === 'phone_country') {
-              field.fieldKind = field.fieldKind || 'phone_country';
-            }
-          }
+          if (fieldEl === el) stamp(field, semantic);
         } catch { /* skip */ }
+      }
+      // 2) Name-attribute match (survives CSS escaping / type suffix differences)
+      if (!field.semanticType && field.name) {
+        for (const [selector, semantic] of Object.entries(fieldMap)) {
+          const mapName = nameFromSelector(selector);
+          if (mapName && mapName === field.name) {
+            stamp(field, semantic);
+            break;
+          }
+        }
+      }
+      // 3) Case-insensitive Lever urls[Github] vs urls[GitHub]
+      if (!field.semanticType && field.name && /^urls\[/i.test(field.name)) {
+        const key = field.name.slice(5, -1).toLowerCase().replace(/\s+/g, ' ').trim();
+        if (key === 'linkedin') stamp(field, 'linkedin_url');
+        else if (key === 'github' || key === 'git hub') stamp(field, 'github_url');
+        else if (key === 'portfolio' || key === 'other' || key === 'other website' || key === 'website') {
+          stamp(field, key === 'portfolio' ? 'portfolio_url' : 'website');
+        }
+        else if (key === 'twitter' || key === 'x') stamp(field, 'twitter_url');
       }
     }
     return fields;
