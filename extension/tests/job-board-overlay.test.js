@@ -4,9 +4,9 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 function loadScript() {
-  window.__cpAutofillLoaded = false;
-  window.__cpAutofillTest = true;
-  window.__cpAutofillTestAPI = undefined;
+  window.__jaAutofillLoaded = false;
+  window.__jaAutofillTest = true;
+  window.__jaAutofillTestAPI = undefined;
 
   const code = readFileSync(join(__dirname, '..', 'content.js'), 'utf-8');
   const safeCode = code.replace(
@@ -14,7 +14,7 @@ function loadScript() {
     'globalThis.chrome.runtime.onMessage.addListener'
   );
   eval(safeCode);
-  return window.__cpAutofillTestAPI;
+  return window.__jaAutofillTestAPI;
 }
 
 let api;
@@ -206,8 +206,8 @@ describe('createSaveButton', () => {
 
     const btn = api.createSaveButton(jobData, card);
     expect(btn).toBeTruthy();
-    expect(btn.textContent).toBe('Save to CareerPulse');
-    expect(btn.className).toContain('cp-overlay-save-btn');
+    expect(btn.textContent).toBe('Save to JobApply');
+    expect(btn.className).toContain('ja-overlay-save-btn');
   });
 
   it('does not duplicate buttons on the same card', () => {
@@ -217,7 +217,7 @@ describe('createSaveButton', () => {
     api.createSaveButton(jobData, card);
     api.createSaveButton(jobData, card);
 
-    const buttons = card.querySelectorAll('.cp-overlay-save-btn');
+    const buttons = card.querySelectorAll('.ja-overlay-save-btn');
     expect(buttons.length).toBe(1);
   });
 
@@ -265,7 +265,7 @@ describe('createSaveButton', () => {
     await new Promise(r => setTimeout(r, 10));
 
     expect(btn.textContent).toBe('Saved');
-    expect(btn.classList.contains('cp-overlay-saved')).toBe(true);
+    expect(btn.classList.contains('ja-overlay-saved')).toBe(true);
     expect(btn.disabled).toBe(true);
   });
 
@@ -284,7 +284,7 @@ describe('createSaveButton', () => {
     await new Promise(r => setTimeout(r, 10));
 
     expect(btn.textContent).toContain('Error');
-    expect(btn.classList.contains('cp-overlay-error')).toBe(true);
+    expect(btn.classList.contains('ja-overlay-error')).toBe(true);
     expect(btn.disabled).toBe(false); // retry allowed
   });
 });
@@ -300,10 +300,10 @@ describe('showScoreBadge', () => {
 
     api.showScoreBadge(card, 85);
 
-    const badge = card.querySelector('.cp-overlay-score-badge');
+    const badge = card.querySelector('.ja-overlay-score-badge');
     expect(badge).not.toBeNull();
     expect(badge.textContent).toBe('85%');
-    expect(badge.classList.contains('cp-overlay-score-high')).toBe(true);
+    expect(badge.classList.contains('ja-overlay-score-high')).toBe(true);
   });
 
   it('applies high class for scores >= 75', () => {
@@ -311,8 +311,8 @@ describe('showScoreBadge', () => {
     document.body.appendChild(card);
 
     api.showScoreBadge(card, 75);
-    const badge = card.querySelector('.cp-overlay-score-badge');
-    expect(badge.classList.contains('cp-overlay-score-high')).toBe(true);
+    const badge = card.querySelector('.ja-overlay-score-badge');
+    expect(badge.classList.contains('ja-overlay-score-high')).toBe(true);
   });
 
   it('applies mid class for scores 50-74', () => {
@@ -320,8 +320,8 @@ describe('showScoreBadge', () => {
     document.body.appendChild(card);
 
     api.showScoreBadge(card, 60);
-    const badge = card.querySelector('.cp-overlay-score-badge');
-    expect(badge.classList.contains('cp-overlay-score-mid')).toBe(true);
+    const badge = card.querySelector('.ja-overlay-score-badge');
+    expect(badge.classList.contains('ja-overlay-score-mid')).toBe(true);
   });
 
   it('applies low class for scores < 50', () => {
@@ -329,8 +329,8 @@ describe('showScoreBadge', () => {
     document.body.appendChild(card);
 
     api.showScoreBadge(card, 30);
-    const badge = card.querySelector('.cp-overlay-score-badge');
-    expect(badge.classList.contains('cp-overlay-score-low')).toBe(true);
+    const badge = card.querySelector('.ja-overlay-score-badge');
+    expect(badge.classList.contains('ja-overlay-score-low')).toBe(true);
   });
 
   it('updates existing badge instead of creating duplicate', () => {
@@ -340,11 +340,11 @@ describe('showScoreBadge', () => {
     api.showScoreBadge(card, 85);
     api.showScoreBadge(card, 40);
 
-    const badges = card.querySelectorAll('.cp-overlay-score-badge');
+    const badges = card.querySelectorAll('.ja-overlay-score-badge');
     expect(badges.length).toBe(1);
     expect(badges[0].textContent).toBe('40%');
-    expect(badges[0].classList.contains('cp-overlay-score-low')).toBe(true);
-    expect(badges[0].classList.contains('cp-overlay-score-high')).toBe(false);
+    expect(badges[0].classList.contains('ja-overlay-score-low')).toBe(true);
+    expect(badges[0].classList.contains('ja-overlay-score-high')).toBe(false);
   });
 
   it('rounds score to nearest integer', () => {
@@ -352,7 +352,7 @@ describe('showScoreBadge', () => {
     document.body.appendChild(card);
 
     api.showScoreBadge(card, 72.7);
-    const badge = card.querySelector('.cp-overlay-score-badge');
+    const badge = card.querySelector('.ja-overlay-score-badge');
     expect(badge.textContent).toBe('73%');
   });
 
@@ -361,7 +361,7 @@ describe('showScoreBadge', () => {
     document.body.appendChild(card);
 
     api.showScoreBadge(card, 90);
-    const badge = card.querySelector('.cp-overlay-score-badge');
+    const badge = card.querySelector('.ja-overlay-score-badge');
     expect(badge.title).toContain('90%');
   });
 });
@@ -404,7 +404,7 @@ describe('processJobCards', () => {
 
     await api.processJobCards(config);
 
-    const buttons = document.querySelectorAll('.cp-overlay-save-btn');
+    const buttons = document.querySelectorAll('.ja-overlay-save-btn');
     expect(buttons.length).toBe(2);
   });
 
@@ -418,9 +418,9 @@ describe('processJobCards', () => {
 
     await api.processJobCards(config);
 
-    const btn = card.querySelector('.cp-overlay-save-btn');
+    const btn = card.querySelector('.ja-overlay-save-btn');
     expect(btn.textContent).toBe('Saved');
-    expect(btn.classList.contains('cp-overlay-saved')).toBe(true);
+    expect(btn.classList.contains('ja-overlay-saved')).toBe(true);
   });
 
   it('shows score badge for already-saved jobs', async () => {
@@ -433,7 +433,7 @@ describe('processJobCards', () => {
 
     await api.processJobCards(config);
 
-    const badge = card.querySelector('.cp-overlay-score-badge');
+    const badge = card.querySelector('.ja-overlay-score-badge');
     expect(badge).not.toBeNull();
     expect(badge.textContent).toBe('88%');
   });
@@ -446,7 +446,7 @@ describe('processJobCards', () => {
     await api.processJobCards(config);
     await api.processJobCards(config);
 
-    const buttons = document.querySelectorAll('.cp-overlay-save-btn');
+    const buttons = document.querySelectorAll('.ja-overlay-save-btn');
     expect(buttons.length).toBe(1);
   });
 
@@ -460,7 +460,7 @@ describe('processJobCards', () => {
 
     await api.processJobCards(config);
 
-    const buttons = document.querySelectorAll('.cp-overlay-save-btn');
+    const buttons = document.querySelectorAll('.ja-overlay-save-btn');
     expect(buttons.length).toBe(0);
   });
 });

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Workday Application</title></head>
+<body>
+  <form id="workday-application">
+    <input data-automation-id="legalNameSection_firstName" id="wd-first" name="firstName" type="text" aria-label="First Name" />
+    <input data-automation-id="legalNameSection_lastName" id="wd-last" name="lastName" type="text" aria-label="Last Name" />
+    <input data-automation-id="email" id="wd-email" name="email" type="email" aria-label="Email Address" />
+    <input data-automation-id="phone-number" id="wd-phone" name="phone" type="tel" aria-label="Phone Number" value="555-0100" />
+    <input data-automation-id="addressSection_addressLine1" id="wd-addr1" type="text" aria-label="Address Line 1" />
+    <input data-automation-id="addressSection_city" id="wd-city" type="text" aria-label="City" />
+    <label for="wd-country">Country</label>
+    <select id="wd-country" name="country" aria-label="Country">
+      <option value="">Select One</option>
+      <option value="US">United States</option>
+      <option value="CA">Canada</option>
+    </select>
+    <fieldset>
+      <legend>Work authorization</legend>
+      <label><input type="radio" name="work_auth" value="yes" /> Authorized</label>
+      <label><input type="radio" name="work_auth" value="no" /> Not authorized</label>
+    </fieldset>
+    <label><input type="checkbox" id="wd-terms" name="terms" /> I agree to the terms</label>
+    <label for="wd-gender">Gender (voluntary)</label>
+    <select id="wd-gender" name="gender" aria-label="Gender">
+      <option value="">Decline to self-identify</option>
+      <option value="female">Female</option>
+      <option value="male">Male</option>
+    </select>
+    <button type="submit" data-automation-id="bottom-navigation-next-button">Submit Application</button>
+  </form>
+</body>
+</html>

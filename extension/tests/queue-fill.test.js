@@ -4,9 +4,9 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 function loadScript() {
-  window.__cpAutofillLoaded = false;
-  window.__cpAutofillTest = true;
-  window.__cpAutofillTestAPI = undefined;
+  window.__jaAutofillLoaded = false;
+  window.__jaAutofillTest = true;
+  window.__jaAutofillTestAPI = undefined;
 
   const code = readFileSync(join(__dirname, '..', 'content.js'), 'utf-8');
   const safeCode = code.replace(
@@ -14,7 +14,7 @@ function loadScript() {
     'globalThis.chrome.runtime.onMessage.addListener'
   );
   eval(safeCode);
-  return window.__cpAutofillTestAPI;
+  return window.__jaAutofillTestAPI;
 }
 
 let api;
@@ -23,6 +23,8 @@ beforeEach(() => {
   cleanDOM();
   globalThis.chrome.runtime.sendMessage = vi.fn().mockResolvedValue({ ok: true, data: { mappings: [] } });
   api = loadScript();
+  // Stage 1 disables queue fill by default; tests exercise the feature explicitly.
+  api.enableQueueFill = true;
 });
 
 afterEach(() => {
@@ -41,7 +43,7 @@ describe('showQueueBanner', () => {
   it('creates a queue banner with position and total', () => {
     api.showQueueBanner(2, 5, 'Software Engineer', 'Acme Corp');
 
-    const banner = document.getElementById('cp-autofill-queue-banner');
+    const banner = document.getElementById('ja-autofill-queue-banner');
     expect(banner).not.toBeNull();
     expect(banner.textContent).toContain('2/5');
     expect(banner.textContent).toContain('Software Engineer');
@@ -51,24 +53,24 @@ describe('showQueueBanner', () => {
   it('shows fallback text when no job title', () => {
     api.showQueueBanner(3, 10, '', '');
 
-    const banner = document.getElementById('cp-autofill-queue-banner');
+    const banner = document.getElementById('ja-autofill-queue-banner');
     expect(banner.textContent).toContain('Application 3 of 10');
   });
 
   it('has Done, Skip, and Cancel buttons', () => {
     api.showQueueBanner(1, 3, 'Dev', 'Co');
 
-    const banner = document.getElementById('cp-autofill-queue-banner');
-    expect(banner.querySelector('.cp-autofill-queue-done-btn')).not.toBeNull();
-    expect(banner.querySelector('.cp-autofill-queue-skip-btn')).not.toBeNull();
-    expect(banner.querySelector('.cp-autofill-queue-cancel-btn')).not.toBeNull();
+    const banner = document.getElementById('ja-autofill-queue-banner');
+    expect(banner.querySelector('.ja-autofill-queue-done-btn')).not.toBeNull();
+    expect(banner.querySelector('.ja-autofill-queue-skip-btn')).not.toBeNull();
+    expect(banner.querySelector('.ja-autofill-queue-cancel-btn')).not.toBeNull();
   });
 
   it('replaces existing banner on re-call', () => {
     api.showQueueBanner(1, 5, 'Job A', 'Co');
     api.showQueueBanner(2, 5, 'Job B', 'Co');
 
-    const banners = document.querySelectorAll('#cp-autofill-queue-banner');
+    const banners = document.querySelectorAll('#ja-autofill-queue-banner');
     expect(banners.length).toBe(1);
     expect(banners[0].textContent).toContain('2/5');
     expect(banners[0].textContent).toContain('Job B');
@@ -82,10 +84,10 @@ describe('showQueueBanner', () => {
 describe('removeQueueBanner', () => {
   it('removes the banner from DOM', () => {
     api.showQueueBanner(1, 3, 'Test', 'Co');
-    expect(document.getElementById('cp-autofill-queue-banner')).not.toBeNull();
+    expect(document.getElementById('ja-autofill-queue-banner')).not.toBeNull();
 
     api.removeQueueBanner();
-    expect(document.getElementById('cp-autofill-queue-banner')).toBeNull();
+    expect(document.getElementById('ja-autofill-queue-banner')).toBeNull();
   });
 
   it('does nothing if no banner exists', () => {
@@ -130,7 +132,7 @@ describe('handleQueueAction', () => {
 
     api.handleQueueAction('submitted');
 
-    expect(document.getElementById('cp-autofill-queue-banner')).toBeNull();
+    expect(document.getElementById('ja-autofill-queue-banner')).toBeNull();
   });
 
   it('clears queueContext after action', () => {
@@ -162,7 +164,7 @@ describe('queue banner Done button', () => {
     api.queueContext = { queueItemId: 'q-1', jobId: 1 };
     api.showQueueBanner(1, 3, 'Test', 'Co');
 
-    const doneBtn = document.querySelector('.cp-autofill-queue-done-btn');
+    const doneBtn = document.querySelector('.ja-autofill-queue-done-btn');
     doneBtn.click();
 
     expect(globalThis.chrome.runtime.sendMessage).toHaveBeenCalledWith({
@@ -182,7 +184,7 @@ describe('queue banner Skip button', () => {
     api.queueContext = { queueItemId: 'q-2', jobId: 2 };
     api.showQueueBanner(2, 5, 'Test', 'Co');
 
-    const skipBtn = document.querySelector('.cp-autofill-queue-skip-btn');
+    const skipBtn = document.querySelector('.ja-autofill-queue-skip-btn');
     skipBtn.click();
 
     expect(globalThis.chrome.runtime.sendMessage).toHaveBeenCalledWith({
@@ -202,7 +204,7 @@ describe('queue banner Cancel button', () => {
     api.queueContext = { queueItemId: 'q-3', jobId: 3 };
     api.showQueueBanner(1, 3, 'Test', 'Co');
 
-    const cancelBtn = document.querySelector('.cp-autofill-queue-cancel-btn');
+    const cancelBtn = document.querySelector('.ja-autofill-queue-cancel-btn');
     cancelBtn.click();
 
     expect(globalThis.chrome.runtime.sendMessage).toHaveBeenCalledWith({ type: 'cancelQueue' });
@@ -212,10 +214,10 @@ describe('queue banner Cancel button', () => {
     api.queueContext = { queueItemId: 'q-3', jobId: 3 };
     api.showQueueBanner(1, 3, 'Test', 'Co');
 
-    const cancelBtn = document.querySelector('.cp-autofill-queue-cancel-btn');
+    const cancelBtn = document.querySelector('.ja-autofill-queue-cancel-btn');
     cancelBtn.click();
 
-    expect(document.getElementById('cp-autofill-queue-banner')).toBeNull();
+    expect(document.getElementById('ja-autofill-queue-banner')).toBeNull();
     expect(api.queueContext).toBeNull();
   });
 });
@@ -254,7 +256,7 @@ describe('startQueueFill', () => {
       queueTotal: 3,
     });
 
-    const banner = document.getElementById('cp-autofill-queue-banner');
+    const banner = document.getElementById('ja-autofill-queue-banner');
     expect(banner).not.toBeNull();
     expect(banner.textContent).toContain('1/3');
     expect(banner.textContent).toContain('Frontend Dev');
@@ -308,7 +310,7 @@ describe('queue banner XSS safety', () => {
   it('escapes HTML in job title', () => {
     api.showQueueBanner(1, 1, '<script>alert("xss")</script>', 'Co');
 
-    const banner = document.getElementById('cp-autofill-queue-banner');
+    const banner = document.getElementById('ja-autofill-queue-banner');
     expect(banner.innerHTML).not.toContain('<script>');
     expect(banner.textContent).toContain('<script>');
   });
@@ -316,7 +318,7 @@ describe('queue banner XSS safety', () => {
   it('escapes HTML in company name', () => {
     api.showQueueBanner(1, 1, 'Job', '<img onerror=alert(1)>');
 
-    const banner = document.getElementById('cp-autofill-queue-banner');
+    const banner = document.getElementById('ja-autofill-queue-banner');
     // Should be escaped so no actual img tag is rendered
     expect(banner.innerHTML).toContain('&lt;img');
     expect(banner.querySelector('img')).toBeNull();

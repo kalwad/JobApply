@@ -9,17 +9,18 @@ import { join } from 'path';
 
 // Load dependency IIFEs (normalize.js, ats-adapters.js) then content.js
 function loadScript() {
-  window.__cpAutofillLoaded = false;
-  window.__cpAutofillTest = true;
-  window.__cpAutofillTestAPI = undefined;
-  window.__cpNormalize = undefined;
-  window.__cpAtsAdapters = undefined;
+  window.__jaAutofillLoaded = false;
+  window.__jaAutofillTest = true;
+  window.__jaAutofillTestAPI = undefined;
+  window.__jaNormalize = undefined;
+  window.__jaAtsAdapters = undefined;
 
   // Load normalize.js first
   const normCode = readFileSync(join(__dirname, '..', 'normalize.js'), 'utf-8');
   eval(normCode);
 
-  // Load ats-adapters.js
+  // Load ats-core.js + ats-adapters.js
+  eval(readFileSync(join(__dirname, '..', 'ats-core.js'), 'utf-8'));
   const atsCode = readFileSync(join(__dirname, '..', 'ats-adapters.js'), 'utf-8');
   eval(atsCode);
 
@@ -35,7 +36,7 @@ function loadScript() {
     '/* badgeObserver disabled in tests */'
   );
   eval(safeCode);
-  return window.__cpAutofillTestAPI;
+  return window.__jaAutofillTestAPI;
 }
 
 let api;
@@ -44,6 +45,9 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   cleanDOM();
   api = loadScript();
+  // Legacy CareerPulse tests assume fills may replace existing values.
+  // Nonempty protection is covered in a dedicated describe below.
+  api.overwriteExistingFields = true;
 });
 
 afterEach(() => {
@@ -1629,54 +1633,84 @@ describe('originalValues tracking', () => {
   });
 });
 
+describe('nonempty field protection', () => {
+  it('skips nonempty text fields by default', async () => {
+    api.overwriteExistingFields = false;
+    const input = createInput({ id: 'protected', type: 'text', value: 'keep-me' });
+    const result = await api.fillField('#protected', 'overwrite', 'fill_text');
+    expect(result.skipped).toBe(true);
+    expect(result.alreadyCompleted).toBe(true);
+    expect(input.value).toBe('keep-me');
+  });
+
+  it('allows overwrite when enabled', async () => {
+    api.overwriteExistingFields = true;
+    const input = createInput({ id: 'overwrite-ok', type: 'text', value: 'old' });
+    const result = await api.fillField('#overwrite-ok', 'new', 'fill_text');
+    expect(result.skipped).toBeFalsy();
+    expect(input.value).toBe('new');
+  });
+
+  it('refuses submit controls', async () => {
+    const btn = document.createElement('button');
+    btn.id = 'submit-app';
+    btn.type = 'submit';
+    btn.textContent = 'Submit Application';
+    document.body.appendChild(btn);
+    expect(api.isSubmitControl(btn)).toBe(true);
+    const result = await api.fillField('#submit-app', 'x', 'fill_text');
+    expect(result.skipped).toBe(true);
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════
 // ATS adapter detection
 // ═══════════════════════════════════════════════════════════════
 
 describe('ATS adapter detection', () => {
   it('detects Workday URL', () => {
-    const adapters = window.__cpAtsAdapters;
+    const adapters = window.__jaAtsAdapters;
     const adapter = adapters.detectATS('https://company.myworkdayjobs.com/en-US/job/12345', document);
     expect(adapter).not.toBeNull();
     expect(adapter.name).toBe('Workday');
   });
 
   it('detects Greenhouse URL', () => {
-    const adapters = window.__cpAtsAdapters;
+    const adapters = window.__jaAtsAdapters;
     const adapter = adapters.detectATS('https://boards.greenhouse.io/company/jobs/12345', document);
     expect(adapter).not.toBeNull();
     expect(adapter.name).toBe('Greenhouse');
   });
 
   it('detects Lever URL', () => {
-    const adapters = window.__cpAtsAdapters;
+    const adapters = window.__jaAtsAdapters;
     const adapter = adapters.detectATS('https://jobs.lever.co/company/apply', document);
     expect(adapter).not.toBeNull();
     expect(adapter.name).toBe('Lever');
   });
 
   it('detects iCIMS URL', () => {
-    const adapters = window.__cpAtsAdapters;
+    const adapters = window.__jaAtsAdapters;
     const adapter = adapters.detectATS('https://careers.icims.com/company/job/12345', document);
     expect(adapter).not.toBeNull();
     expect(adapter.name).toBe('iCIMS');
   });
 
   it('detects Taleo URL', () => {
-    const adapters = window.__cpAtsAdapters;
+    const adapters = window.__jaAtsAdapters;
     const adapter = adapters.detectATS('https://company.taleo.net/apply/12345', document);
     expect(adapter).not.toBeNull();
     expect(adapter.name).toBe('Taleo');
   });
 
   it('returns null for unknown URL', () => {
-    const adapters = window.__cpAtsAdapters;
+    const adapters = window.__jaAtsAdapters;
     const adapter = adapters.detectATS('https://example.com/jobs', document);
     expect(adapter).toBeNull();
   });
 
   it('lists all adapter names', () => {
-    const names = window.__cpAtsAdapters.listAdapters();
+    const names = window.__jaAtsAdapters.listAdapters();
     expect(names).toContain('Workday');
     expect(names).toContain('Greenhouse');
     expect(names).toContain('Lever');
@@ -1742,29 +1776,29 @@ describe('getFieldHints', () => {
 describe('auto-detection badge', () => {
   it('showBadge adds badge element to DOM', () => {
     api.showBadge('high');
-    const badge = document.querySelector('.cp-auto-badge');
+    const badge = document.querySelector('.ja-auto-badge');
     expect(badge).not.toBeNull();
-    expect(badge.textContent).toContain('CareerPulse');
+    expect(badge.textContent).toContain('JobApply');
   });
 
   it('removeBadge cleans up badge', () => {
     api.showBadge('high');
-    expect(document.querySelector('.cp-auto-badge')).not.toBeNull();
+    expect(document.querySelector('.ja-auto-badge')).not.toBeNull();
 
     api.removeBadge();
-    expect(document.querySelector('.cp-auto-badge')).toBeNull();
+    expect(document.querySelector('.ja-auto-badge')).toBeNull();
   });
 
   it('showBadge with medium confidence adds medium class', () => {
     api.showBadge('medium');
-    const badge = document.querySelector('.cp-auto-badge');
-    expect(badge.classList.contains('cp-badge-medium')).toBe(true);
+    const badge = document.querySelector('.ja-auto-badge');
+    expect(badge.classList.contains('ja-badge-medium')).toBe(true);
   });
 
   it('showBadge does not add duplicate badges', () => {
     api.showBadge('high');
     api.showBadge('high');
-    const badges = document.querySelectorAll('.cp-auto-badge');
+    const badges = document.querySelectorAll('.ja-auto-badge');
     expect(badges.length).toBe(1);
   });
 });
@@ -1934,7 +1968,7 @@ describe('applyCustomQA', () => {
 describe('showToast', () => {
   it('creates a toast element in the DOM', () => {
     api.showToast('Test message');
-    const toast = document.getElementById('cp-autofill-toast');
+    const toast = document.getElementById('ja-autofill-toast');
     expect(toast).not.toBeNull();
     expect(toast.textContent).toBe('Test message');
   });
@@ -1942,7 +1976,7 @@ describe('showToast', () => {
   it('removes existing toast before creating new one', () => {
     api.showToast('First');
     api.showToast('Second');
-    const toasts = document.querySelectorAll('#cp-autofill-toast');
+    const toasts = document.querySelectorAll('#ja-autofill-toast');
     expect(toasts.length).toBe(1);
     expect(toasts[0].textContent).toBe('Second');
   });
@@ -1959,7 +1993,7 @@ describe('showToast', () => {
 
   it('has role="status" for accessibility', () => {
     api.showToast('Accessible');
-    const toast = document.getElementById('cp-autofill-toast');
+    const toast = document.getElementById('ja-autofill-toast');
     expect(toast.getAttribute('role')).toBe('status');
   });
 });
@@ -1984,7 +2018,7 @@ describe('autoTrackApplied', () => {
 
   it('shows success toast on successful track', async () => {
     await api.autoTrackApplied();
-    const toast = document.getElementById('cp-autofill-toast');
+    const toast = document.getElementById('ja-autofill-toast');
     expect(toast).not.toBeNull();
     expect(toast.textContent).toContain('marked as applied');
   });
@@ -1998,7 +2032,7 @@ describe('autoTrackApplied', () => {
   it('does not show toast on failure', async () => {
     globalThis.chrome.runtime.sendMessage = vi.fn().mockResolvedValue({ ok: false });
     await api.autoTrackApplied();
-    const toast = document.getElementById('cp-autofill-toast');
+    const toast = document.getElementById('ja-autofill-toast');
     expect(toast).toBeNull();
   });
 
@@ -2006,7 +2040,7 @@ describe('autoTrackApplied', () => {
     globalThis.chrome.runtime.sendMessage = vi.fn().mockRejectedValue(new Error('No connection'));
     await api.autoTrackApplied();
     // Should not throw, no toast shown
-    const toast = document.getElementById('cp-autofill-toast');
+    const toast = document.getElementById('ja-autofill-toast');
     expect(toast).toBeNull();
   });
 });
@@ -2079,9 +2113,9 @@ describe('startFillFlow overall timeout', () => {
     await vi.advanceTimersByTimeAsync(33000);
 
     // Check the overlay — at 91s, the overall timeout should have fired
-    const overlay = document.getElementById('cp-autofill-overlay');
+    const overlay = document.getElementById('ja-autofill-overlay');
     expect(overlay).not.toBeNull();
-    const statusEl = overlay.querySelector('.cp-autofill-overlay-status');
+    const statusEl = overlay.querySelector('.ja-autofill-overlay-status');
     expect(statusEl.textContent).toMatch(/timed?\s*out|too long/i);
   }, 15000);
 });
@@ -2100,7 +2134,7 @@ describe('startFillFlow ATS iframe delegation', () => {
     await api.startFillFlow();
 
     // Should NOT show an overlay or error since an ATS embed was detected
-    const overlay = document.getElementById('cp-autofill-overlay');
+    const overlay = document.getElementById('ja-autofill-overlay');
     expect(overlay).toBeNull();
   });
 
@@ -2111,7 +2145,7 @@ describe('startFillFlow ATS iframe delegation', () => {
 
     await api.startFillFlow();
 
-    const overlay = document.getElementById('cp-autofill-overlay');
+    const overlay = document.getElementById('ja-autofill-overlay');
     expect(overlay).toBeNull();
   });
 
@@ -2123,7 +2157,7 @@ describe('startFillFlow ATS iframe delegation', () => {
     // startFillFlow should bail silently after extractFormData finds nothing
     await api.startFillFlow();
 
-    const overlay = document.getElementById('cp-autofill-overlay');
+    const overlay = document.getElementById('ja-autofill-overlay');
     expect(overlay).toBeNull();
 
     // Restore
@@ -2141,7 +2175,7 @@ describe('startFillFlow ATS iframe delegation', () => {
 
     await api.startFillFlow();
 
-    const overlay = document.getElementById('cp-autofill-overlay');
+    const overlay = document.getElementById('ja-autofill-overlay');
     expect(overlay).toBeNull();
 
     // Restore
