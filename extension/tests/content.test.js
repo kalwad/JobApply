@@ -2120,6 +2120,33 @@ describe('startFillFlow overall timeout', () => {
   }, 15000);
 });
 
+describe('matchPhoneCountryCodeOption', () => {
+  const options = [
+    { value: 'AF', text: 'Afghanistan (+93)' },
+    { value: 'AL', text: 'Albania (+355)' },
+    { value: 'DZ', text: 'Algeria (+213)' },
+    { value: 'AS', text: 'American Samoa (+1)' },
+    { value: 'US', text: 'United States (+1)' },
+    { value: 'CA', text: 'Canada (+1)' },
+  ];
+
+  it('prefers United States for +1 over Albania/Algeria/American Samoa', () => {
+    expect(options[api.matchPhoneCountryCodeOption(options, 'United States (+1)')].text)
+      .toBe('United States (+1)');
+    expect(options[api.matchPhoneCountryCodeOption(options, '+1')].text)
+      .toBe('United States (+1)');
+    expect(options[api.matchPhoneCountryCodeOption(options, '1')].text)
+      .toBe('United States (+1)');
+  });
+
+  it('does not let fuzzyMatchOption pick Albania for +1', () => {
+    const hints = { label: 'Phone Country Code', name: 'phone_country_code', id: 'phone_country_code' };
+    const idx = api.fuzzyMatchOption(options, 'United States (+1)', hints);
+    expect(options[idx].text).toBe('United States (+1)');
+    expect(api.fuzzyMatchOption(options, '1', hints)).toBe(idx);
+  });
+});
+
 describe('sanitizeMappings / getNearbyHeading', () => {
   it('drops phone-like values on non-phone fields', () => {
     const cleaned = api.sanitizeMappings([

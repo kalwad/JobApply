@@ -668,9 +668,73 @@
 
   // ─── Dropdown / listbox detection ──────────────────────────
 
+  function extractDialCode(value) {
+    if (value == null) return null;
+    const s = String(value);
+    const paren = s.match(/\(\s*\+(\d{1,4})\s*\)/);
+    if (paren) return paren[1];
+    const bare = s.trim().match(/^\+?(\d{1,4})$/);
+    return bare ? bare[1] : null;
+  }
+
+  function hintsLookLikePhoneCountry(fieldHints) {
+    const hints = fieldHints || {};
+    const combined = `${hints.label || ''} ${hints.name || ''} ${hints.id || ''} ${hints.placeholder || ''}`;
+    return /phone.?country|country.?phone|country.?code|dial.?code|calling.?code|countryPhoneCode/i.test(combined);
+  }
+
+  /**
+   * Score phone-country / dial-code options. Prevents "+1" from matching
+   * Albania (+355) or Algeria (+213) via naive digit substring checks.
+   */
+  function matchPhoneCountryCodeOption(options, targetValue) {
+    if (!options?.length || targetValue == null) return -1;
+    const target = String(targetValue).toLowerCase().trim();
+    const dial = extractDialCode(targetValue);
+    const countryName = target.replace(/\s*\(\s*\+\d{1,4}\s*\)\s*/g, ' ').replace(/\s+/g, ' ').trim();
+
+    let bestIdx = -1;
+    let bestScore = -1;
+    for (let i = 0; i < options.length; i++) {
+      const text = String(options[i].text || '').toLowerCase().trim();
+      const value = String(options[i].value || '').toLowerCase().trim();
+      if (!text && !value) continue;
+      let score = 0;
+      if (text === target || value === target) score = 100;
+      else if (countryName && (text === countryName || text.startsWith(`${countryName} `) || text.includes(countryName))) score = 85;
+      if (dial) {
+        const dialRe = new RegExp(`\\(\\s*\\+${dial}\\s*\\)`);
+        const exactDial = new RegExp(`^\\+?${dial}$`);
+        if (dialRe.test(text) || exactDial.test(text) || exactDial.test(value)) {
+          score = Math.max(score, 60);
+          if (countryName && countryName.split(/\s+/).some(p => p.length > 2 && text.includes(p))) {
+            score = Math.max(score, 92);
+          }
+        }
+        if (dial === '1' && /\bunited states\b|\busa\b|\bu\.s\.a?\b/.test(text)) {
+          score = Math.max(score, 96);
+        }
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+    return bestScore >= 60 ? bestIdx : -1;
+  }
+
   function fuzzyMatchOption(options, targetValue, fieldHints) {
     if (!options || !options.length) return -1;
     const target = targetValue.toLowerCase().trim();
+
+    if (hintsLookLikePhoneCountry(fieldHints) || extractDialCode(targetValue)) {
+      const phoneIdx = matchPhoneCountryCodeOption(options, targetValue);
+      if (phoneIdx >= 0) return phoneIdx;
+      // For dial-code targets, do not fall through to naive "1" ⊆ "213" matching.
+      if (/^\+?\d{1,4}$/.test(String(targetValue).trim()) || hintsLookLikePhoneCountry(fieldHints)) {
+        return -1;
+      }
+    }
 
     // Pass 1: exact match on value
     for (let i = 0; i < options.length; i++) {
@@ -707,10 +771,14 @@
       } catch { /* normalization unavailable, continue */ }
     }
 
-    // Pass 4: contains / substring match
-    for (let i = 0; i < options.length; i++) {
-      if (options[i].value.toLowerCase().includes(target) || options[i].text.toLowerCase().includes(target)) return i;
-      if (target.includes(options[i].value.toLowerCase()) || target.includes(options[i].text.toLowerCase().trim())) return i;
+    // Pass 4: contains / substring match (reject tiny tokens like "1"/"us")
+    if (target.length >= 3) {
+      for (let i = 0; i < options.length; i++) {
+        const optVal = options[i].value.toLowerCase();
+        const optText = options[i].text.toLowerCase().trim();
+        if (optVal.length >= 3 && (optVal.includes(target) || target.includes(optVal))) return i;
+        if (optText.length >= 3 && (optText.includes(target) || target.includes(optText))) return i;
+      }
     }
     return -1;
   }
@@ -862,6 +930,15 @@
     if (!options.length) return null;
     const target = targetValue.toLowerCase().trim();
 
+    if (hintsLookLikePhoneCountry(fieldHints) || extractDialCode(targetValue)) {
+      const mapped = options.map(o => ({ text: o.textContent.trim(), value: o.getAttribute?.('data-value') || o.value || '' }));
+      const phoneIdx = matchPhoneCountryCodeOption(mapped, targetValue);
+      if (phoneIdx >= 0) return options[phoneIdx];
+      if (/^\+?\d{1,4}$/.test(String(targetValue).trim()) || hintsLookLikePhoneCountry(fieldHints)) {
+        return null;
+      }
+    }
+
     // Pass 1: Exact text match
     for (const opt of options) {
       if (opt.textContent.trim().toLowerCase() === target) return opt;
@@ -872,9 +949,10 @@
       if (opt.textContent.trim().toLowerCase().startsWith(target)) return opt;
     }
 
-    // Pass 2b: Target starts with option text
+    // Pass 2b: Target starts with option text (ignore tiny tokens like "a"/"1")
     for (const opt of options) {
       const text = opt.textContent.trim().toLowerCase();
+      if (text.length < 3 || target.length < 3) continue;
       if (text.startsWith(target) || target.startsWith(text)) return opt;
     }
 
@@ -896,19 +974,22 @@
       } catch { /* normalization unavailable, continue */ }
     }
 
-    // Pass 4: Contains match
-    for (const opt of options) {
-      const text = opt.textContent.trim().toLowerCase();
-      if (text.includes(target) || target.includes(text)) return opt;
+    // Pass 4: Contains match (reject tiny tokens)
+    if (target.length >= 3) {
+      for (const opt of options) {
+        const text = opt.textContent.trim().toLowerCase();
+        if (text.length < 3) continue;
+        if (text.includes(target) || target.includes(text)) return opt;
+      }
     }
 
     // Pass 5: Word-level overlap (for "Animas, Hidalgo, NM" matching "Animas")
-    const targetWords = target.split(/[\s,]+/).filter(Boolean);
+    const targetWords = target.split(/[\s,]+/).filter(w => w.length >= 3);
     let bestMatch = null;
     let bestScore = 0;
     for (const opt of options) {
       const text = opt.textContent.trim().toLowerCase();
-      const words = text.split(/[\s,]+/).filter(Boolean);
+      const words = text.split(/[\s,]+/).filter(w => w.length >= 3);
       let score = 0;
       for (const tw of targetWords) {
         if (words.some(w => w.startsWith(tw) || tw.startsWith(w))) score++;
@@ -1532,7 +1613,10 @@
           // Handle native <select>
           if (el.tagName === 'SELECT') {
             const options = Array.from(el.options || []).map(o => ({ value: o.value, text: o.textContent }));
-            const idx = fuzzyMatchOption(options, value, fieldHints);
+            const selectHints = isPhoneCountryCodeField(el)
+              ? { ...fieldHints, label: `${fieldHints.label || ''} phone country code`.trim() }
+              : fieldHints;
+            const idx = fuzzyMatchOption(options, value, selectHints);
             if (idx >= 0) {
               el.selectedIndex = idx;
               dispatchEvents(el, ['change', 'blur']);
@@ -1542,7 +1626,10 @@
           }
 
           // Handle custom dropdown (div-based)
-          const customResult = await handleCustomDropdown(el, value, fieldHints);
+          const dropdownHints = isPhoneCountryCodeField(el)
+            ? { ...fieldHints, label: `${fieldHints.label || ''} phone country code`.trim() }
+            : fieldHints;
+          const customResult = await handleCustomDropdown(el, value, dropdownHints);
           if (customResult.success) {
             return { selector, success: true, action, selectedText: customResult.selectedText };
           }
@@ -3591,6 +3678,8 @@
       reviewMappingsBeforeFill,
       sanitizeMappings,
       getNearbyHeading,
+      matchPhoneCountryCodeOption,
+      extractDialCode,
 
       // Timeout / flow internals for testing
       get API_TIMEOUT_MS() { return API_TIMEOUT_MS; },
