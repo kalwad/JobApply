@@ -1,6 +1,6 @@
 # Live ATS supervised smoke test (Stage 1)
 
-**Status:** Greenhouse **PASSED** (with known limitation) → next: Lever → Workday.  
+**Status:** Greenhouse **PASSED** · Lever **PASSED** → next: Workday.  
 Automated tests cover only synthetic fixtures under `fixtures/`. Do **not** claim live ATS verification until each platform below is completed.  
 **PR #1:** do not merge until all three platforms pass supervised smoke. Do not resume Stages 2–6.  
 **Phone-country:** Stage 1 keeps manual-review skip ([Issue #2](https://github.com/kalwad/JobApply/issues/2)). Do not re-automate in PR #1.
@@ -72,32 +72,20 @@ Phone national number: correct
 Phone country: manual; not autofilled; no +355
 Known limitations: Phone-country selector requires manual selection in Stage 1.
 EEO note: demographic self-ID (race/gender/veteran/disability) — user did not report changes; Stage 1 must leave these alone unless fill_eeo is enabled.
-Next: Lever supervised smoke
+Next: Workday supervised smoke
 ```
 
 ### Lever
 
 ```
 Platform: Lever
-Date:
-Job path/domain:
-Platform correctly detected:
-Fields detected:
-Fields correctly filled:
-Fields missed:
-Fields filled incorrectly:
-Existing fields preserved:
-Cancel changed nothing:
-Radio behavior:
-Checkbox behavior:
-Dropdown behavior:
-Conditional fields:
-Saved Q&A behavior:
-Ollama-generated answer behavior:
-EEO fields untouched:
-Final submit untouched:
-Console/service-worker errors:
-Known limitations:
+Status: PASSED (supervised live)
+Date: 2026-07-25
+Fields filled: Full name, Email, Phone — verified correct on page
+Review-before-fill shown; post-fill overlay listed the same three fields
+Submit: not activated (user closed without submitting)
+Known limitations: Cancel-first protocol awkward when form starts blank (refresh clears Lever draft); Cancel appears on pre-fill review only, not post-fill summary.
+Next: Workday supervised smoke
 ```
 
 ### Workday
