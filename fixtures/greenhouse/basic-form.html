@@ -11,25 +11,57 @@
     <input id="email" name="email" type="email" value="existing@example.com" />
     <label for="phone">Phone</label>
     <input id="phone" name="phone" type="tel" />
-    <label for="location">Location</label>
-    <select id="location" name="location" role="combobox" aria-label="Location">
-      <option value="">Select</option>
-      <option value="nyc">New York</option>
-      <option value="sf">San Francisco</option>
-    </select>
+
     <fieldset>
       <legend>Preferred contact</legend>
       <label><input type="radio" name="contact_pref" value="email" checked /> Email</label>
       <label><input type="radio" name="contact_pref" value="phone" /> Phone</label>
     </fieldset>
-    <label><input type="checkbox" id="newsletter" name="newsletter" /> Subscribe to updates</label>
+
+    <fieldset>
+      <legend>Requires sponsorship?</legend>
+      <label><input type="radio" name="sponsorship" value="yes" /> Yes</label>
+      <label><input type="radio" name="sponsorship" value="no" /> No</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Shirt size</legend>
+      <label><input type="radio" name="shirt_size" value="s" /> S</label>
+      <label><input type="radio" name="shirt_size" value="m" /> M</label>
+    </fieldset>
+
+    <label><input type="checkbox" id="contact_by_email" name="contact_by_email" /> Contact me by email</label>
+    <label><input type="checkbox" id="newsletter" name="newsletter" checked /> Subscribe to updates</label>
+    <label><input type="checkbox" id="marketing_opt_in" name="marketing_opt_in" /> Send me marketing offers</label>
+    <label><input type="checkbox" id="gh-terms" name="terms" /> I agree to the terms of service</label>
+
     <label for="race">Race / Ethnicity (EEO)</label>
     <select id="race" name="race" aria-label="Race / Ethnicity">
       <option value="">Decline to self-identify</option>
       <option value="white">White</option>
       <option value="asian">Asian</option>
     </select>
-    <input type="submit" value="Submit Application" />
+
+    <input type="submit" id="gh-submit" value="Submit Application" />
   </form>
+  <script>
+    window.__submitEventCount = 0;
+    window.__submitButtonClickCount = 0;
+    window.__requestSubmitCount = 0;
+    const form = document.getElementById('app_form');
+    const submitButton = document.getElementById('gh-submit');
+    form.addEventListener('submit', (event) => {
+      window.__submitEventCount += 1;
+      event.preventDefault();
+    });
+    submitButton.addEventListener('click', () => {
+      window.__submitButtonClickCount += 1;
+    });
+    const nativeRequestSubmit = HTMLFormElement.prototype.requestSubmit;
+    form.requestSubmit = function (...args) {
+      window.__requestSubmitCount += 1;
+      return nativeRequestSubmit.apply(this, args);
+    };
+  </script>
 </body>
 </html>

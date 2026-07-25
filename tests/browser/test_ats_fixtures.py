@@ -1,47 +1,43 @@
-"""Browser-level ATS fixture acceptance (review-before-fill, safety invariants)."""
+"""Browser-level ATS fixture acceptance (review-before-fill, safety invariants).
+
+Screenshots are pre-fill / post-action evidence on synthetic local ATS fixtures —
+not live Workday/Greenhouse/Lever verification.
+"""
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 import pytest
 
-from .conftest import SCREENSHOT_DIR, open_ats_fixture, start_fill_via_extension
+from .conftest import (
+    SCREENSHOT_DIR,
+    assert_no_submit,
+    open_ats_fixture,
+    read_fill_report,
+    require_screenshot,
+    start_fill_via_extension,
+    submit_counters,
+    wait_fill_done,
+)
 
 FIXTURES = ("workday", "greenhouse", "lever")
 
 
-def _ensure_screenshot_dir() -> Path:
+def _shot(name: str) -> Path:
     SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-    return SCREENSHOT_DIR
+    return SCREENSHOT_DIR / name
 
 
-def _safe_screenshot(page, path: Path) -> None:
-    """Best-effort screenshot; xvfb/CI can flake on captureScreenshot."""
-    try:
-        page.screenshot(path=str(path), full_page=False)
-    except Exception:
-        try:
-            page.screenshot(path=str(path), full_page=False, timeout=5000)
-        except Exception:
-            pass
-
-
-def _wait_review_overlay(page, timeout=30000):
+def _wait_review(page, timeout=30000):
     page.wait_for_selector(".ja-autofill-approve-btn", timeout=timeout)
     assert page.locator(".ja-autofill-review").count() >= 1
-    assert page.locator(".ja-autofill-cancel-btn").count() >= 1
 
 
-@pytest.mark.parametrize("ats", FIXTURES)
-def test_ats_fixture_detect_extract_and_review_cancel(ats_page, extension_context, ats):
-    """Cancel leaves the form unchanged (review overlay not bypassed)."""
-    open_ats_fixture(ats_page, ats)
-    ats_page.wait_for_timeout(800)
-
-    # Snapshot nonempty / preselected controls before fill
-    before = ats_page.evaluate(
+def _dom_snapshot(page) -> dict:
+    return page.evaluate(
         """() => {
           const data = {};
           for (const el of document.querySelectorAll('input, select, textarea')) {
@@ -53,147 +49,155 @@ def test_ats_fixture_detect_extract_and_review_cancel(ats_page, extension_contex
         }"""
     )
 
-    resp = start_fill_via_extension(extension_context, ats_page)
-    assert resp.get("ok") is not False, resp
 
-    _wait_review_overlay(ats_page)
-    shot = _ensure_screenshot_dir() / f"{ats}-review-overlay.png"
-    _safe_screenshot(ats_page, shot)
-
-    # Proposed values visible for review
-    review_text = ats_page.locator(".ja-autofill-review").inner_text()
-    assert "Review" in review_text
-    assert re.search(r"Ada|Lovelace|ada@|London|Authorized|privacy|terms", review_text, re.I)
-
-    ats_page.click(".ja-autofill-cancel-btn")
-    ats_page.wait_for_timeout(500)
-
-    after = ats_page.evaluate(
+def _field_state(page) -> dict:
+    return page.evaluate(
         """() => {
-          const data = {};
-          for (const el of document.querySelectorAll('input, select, textarea')) {
-            const key = el.id || el.name || el.getAttribute('aria-label') || el.outerHTML.slice(0, 40);
-            if (el.type === 'radio' || el.type === 'checkbox') data[key] = !!el.checked;
-            else data[key] = el.value || '';
-          }
-          return data;
-        }"""
-    )
-    assert after == before, f"Cancel mutated fields on {ats}"
-
-
-@pytest.mark.parametrize("ats", FIXTURES)
-def test_ats_fixture_approve_fill_and_protections(ats_page, extension_context, ats):
-    """Approve fills empty fields while preserving nonempty/EEO/submit protections."""
-    open_ats_fixture(ats_page, ats)
-    ats_page.wait_for_timeout(800)
-
-    # Capture preserved controls
-    preserved = ats_page.evaluate(
-        """() => {
-          const out = {};
-          const email = document.querySelector('#email, #wd-email, #lever-email, input[name="email"]');
-          if (email && email.value) out.email = email.value;
-          const phone = document.querySelector('#wd-phone, input[name="phone"]');
-          if (phone && phone.value) out.phone = phone.value;
-          const checkedRadio = document.querySelector('input[type="radio"]:checked');
-          if (checkedRadio) out.radio = checkedRadio.name + '=' + checkedRadio.value;
-          const eeo = document.querySelector('#race, #wd-gender, #lever-gender, select[name="race"], select[name="gender"]');
-          if (eeo) out.eeo = eeo.value;
-          const submit = document.querySelector('button[type="submit"], input[type="submit"]');
-          if (submit) out.submitText = (submit.value || submit.textContent || '').trim();
-          return out;
-        }"""
-    )
-
-    resp = start_fill_via_extension(extension_context, ats_page)
-    assert resp.get("ok") is not False, resp
-    _wait_review_overlay(ats_page)
-    ats_page.click(".ja-autofill-approve-btn")
-
-    # Wait until filling finishes (do not match "Filling N/M fields" or Review)
-    ats_page.wait_for_function(
-        """() => {
-          if (document.querySelector('.ja-autofill-approve-btn')) return false;
-          const body = document.querySelector('#ja-autofill-overlay');
-          if (!body) return false;
-          const t = body.innerText || '';
-          if (/Filling \\d/i.test(t)) return false;
-          return /\\d+ filled|Filled \\d|No fillable|cancelled|need manual|Fill report|already set|0 fields/i.test(t);
-        }""",
-        timeout=90000,
-    )
-
-    shot = _ensure_screenshot_dir() / f"{ats}-after-approve.png"
-    _safe_screenshot(ats_page, shot)
-
-    state = ats_page.evaluate(
-        """() => {
-          const q = (sel) => document.querySelector(sel);
+          const checked = (name) => {
+            const el = document.querySelector(`input[type="radio"][name="${name}"]:checked`);
+            return el ? el.value : null;
+          };
+          const box = (sel) => {
+            const el = document.querySelector(sel);
+            return el ? !!el.checked : null;
+          };
           return {
-            first: (q('#first_name, #wd-first, #lever-name, input[name="firstName"], input[name="first_name"], input[name="name"]') || {}).value || '',
-            last: (q('#last_name, #wd-last, input[name="lastName"], input[name="last_name"]') || {}).value || '',
-            email: (q('#email, #wd-email, #lever-email, input[name="email"]') || {}).value || '',
-            phone: (q('#wd-phone, #phone, #lever-phone, input[name="phone"]') || {}).value || '',
-            eeo: (q('#race, #wd-gender, #lever-gender, select[name="race"], select[name="gender"]') || {}).value || '',
-            emptyRadioStillEmpty: !document.querySelector('input[name="work_auth"]:checked')
-              && !document.querySelector('input[name="sponsorship"]:checked'),
-            terms: !!(q('#wd-terms, #lever-privacy, #newsletter') || {}).checked,
-            submitDisabledInteraction: (() => {
-              const s = q('button[type="submit"], input[type="submit"]');
-              return s ? { text: (s.value || s.textContent || '').trim(), focused: document.activeElement === s } : null;
-            })(),
+            first: (document.querySelector('#first_name, #wd-first, #lever-name, input[name="firstName"], input[name="first_name"], input[name="name"]') || {}).value || '',
+            last: (document.querySelector('#last_name, #wd-last, input[name="lastName"], input[name="last_name"]') || {}).value || '',
+            email: (document.querySelector('#email, #wd-email, #lever-email, input[name="email"]') || {}).value || '',
+            phone: (document.querySelector('#wd-phone, #phone, #lever-phone, input[name="phone"]') || {}).value || '',
+            work_auth: checked('work_auth'),
+            sponsorship: checked('sponsorship'),
+            contact_pref: checked('contact_pref'),
+            favorite_color: checked('favorite_color'),
+            shirt_size: checked('shirt_size'),
+            team_color: checked('team_color'),
+            disability: checked('disability'),
+            contact_by_email: box('#wd-contact-email, #contact_by_email, #lever-contact-email, input[name="contact_by_email"]'),
+            prechecked: box('#wd-sms, #newsletter, #lever-sms, input[name="receive_sms"], input[name="newsletter"]'),
+            marketing: box('#wd-marketing, #marketing_opt_in, #lever-marketing, input[name="marketing_opt_in"]'),
+            legal: box('#wd-terms, #gh-terms, #lever-privacy, input[name="terms"], input[name="privacy"]'),
+            eeo_select: (document.querySelector('#race, #wd-gender, #lever-gender, select[name="race"], select[name="gender"]') || {}).value || '',
           };
         }"""
     )
 
-    # Text/name filled when empty
+
+@pytest.mark.parametrize("ats", FIXTURES)
+def test_ats_fixture_review_cancel_no_submit(ats_page, extension_context, error_collector, ats):
+    """Cancel leaves DOM unchanged; submit sentinels stay at zero."""
+    open_ats_fixture(ats_page, ats)
+    ats_page.wait_for_timeout(800)
+    before = _dom_snapshot(ats_page)
+    before_counts = submit_counters(ats_page)
+
+    resp = start_fill_via_extension(extension_context, ats_page, error_collector)
+    assert resp.get("ok") is not False, resp
+    _wait_review(ats_page)
+
+    # Label accurately: pre-fill review on synthetic fixture
+    require_screenshot(ats_page, _shot(f"{ats}-review-overlay.png"))
+
+    review_text = ats_page.locator(".ja-autofill-review").inner_text()
+    assert "Review" in review_text
+    assert re.search(r"Ada|Lovelace|ada@|Contact me by email|Authorized|sponsorship", review_text, re.I)
+
+    ats_page.click(".ja-autofill-cancel-btn")
+    ats_page.wait_for_timeout(500)
+    require_screenshot(ats_page, _shot(f"{ats}-cancel-result.png"))
+
+    assert _dom_snapshot(ats_page) == before
+    assert submit_counters(ats_page) == before_counts
+    assert_no_submit(ats_page)
+    error_collector.assert_clean()
+
+
+@pytest.mark.parametrize("ats", FIXTURES)
+def test_ats_fixture_approve_controls_report_and_submit(ats_page, extension_context, error_collector, ats):
+    """Approve fills trusted empties; preserves nonempty; exact report; no submit."""
+    open_ats_fixture(ats_page, ats)
+    ats_page.wait_for_timeout(800)
+    before = _field_state(ats_page)
+
+    resp = start_fill_via_extension(extension_context, ats_page, error_collector)
+    assert resp.get("ok") is not False, resp
+    _wait_review(ats_page)
+    ats_page.click(".ja-autofill-approve-btn")
+    wait_fill_done(ats_page)
+
+    require_screenshot(ats_page, _shot(f"{ats}-after-approve.png"))
+    require_screenshot(ats_page, _shot(f"{ats}-fill-report.png"))
+
+    state = _field_state(ats_page)
+    report_payload = read_fill_report(ats_page)
+    report = report_payload["report"]
+    results = report_payload["results"]
+
+    # --- text fills ---
     if ats == "lever":
         assert "Ada" in state["first"]
     else:
-        assert state["first"] == "Ada" or "Ada" in state["first"]
-        if state["last"]:
-            assert "Lovelace" in state["last"]
+        assert state["first"] == "Ada"
+        assert "Lovelace" in state["last"]
 
-    # Nonempty email/phone preserved
-    if preserved.get("email"):
-        assert state["email"] == preserved["email"]
-    if preserved.get("phone"):
-        assert state["phone"] == preserved["phone"]
+    # nonempty preserved
+    if before["email"]:
+        assert state["email"] == before["email"]
+    if before["phone"]:
+        assert state["phone"] == before["phone"]
 
-    # Preselected radio preserved (Greenhouse contact_pref=email)
-    if preserved.get("radio"):
-        still = ats_page.evaluate(
-            """(nameVal) => {
-              const [name, value] = nameVal.split('=');
-              const el = document.querySelector(`input[type="radio"][name="${name}"][value="${value}"]`);
-              return !!(el && el.checked);
-            }""",
-            preserved["radio"],
-        )
-        assert still is True
+    # --- radios ---
+    if ats in ("workday", "lever"):
+        assert state["work_auth"] == "yes", "empty trusted work_auth must fill after approve"
+    if ats == "greenhouse":
+        assert state["sponsorship"] == "no", "empty trusted sponsorship must fill after approve"
+        assert state["contact_pref"] == "email", "existing radio must be preserved"
+        assert state["shirt_size"] is None, "radio without trusted source must stay empty"
+    if ats == "workday":
+        assert state["favorite_color"] is None
+    if ats == "lever":
+        assert state["team_color"] is None
+    assert state["disability"] is None, "EEO radio untouched without fill_eeo"
 
-    # EEO untouched (empty / decline)
-    if "eeo" in preserved:
-        assert state["eeo"] == preserved["eeo"]
+    # --- checkboxes ---
+    assert state["contact_by_email"] is True, "benign empty contact_by_email must check"
+    assert state["prechecked"] is True, "prechecked checkbox must remain checked"
+    assert state["marketing"] is False, "false/unmapped preference must remain unchecked"
+    assert state["legal"] is False, "legal attestation must not auto-check"
+    assert state["eeo_select"] == before["eeo_select"]
 
-    # Submit control never focused / not auto-activated
-    if state["submitDisabledInteraction"]:
-        assert state["submitDisabledInteraction"]["focused"] is False
-        assert re.search(r"submit|application|next", state["submitDisabledInteraction"]["text"], re.I)
+    # --- submit sentinels ---
+    assert_no_submit(ats_page)
 
-    # Fill report / completion text present in overlay
-    overlay_text = ats_page.locator("#ja-autofill-overlay").inner_text()
-    assert re.search(r"Filled|field|skip|report|manual", overlay_text, re.I)
+    # --- exact fill report (mocked analyze path) ---
+    expected = {
+        "workday": {"filled": 5, "alreadyCompleted": 2, "skippedSensitive": 4, "needsReview": 1, "failed": 0},
+        "greenhouse": {"filled": 5, "alreadyCompleted": 3, "skippedSensitive": 3, "needsReview": 1, "failed": 0},
+        "lever": {"filled": 4, "alreadyCompleted": 2, "skippedSensitive": 3, "needsReview": 1, "failed": 0},
+    }[ats]
+    for key, value in expected.items():
+        assert report[key] == value, f"{ats} report[{key}]={report.get(key)} expected {value}; full={report}"
+
+    # Named field categories from results
+    by_label = " ".join(
+        f"{(r.get('field_label') or '')} {(r.get('selector') or '')} {(r.get('reason') or '')}"
+        for r in results
+    ).lower()
+    assert "submit" in by_label
+    assert any(r.get("skipped") and re.search(r"submit", r.get("reason") or "", re.I) for r in results)
+    assert any(r.get("skipped") and re.search(r"manual review", r.get("reason") or "", re.I) for r in results)
+    assert any(r.get("skipped") and re.search(r"eeo", r.get("reason") or "", re.I) for r in results)
+
+    # Persist machine-readable evidence next to screenshots
+    evidence = _shot(f"{ats}-fill-report.json")
+    evidence.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
+
+    error_collector.assert_clean()
 
 
 def test_playwright_is_real_dependency():
-    """Fail loudly if Playwright is missing (not an optional skip)."""
     import importlib.metadata
-
     import playwright
 
-    version = importlib.metadata.version("playwright")
-    assert version
+    assert importlib.metadata.version("playwright")
     assert playwright is not None
-    # Chromium launch is exercised by the extension fixture tests above.

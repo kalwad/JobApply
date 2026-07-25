@@ -289,8 +289,14 @@ async def lifespan(app: FastAPI):
     await app.state.db.close()
 
 
-def create_app(db_path: str = "data/jobapply.db", testing: bool = False) -> FastAPI:
+def create_app(db_path: str | None = None, testing: bool = False) -> FastAPI:
     app = FastAPI(title="JobApply", lifespan=lifespan)
+    if db_path is None:
+        try:
+            from app.config import Settings as _Settings
+            db_path = _Settings().db_path
+        except Exception:
+            db_path = "data/jobapply.db"
     app.state.db_path = db_path
     app.state.testing = testing
     app.state.slim_mode = True

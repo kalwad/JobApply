@@ -45,6 +45,15 @@ jobs:
           mkdir -p test-results docs/screenshots
           xvfb-run -a uv run pytest --tb=short --junitxml=test-results/backend-core-browser.xml \
             tests/browser
+      - name: Upload browser acceptance artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: stage1-browser-evidence
+          path: |
+            docs/screenshots/
+            test-results/
+          if-no-files-found: error
 
   extension:
     name: Extension Vitest

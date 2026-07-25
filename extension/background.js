@@ -32,7 +32,13 @@ async function apiFetch(path, options = {}) {
 
 async function checkConnection() {
   try {
-    const resp = await apiFetch('/api/health');
+    // Prefer /api/meta (always mounted in slim mode). Fall back to /api/health.
+    let resp;
+    try {
+      resp = await apiFetch('/api/meta');
+    } catch {
+      resp = await apiFetch('/api/health');
+    }
     const data = await resp.json();
     return { ok: true, data };
   } catch (err) {

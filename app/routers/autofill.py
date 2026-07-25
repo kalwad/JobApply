@@ -91,6 +91,8 @@ def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], 
         (r"\bsurname\b|\bfamily[\s_-]?name\b", last_name, "fill_text"),
         (r"\bfull[\s_-]?name\b|\byour[\s_-]?name\b", full_name, "fill_text"),
         (r"\bmiddle[\s_-]?name\b", profile.get("middle_name", ""), "fill_text"),
+        # Contact-preference checkbox must win over the generic email text rule.
+        (r"\bcontact[\s_-]?me[\s_-]?by[\s_-]?email\b|\bemail[\s_-]?me[\s_-]?about\b", profile.get("contact_by_email", ""), None),
         (r"\bemail\b", profile.get("email", ""), "fill_text"),
         (r"\bphone[\s_-]?country[\s_-]?code\b|\bcountry[\s_-]?code\b|\bcountry[\s_-]?phone\b", profile.get("address_country_name", "United States") + " (" + profile.get("phone_country_code", "+1") + ")", "select_dropdown_safe"),
         (r"\bphone[\s_-]?ext(ension)?\b|\bext(ension)?\b", "", "skip"),
@@ -104,7 +106,7 @@ def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], 
         (r"\blinkedin\b", profile.get("linkedin_url", ""), "fill_text"),
         (r"\bgithub\b", profile.get("github_url", ""), "fill_text"),
         (r"\bportfolio\b|\bwebsite\b|\bpersonal[\s_-]?url\b", profile.get("portfolio_url", "") or profile.get("website_url", ""), "fill_text"),
-        (r"\bauthori[sz]ed[\s_-]?to[\s_-]?work\b", profile.get("authorized_to_work_us", ""), None),
+        (r"\bauthori[sz]ed[\s_-]?to[\s_-]?work\b|\bwork[\s_-]?authori[sz]ation\b", profile.get("authorized_to_work_us", ""), None),
         (r"\bsponsorship\b|\bvisa[\s_-]?sponsor\b", profile.get("requires_sponsorship", ""), None),
         (r"\bsalary\b|\bcompensation\b|\bdesired[\s_-]?pay\b", str(profile.get("desired_salary_min", "")), "fill_text"),
         (r"\bhow[\s_-]?did[\s_-]?you[\s_-]?(hear|find|learn)\b|\breferral[\s_-]?source\b|\bhow.{0,10}hear\b|\bsource\b.*\bhear\b|\bhear.{0,10}about\b", profile.get("how_heard_default", "Online Job Board"), None),
@@ -134,10 +136,12 @@ def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], 
             if _re.search(pattern, searchable, _re.IGNORECASE) and not _is_excluded(pattern, searchable, field_id):
                 tag = field.get("tag", "").lower()
                 if action is None:
-                    if tag == "select" or field.get("options"):
+                    # Radios/checkboxes also carry an options[] group descriptor — check type first.
+                    ftype = (field.get("type") or "").lower()
+                    if ftype in ("radio", "checkbox"):
+                        action = "click_radio" if ftype == "radio" else "check_checkbox"
+                    elif tag == "select" or field.get("options"):
                         action = "select_dropdown"
-                    elif field.get("type") in ("radio", "checkbox"):
-                        action = "click_radio" if field.get("type") == "radio" else "check_checkbox"
                     else:
                         action = "fill_text"
 
@@ -147,8 +151,26 @@ def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], 
                     if best:
                         value = best
 
+                selector = field["selector"]
+                if action == "click_radio":
+                    lv = str(value).strip().lower()
+                    if lv in ("yes", "y", "true", "1"):
+                        value = "yes"
+                    elif lv in ("no", "n", "false", "0"):
+                        value = "no"
+                    fname = field.get("name") or ""
+                    if fname and value in ("yes", "no"):
+                        selector = f'input[name="{fname}"][value="{value}"]'
+
+                if action == "check_checkbox":
+                    lv = str(value).strip().lower()
+                    if lv in ("yes", "y", "true", "1"):
+                        value = "yes"
+                    elif lv in ("no", "n", "false", "0"):
+                        value = "no"
+
                 mappings.append({
-                    "selector": field["selector"],
+                    "selector": selector,
                     "value": value,
                     "action": action,
                     "confidence": 1.0,
@@ -193,7 +215,7 @@ def _trim_profile_for_autofill(profile: dict) -> dict:
         "requires_sponsorship", "authorization_type", "security_clearance",
         "clearance_status", "desired_salary_min", "desired_salary_max",
         "salary_period", "availability_date", "notice_period", "willing_to_relocate",
-        "how_heard_default", "background_check_consent",
+        "how_heard_default", "background_check_consent", "contact_by_email",
     ]
     for key in personal_keys:
         if key in profile and profile[key]:

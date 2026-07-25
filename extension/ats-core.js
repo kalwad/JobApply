@@ -185,7 +185,10 @@
       }
 
       if (result.skipped) {
-        if (isSensitiveSkip(result)) {
+        const reason = String(result.reason || '');
+        if (/manual review/i.test(reason)) {
+          report.needsReview++;
+        } else if (isSensitiveSkip(result)) {
           report.skippedSensitive++;
         }
         continue;
