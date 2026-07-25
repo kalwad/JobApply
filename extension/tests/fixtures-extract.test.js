@@ -130,8 +130,38 @@ describe('fixture adapter detect + extract', () => {
     const byName = Object.fromEntries(fields.map(f => [f.name, f]));
     expect(byName['cards[preferred_name]']?.semanticType).toBe('preferred_name');
     expect(byName['cards[languages]']?.semanticType).toBe('languages');
+    expect(byName['cards[languages]']?.label).toMatch(/Language Skill/i);
+    expect(byName['cards[languages]']?.options?.length).toBeGreaterThanOrEqual(5);
+    expect(byName['cards[languages]']?.options?.[0]?.label).toMatch(/English/i);
     expect(byName['cards[university]']?.semanticType).toBe('university');
     expect(byName['cards[proud]']?.semanticType).toBe('open_ended_question');
+  });
+
+  it('Lever opaque cards[uuid] language checkboxes still tag as languages', () => {
+    document.body.innerHTML = `
+      <form class="application-form">
+        <ul>
+          <li class="application-question">
+            <label><div class="application-label">Language Skill(s) (Check all that apply)✱</div></label>
+            <ul>
+              <li><label><input type="checkbox" name="cards[a1b2c3]" value="English (ENG)"> English (ENG)</label></li>
+              <li><label><input type="checkbox" name="cards[a1b2c3]" value="Spanish (SPA)"> Spanish (SPA)</label></li>
+              <li><label><input type="checkbox" name="cards[a1b2c3]" value="French (FRA)"> French (FRA)</label></li>
+              <li><label><input type="checkbox" name="cards[a1b2c3]" value="German (DEU)"> German (DEU)</label></li>
+              <li><label><input type="checkbox" name="cards[a1b2c3]" value="Hindi (HIN)"> Hindi (HIN)</label></li>
+            </ul>
+          </li>
+        </ul>
+      </form>
+    `;
+    const adapter = ctx.adapters.detectATS(FIXTURE_URLS.lever, document);
+    const fields = ctx.core.extractWithAdapter(adapter, document, (root) => ctx.api.extractFormData(root));
+    const lang = fields.find((f) => f.name === 'cards[a1b2c3]');
+    expect(lang?.label).toMatch(/Language Skill/i);
+    expect(lang?.semanticType).toBe('languages');
+    expect(lang?.options?.map((o) => o.label)).toEqual([
+      'English (ENG)', 'Spanish (SPA)', 'French (FRA)', 'German (DEU)', 'Hindi (HIN)',
+    ]);
   });
 
   it('Greenhouse location: typed-without-select fails verification (no false success)', async () => {

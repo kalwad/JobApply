@@ -229,6 +229,50 @@
 
   // ─── Form extraction ─────────────────────────────────────────
 
+  /**
+   * Group / question heading for radio & checkbox sets (Lever application-label,
+   * fieldset legend, etc). Distinct from per-option findLabel().
+   */
+  function findGroupLabel(el) {
+    try {
+      const questionCard = el.closest?.(
+        'li.application-question, .application-question, li.custom-question, .custom-question'
+      );
+      if (questionCard) {
+        const appLabel = questionCard.querySelector(
+          ':scope > label .application-label, :scope > .application-label, '
+          + ':scope > label > div.application-label, .application-label'
+        );
+        if (appLabel) {
+          const t = (appLabel.textContent || '').trim().replace(/\s+/g, ' ');
+          const cleaned = t.replace(/[✱*]\s*$/, '').trim();
+          if (cleaned && cleaned.length < 200) return cleaned;
+        }
+        // Fallback: first label text that is not wrapping an option input
+        const headingLabel = Array.from(questionCard.querySelectorAll(':scope > label')).find((lab) => (
+          !lab.querySelector('input[type="checkbox"], input[type="radio"]')
+        ));
+        if (headingLabel) {
+          const clone = headingLabel.cloneNode(true);
+          clone.querySelectorAll('input, select, textarea').forEach((c) => c.remove());
+          const t = clone.textContent.trim().replace(/\s+/g, ' ').replace(/[✱*]\s*$/, '').trim();
+          if (t && t.length < 200) return t;
+        }
+      }
+      const fieldset = el.closest?.('fieldset');
+      if (fieldset) {
+        const legend = fieldset.querySelector(':scope > legend');
+        const t = (legend?.textContent || '').trim().replace(/\s+/g, ' ').replace(/[✱*]\s*$/, '').trim();
+        if (t) return t.slice(0, 200);
+      }
+      const nearby = getNearbyHeading(el);
+      if (nearby) return nearby.replace(/[✱*]\s*$/, '').trim();
+      return '';
+    } catch {
+      return '';
+    }
+  }
+
   function findLabel(el) {
     try {
       const type = (el.type || '').toLowerCase();
@@ -503,6 +547,10 @@
           seen.add(groupKey);
         }
 
+        const isOptionGroup = type === 'radio' || type === 'checkbox';
+        // Group fields must keep the question heading as label (e.g. Language Skill(s)).
+        // Per-option labels live in field.options — findLabel(el) alone returns "English (ENG)".
+        const groupLabel = isOptionGroup ? findGroupLabel(el) : '';
         const field = {
           selector,
           tag: el.tagName.toLowerCase(),
@@ -510,7 +558,7 @@
           name: el.name || null,
           id: el.id || null,
           placeholder: el.placeholder || null,
-          label: findLabel(el),
+          label: groupLabel || findLabel(el),
           nearbyHeading: getNearbyHeading(el),
           required: el.required || el.getAttribute('aria-required') === 'true',
           // Radios/checkboxes: use checked state, not the value attribute ("on").
@@ -521,7 +569,7 @@
 
         if (el.tagName === 'SELECT') {
           field.options = getSelectOptions(el);
-        } else if (type === 'radio' || type === 'checkbox') {
+        } else if (isOptionGroup) {
           field.options = getRadioCheckboxGroup(el);
         }
 
@@ -5234,6 +5282,7 @@
       isElementVisible,
       buildSelector,
       findLabel,
+      findGroupLabel,
       setNativeValue,
       dispatchEvents,
       clickOption,

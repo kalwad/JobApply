@@ -31,6 +31,16 @@ def test_match_language_option_english_code():
     assert _match_language_option("Hindi", opts) is None
 
 
+def test_match_language_option_value_includes_code():
+    """Live Lever often uses value='English (ENG)' not bare 'English'."""
+    opts = [
+        {"value": "English (ENG)", "label": "English (ENG)"},
+        {"value": "Spanish (SPA)", "label": "Spanish (SPA)"},
+    ]
+    assert _match_language_option("English", opts)["value"] == "English (ENG)"
+    assert _match_language_option("Spanish", opts)["value"] == "Spanish (SPA)"
+
+
 def test_expand_language_mappings_multi_checkbox():
     field = {
         "selector": 'input[name="cards[languages]"]',

@@ -392,6 +392,23 @@ describe('Lever adapter', () => {
     expect(enhanced[0].atsHint).toBe('lever_custom_question');
   });
 
+  it('enhanceExtraction tags opaque cards[] language checkboxes from options', () => {
+    const fields = [{
+      name: 'cards[a1b2c3]',
+      type: 'checkbox',
+      label: 'English (ENG)', // wrong option label alone must not block recovery
+      options: [
+        { value: 'English (ENG)', label: 'English (ENG)' },
+        { value: 'Spanish (SPA)', label: 'Spanish (SPA)' },
+        { value: 'French (FRA)', label: 'French (FRA)' },
+        { value: 'German (DEU)', label: 'German (DEU)' },
+        { value: 'Hindi (HIN)', label: 'Hindi (HIN)' },
+      ],
+    }];
+    const enhanced = lever.enhanceExtraction(fields);
+    expect(enhanced[0].semanticType).toBe('languages');
+  });
+
   it('enhanceExtraction does not mark regular fields', () => {
     const fields = [{ name: 'email' }];
     const enhanced = lever.enhanceExtraction(fields);

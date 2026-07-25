@@ -172,6 +172,25 @@ describe('findLabel', () => {
     expect(api.findLabel(boxes[1])).toBe('Spanish (SPA)');
     expect(api.findLabel(boxes[0])).not.toMatch(/Language Skill/i);
   });
+
+  it('findGroupLabel keeps Language Skill(s) for the checkbox group field', () => {
+    const li = document.createElement('li');
+    li.className = 'application-question';
+    li.innerHTML = `
+      <label><div class="application-label">Language Skill(s) (Check all that apply)</div></label>
+      <ul>
+        <li><label><input type="checkbox" name="cards[uuid]" value="English (ENG)"> English (ENG)</label></li>
+        <li><label><input type="checkbox" name="cards[uuid]" value="Spanish (SPA)"> Spanish (SPA)</label></li>
+      </ul>
+    `;
+    document.body.appendChild(li);
+    const first = li.querySelector('input[type="checkbox"]');
+    expect(api.findGroupLabel(first)).toMatch(/Language Skill/i);
+    const fields = api.extractFormData(document);
+    const lang = fields.find((f) => f.name === 'cards[uuid]');
+    expect(lang?.label).toMatch(/Language Skill/i);
+    expect(lang?.options?.map((o) => o.label)).toEqual(['English (ENG)', 'Spanish (SPA)']);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════

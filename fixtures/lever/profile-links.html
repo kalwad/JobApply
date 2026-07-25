@@ -39,12 +39,19 @@
       <option value="other">Other (School Not Listed)</option>
     </select>
 
-    <fieldset>
-      <legend>Language Skill(s) (Check all that apply)✱</legend>
-      <label><input type="checkbox" name="cards[languages]" value="English" /> English (ENG)</label>
-      <label><input type="checkbox" name="cards[languages]" value="Spanish" /> Spanish (SPA)</label>
-      <label><input type="checkbox" name="cards[languages]" value="Hindi" /> Hindi (HIN)</label>
-    </fieldset>
+    <!-- Live Lever uses li.application-question + .application-label (not fieldset/legend). -->
+    <ul class="application-questions">
+      <li class="application-question">
+        <label><div class="application-label">Language Skill(s) (Check all that apply)✱</div></label>
+        <ul>
+          <li><label><input type="checkbox" name="cards[languages]" value="English (ENG)" /> English (ENG)</label></li>
+          <li><label><input type="checkbox" name="cards[languages]" value="Spanish (SPA)" /> Spanish (SPA)</label></li>
+          <li><label><input type="checkbox" name="cards[languages]" value="Hindi (HIN)" /> Hindi (HIN)</label></li>
+          <li><label><input type="checkbox" name="cards[languages]" value="French (FRA)" /> French (FRA)</label></li>
+          <li><label><input type="checkbox" name="cards[languages]" value="German (DEU)" /> German (DEU)</label></li>
+        </ul>
+      </li>
+    </ul>
 
     <label for="lever-heard">How did you hear about this opportunity?✱</label>
     <select id="lever-heard" name="cards[hear]">

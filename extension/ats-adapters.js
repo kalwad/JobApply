@@ -365,6 +365,15 @@
         if (!field.semanticType && /\blanguage\b/.test(text)) {
           field.semanticType = 'languages';
         }
+        // Live Lever language cards often use opaque cards[uuid] names; recover from options.
+        if (!field.semanticType && (field.type || '').toLowerCase() === 'checkbox'
+            && Array.isArray(field.options) && field.options.length >= 5) {
+          const langLike = field.options.filter((o) => {
+            const blob = `${o?.label || o?.text || ''} ${o?.value || ''}`;
+            return /\([A-Z]{2,4}\)\s*$/.test(blob.trim()) || /^(english|spanish|french|german|hindi)\b/i.test(blob.trim());
+          }).length;
+          if (langLike >= 3) field.semanticType = 'languages';
+        }
         if (!field.semanticType && /\bhow\s+did\s+you\s+hear\b|\bhear\s+about\b/.test(text)) {
           field.semanticType = 'how_heard';
         }
