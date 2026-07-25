@@ -6,7 +6,11 @@ from httpx import AsyncClient, ASGITransport
 from unittest.mock import AsyncMock, patch
 
 from app.database import Database
-from app.routers.autofill import _deterministic_fill, _match_phone_country_option
+from app.routers.autofill import (
+    _deterministic_fill,
+    _match_phone_country_option,
+    _name_components,
+)
 
 
 @pytest.fixture
@@ -147,7 +151,7 @@ def test_deterministic_fill_matches_phone_number_field():
 
 
 def test_deterministic_fill_excludes_phone_country_code():
-    """phone_country_code should NOT match the phone number rule."""
+    """phone_country_code must be skipped (Stage 1 fail-safe), not filled as phone."""
     fields = [
         {"selector": "#phone_country_code", "name": "phone_country_code",
          "id": "phone_country_code", "label": "Phone Country Code",
@@ -156,8 +160,9 @@ def test_deterministic_fill_excludes_phone_country_code():
     ]
     mappings, remaining = _deterministic_fill(fields, PROFILE)
     assert len(mappings) == 1
-    # Should be matched by the country code rule, not the phone number rule
-    assert mappings[0]["action"] == "select_dropdown_safe"
+    assert mappings[0]["action"] == "skip"
+    assert mappings[0]["reason"] == "phone_country_manual_review"
+    assert mappings[0]["fieldKind"] == "phone_country"
 
 
 def test_deterministic_fill_excludes_phone_extension():
@@ -175,7 +180,7 @@ def test_deterministic_fill_excludes_phone_extension():
 
 
 def test_deterministic_fill_greenhouse_phone_and_country_code():
-    """Both Greenhouse phone fields should be matched deterministically."""
+    """Phone number fills; phone-country is left for manual review."""
     fields = [
         {"selector": "#phone_country_code", "name": "phone_country_code",
          "id": "phone_country_code", "label": "Phone Country Code",
@@ -191,7 +196,8 @@ def test_deterministic_fill_greenhouse_phone_and_country_code():
     code_mapping = next(m for m in mappings if m["selector"] == "#phone_country_code")
     assert phone_mapping["value"] == "(555) 123-4567"
     assert phone_mapping["action"] == "fill_text"
-    assert code_mapping["action"] == "select_dropdown_safe"
+    assert code_mapping["action"] == "skip"
+    assert code_mapping["reason"] == "phone_country_manual_review"
 
 
 def test_deterministic_fill_ignores_phone_nearby_heading():
@@ -238,3 +244,75 @@ def test_match_phone_country_prefers_us_plus_one_not_albania():
     assert _match_phone_country_option("United States (+1)", options) == "United States (+1)"
     assert _match_phone_country_option("+1", options) == "United States (+1)"
     assert _match_phone_country_option("1", options) == "United States (+1)"
+
+
+def test_name_components_three_part_with_middle():
+    profile = {
+        "full_name": "Tanish Ashok Kalwad",
+        "middle_name": "Ashok",
+    }
+    first, middle, last = _name_components(profile)
+    assert first == "Tanish"
+    assert middle == "Ashok"
+    assert last == "Kalwad"
+
+
+def test_name_components_explicit_fields_win():
+    profile = {
+        "full_name": "Wrong Name Here",
+        "first_name": "Tanish",
+        "middle_name": "Ashok",
+        "last_name": "Kalwad",
+    }
+    assert _name_components(profile) == ("Tanish", "Ashok", "Kalwad")
+
+
+def test_deterministic_fill_three_part_name():
+    profile = {
+        **PROFILE,
+        "full_name": "Tanish Ashok Kalwad",
+        "middle_name": "Ashok",
+    }
+    fields = [
+        {"selector": "#first_name", "name": "first_name", "id": "first_name",
+         "label": "First Name", "tag": "input", "type": "text", "placeholder": "", "currentValue": ""},
+        {"selector": "#last_name", "name": "last_name", "id": "last_name",
+         "label": "Last Name", "tag": "input", "type": "text", "placeholder": "", "currentValue": ""},
+        {"selector": "#middle_name", "name": "middle_name", "id": "middle_name",
+         "label": "Middle Name", "tag": "input", "type": "text", "placeholder": "", "currentValue": ""},
+    ]
+    mappings, _remaining = _deterministic_fill(fields, profile)
+    by_sel = {m["selector"]: m["value"] for m in mappings}
+    assert by_sel["#first_name"] == "Tanish"
+    assert by_sel["#middle_name"] == "Ashok"
+    assert by_sel["#last_name"] == "Kalwad"
+
+
+def test_work_auth_not_filled_with_country_name():
+    profile = {
+        **PROFILE,
+        "address_country_name": "United States",
+        "authorized_to_work_us": "yes",
+    }
+    fields = [
+        {"selector": "input[name='work_auth']", "name": "work_auth", "id": "",
+         "label": "Are you currently authorized to work in this country?",
+         "tag": "input", "type": "radio", "placeholder": "", "currentValue": "",
+         "options": [{"value": "yes", "label": "Yes"}, {"value": "no", "label": "No"}]},
+        {"selector": "#address_country", "name": "country", "id": "address_country",
+         "label": "Country*", "tag": "select", "type": "", "placeholder": "", "currentValue": "",
+         "options": [{"text": "United States", "value": "US"}, {"text": "Albania", "value": "AL"}]},
+        {"selector": "#phone_country_trigger", "name": "", "id": "phone_country_trigger",
+         "label": "Select country", "tag": "button", "type": "", "placeholder": "",
+         "currentValue": "", "fieldKind": "phone_country"},
+    ]
+    mappings, _remaining = _deterministic_fill(fields, profile)
+    work = next(m for m in mappings if "work_auth" in m["selector"])
+    assert work["value"] == "yes"
+    assert work["action"] == "click_radio"
+    assert work["value"] != "United States"
+    addr = next(m for m in mappings if m["selector"] == "#address_country")
+    assert addr["value"] == "United States"
+    phone_cc = next(m for m in mappings if m["selector"] == "#phone_country_trigger")
+    assert phone_cc["action"] == "skip"
+    assert phone_cc["fieldKind"] == "phone_country"

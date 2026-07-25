@@ -644,7 +644,10 @@ class Database:
         profile_migrations = {
             "middle_name": "ALTER TABLE user_profile ADD COLUMN middle_name TEXT NOT NULL DEFAULT ''",
             "preferred_name": "ALTER TABLE user_profile ADD COLUMN preferred_name TEXT NOT NULL DEFAULT ''",
+            "first_name": "ALTER TABLE user_profile ADD COLUMN first_name TEXT NOT NULL DEFAULT ''",
+            "last_name": "ALTER TABLE user_profile ADD COLUMN last_name TEXT NOT NULL DEFAULT ''",
             "phone_country_code": "ALTER TABLE user_profile ADD COLUMN phone_country_code TEXT NOT NULL DEFAULT ''",
+            "phone_country_iso2": "ALTER TABLE user_profile ADD COLUMN phone_country_iso2 TEXT NOT NULL DEFAULT ''",
             "phone_type": "ALTER TABLE user_profile ADD COLUMN phone_type TEXT NOT NULL DEFAULT ''",
             "additional_phone": "ALTER TABLE user_profile ADD COLUMN additional_phone TEXT NOT NULL DEFAULT ''",
             "address_street1": "ALTER TABLE user_profile ADD COLUMN address_street1 TEXT NOT NULL DEFAULT ''",
