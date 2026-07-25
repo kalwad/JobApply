@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Greenhouse Phone Country Widget</title></head>
+<body>
+  <form id="app_form">
+    <label for="first_name">First Name</label>
+    <input id="first_name" name="first_name" type="text" />
+    <label for="last_name">Last Name</label>
+    <input id="last_name" name="last_name" type="text" />
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" />
+
+    <!-- Address country elsewhere on the form (ordinary country) -->
+    <label for="address_country">Country*</label>
+    <select id="address_country" name="job_application[country]">
+      <option value="">Select...</option>
+      <option value="US">United States</option>
+      <option value="CA">Canada</option>
+      <option value="AL">Albania</option>
+    </select>
+
+    <!-- Bounded phone widget: custom "Select country" + tel input -->
+    <div class="phone-widget" data-qa="phone-input">
+      <button
+        type="button"
+        id="phone_country_trigger"
+        class="phone-country-select"
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded="false"
+        aria-label="Select country"
+        aria-controls="phone_country_listbox"
+      >Select country</button>
+      <input type="hidden" id="phone_country_iso" name="phone_country" value="" />
+      <label for="phone">Phone*</label>
+      <input id="phone" name="phone" type="tel" />
+    </div>
+
+    <!-- Unrelated dropdown elsewhere (must not be used for phone country) -->
+    <label for="degree">Degree</label>
+    <select id="degree" name="degree">
+      <option value="">Select...</option>
+      <option value="bs">Bachelor's</option>
+      <option value="ms">Master's</option>
+    </select>
+
+    <fieldset>
+      <legend>Are you currently authorized to work in this country?</legend>
+      <label><input type="radio" name="work_auth" value="yes" /> Yes</label>
+      <label><input type="radio" name="work_auth" value="no" /> No</label>
+    </fieldset>
+
+    <!-- Portaled / virtualized option list (initially only Albania visible) -->
+    <div id="phone_country_listbox" role="listbox" hidden>
+      <div role="option" data-value="AL" data-country="AL" data-country-code="355" aria-label="Albania (+355)">Albania (+355)</div>
+      <div role="option" data-value="DZ" data-country="DZ" data-country-code="213" aria-label="Algeria (+213)" hidden>Algeria (+213)</div>
+      <div role="option" data-value="AS" data-country="AS" data-country-code="1" aria-label="American Samoa (+1)" hidden>American Samoa (+1)</div>
+      <div role="option" data-value="CA" data-country="CA" data-country-code="1" aria-label="Canada (+1)" hidden>Canada (+1)</div>
+      <div role="option" data-value="US" data-country="US" data-country-code="1" aria-label="United States (+1)" hidden>United States (+1)</div>
+    </div>
+
+    <input type="submit" id="gh-submit" value="Submit Application" />
+  </form>
+  <script>
+    window.__submitEventCount = 0;
+    const form = document.getElementById('app_form');
+    const trigger = document.getElementById('phone_country_trigger');
+    const listbox = document.getElementById('phone_country_listbox');
+    const hiddenIso = document.getElementById('phone_country_iso');
+    const phone = document.getElementById('phone');
+
+    form.addEventListener('submit', (e) => {
+      window.__submitEventCount += 1;
+      e.preventDefault();
+    });
+
+    trigger.addEventListener('click', () => {
+      const open = listbox.hidden;
+      listbox.hidden = !open;
+      trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+      // Simulate virtualization: only first row visible until "search"
+      [...listbox.querySelectorAll('[role="option"]')].forEach((opt, i) => {
+        opt.hidden = i !== 0;
+      });
+    });
+
+    listbox.addEventListener('click', (e) => {
+      const opt = e.target.closest('[role="option"]');
+      if (!opt) return;
+      hiddenIso.value = opt.getAttribute('data-value') || '';
+      trigger.textContent = opt.textContent.trim();
+      trigger.setAttribute('aria-label', opt.getAttribute('aria-label') || opt.textContent.trim());
+      listbox.hidden = true;
+      trigger.setAttribute('aria-expanded', 'false');
+      window.__phoneCountrySelected = {
+        iso: hiddenIso.value,
+        dial: opt.getAttribute('data-country-code'),
+        text: opt.textContent.trim(),
+      };
+    });
+
+    // Typing into phone must not mutate country selection
+    phone.addEventListener('input', () => {
+      window.__phoneInputMutatedCountry = false;
+    });
+  </script>
+</body>
+</html>

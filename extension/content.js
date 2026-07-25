@@ -427,6 +427,58 @@
 
   // ─── Post-extraction field enrichment ──────────────────────────
 
+  function findSharedPhoneComponent(el) {
+    if (!el || !el.closest) return null;
+    let node = el.parentElement;
+    while (node && node !== document.body) {
+      let phoneInput = null;
+      try {
+        phoneInput = node.querySelector(
+          'input[type="tel"], input[name*="phone" i]:not([name*="country" i]), input[id*="phone" i]:not([id*="country" i])'
+        );
+      } catch {
+        // Older engines without case-insensitive attribute selectors
+        phoneInput = node.querySelector('input[type="tel"]');
+        if (!phoneInput) {
+          for (const inp of node.querySelectorAll('input')) {
+            const n = `${inp.name || ''} ${inp.id || ''}`.toLowerCase();
+            if (/\bphone\b|\bmobile\b|\btel\b/.test(n) && !/country|code|ext/.test(n)) {
+              phoneInput = inp;
+              break;
+            }
+          }
+        }
+      }
+      if (phoneInput && phoneInput !== el) {
+        const controlCount = node.querySelectorAll(
+          'input:not([type="hidden"]), select, textarea, [role="combobox"], button[aria-haspopup]'
+        ).length;
+        // Bounded phone widget (country + number), not the whole application form.
+        if (controlCount > 0 && controlCount <= 8) return node;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function isSelectCountryInPhoneWidget(el) {
+    if (!el) return false;
+    try {
+      const hints = getFieldHints(el);
+      const aria = el.getAttribute('aria-label') || '';
+      const text = `${hints.label} ${hints.name} ${hints.id} ${hints.placeholder} ${aria} ${(el.textContent || '').slice(0, 80)}`.toLowerCase();
+      const looksCountry = /\bcountry\b|select country|country code|dial code/i.test(text);
+      if (!looksCountry) return false;
+      // Address-country fields live outside the phone widget.
+      if (/address|mailing|billing|residence|location/i.test(text) && !/phone|dial|mobile|tel/i.test(text)) {
+        return false;
+      }
+      return !!findSharedPhoneComponent(el);
+    } catch {
+      return false;
+    }
+  }
+
   function enrichFieldHints(fields) {
     for (const field of fields) {
       // Detect country code selects by dial-code options like "(+1)", "(+44)"
@@ -436,7 +488,26 @@
         ).length;
         if (dialCodeCount > 5 && !/country.?code/i.test(`${field.label} ${field.name} ${field.id}`)) {
           field.label = field.label ? `${field.label} (phone country code)` : 'phone country code';
+          field.fieldKind = 'phone_country';
+          field.atsHint = 'phone_country';
         }
+      }
+
+      // Greenhouse React phone widget: custom control labeled only "Select country"
+      // sitting next to the phone input — classify by component ownership.
+      if (!field.fieldKind) {
+        try {
+          const el = resolveElement(field.selector);
+          if (el && (isPhoneCountryCodeField(el) || isSelectCountryInPhoneWidget(el))) {
+            field.fieldKind = 'phone_country';
+            field.atsHint = 'phone_country';
+            if (!/phone.?country|country.?code/i.test(field.label || '')) {
+              field.label = field.label
+                ? `${field.label} (phone country code)`
+                : 'phone country code';
+            }
+          }
+        } catch { /* skip */ }
       }
     }
     return fields;
@@ -645,7 +716,11 @@
     try {
       const hints = getFieldHints(el);
       const combined = `${hints.label} ${hints.name} ${hints.id} ${hints.placeholder}`;
-      return /country.?(?:phone|code)|phone.?country|dial.?code|calling.?code|countryPhoneCode|country.?iso/i.test(combined);
+      if (/country.?(?:phone|code)|phone.?country|dial.?code|calling.?code|countryPhoneCode|country.?iso/i.test(combined)) {
+        return true;
+      }
+      // Custom Greenhouse control: "Select country" owned by the phone widget.
+      return isSelectCountryInPhoneWidget(el);
     } catch {
       return false;
     }
@@ -830,7 +905,7 @@
     }
   }
 
-  function findTypeaheadDropdown(el) {
+  function findTypeaheadDropdown(el, options = {}) {
     const searchSelectors = [
       '[role="listbox"]',
       '[role="option"]',
@@ -874,23 +949,26 @@
       container = container.parentElement;
     }
 
-    // Document-wide search for visible listboxes/dropdowns
-    for (const sel of searchSelectors) {
+    // Document-wide search helps Workday portals, but is unsafe for phone-country
+    // widgets (virtualized lists often show Albania first). Callers can pass
+    // { allowDocumentWide: false } to disable.
+    if (options.allowDocumentWide !== false) {
+      for (const sel of searchSelectors) {
+        try {
+          const all = document.querySelectorAll(sel);
+          for (const node of all) {
+            if (isElementVisible(node) && node !== el) return node;
+          }
+        } catch { /* skip */ }
+      }
+
       try {
-        const all = document.querySelectorAll(sel);
-        for (const node of all) {
-          if (isElementVisible(node) && node !== el) return node;
+        const shadowDropdowns = deepQuerySelectorAll(document, '[role="listbox"], [role="option"]');
+        for (const node of shadowDropdowns) {
+          if (isElementVisible(node)) return node;
         }
       } catch { /* skip */ }
     }
-
-    // Shadow DOM search
-    try {
-      const shadowDropdowns = deepQuerySelectorAll(document, '[role="listbox"], [role="option"]');
-      for (const node of shadowDropdowns) {
-        if (isElementVisible(node)) return node;
-      }
-    } catch { /* skip */ }
 
     return null;
   }
@@ -1001,8 +1079,11 @@
     }
     if (bestMatch && bestScore > 0) return bestMatch;
 
-    // If only one option visible, select it
-    if (options.length === 1) return options[0];
+    // Selecting the only currently visible option is unsafe for virtualized
+    // phone-country lists (Albania may be the sole rendered row).
+    if (options.length === 1 && !hintsLookLikePhoneCountry(fieldHints)) {
+      return options[0];
+    }
 
     return null;
   }
@@ -1091,8 +1172,11 @@
         }
       } catch { /* skip */ }
 
-      // Fallback: use findTypeaheadDropdown but prefer listboxes with multiple options
-      const candidate = findTypeaheadDropdown(el);
+      // Fallback: use findTypeaheadDropdown but prefer listboxes with multiple options.
+      // Phone-country: never grab an unrelated document-wide listbox.
+      const candidate = findTypeaheadDropdown(el, {
+        allowDocumentWide: !hintsLookLikePhoneCountry(fieldHints),
+      });
       if (candidate) {
         const opts = getDropdownOptions(candidate);
         if (opts.length > 1) { dd = candidate; break; }
@@ -1243,7 +1327,8 @@
       }
 
       // Last resort: select first option if it seems reasonable
-      if (wait >= 4 && options.length <= 3) {
+      // Never for phone-country — virtualized lists often show Albania first.
+      if (wait >= 4 && options.length <= 3 && !hintsLookLikePhoneCountry(fieldHints)) {
         clickOption(options[0]);
         await sleep(200);
         closeOpenDropdowns();
@@ -1251,18 +1336,19 @@
       }
     }
 
-    // Try keyboard navigation as last resort (ArrowDown + Enter)
-    try {
-      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', bubbles: true }));
-      await sleep(100);
-      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
-      await sleep(100);
-      closeOpenDropdowns();
-      // Check if value changed (something was selected)
-      if (el.value !== value && el.value !== '') {
-        return { success: true, selectedText: el.value, keyboard: true };
-      }
-    } catch { /* skip */ }
+    // Keyboard fallback is unsafe for phone-country widgets.
+    if (!hintsLookLikePhoneCountry(fieldHints)) {
+      try {
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', bubbles: true }));
+        await sleep(100);
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+        await sleep(100);
+        closeOpenDropdowns();
+        if (el.value !== value && el.value !== '') {
+          return { success: true, selectedText: el.value, keyboard: true };
+        }
+      } catch { /* skip */ }
+    }
 
     closeOpenDropdowns();
     return { success: false };
@@ -1445,6 +1531,26 @@
 
       // Compute field hints once for normalization throughout this fill
       const fieldHints = getFieldHints(el);
+      const phoneCountryControl = isPhoneCountryCodeField(el) || isSelectCountryInPhoneWidget(el);
+      if (phoneCountryControl) {
+        fieldHints.label = `${fieldHints.label || ''} phone country code`.trim();
+        fieldHints.fieldKind = 'phone_country';
+      }
+
+      // Stage 1 fail-safe: never autofill phone-country / dial-code controls.
+      // Wrong Albania (+355) is worse than leaving +1 for the user.
+      if (phoneCountryControl || action === 'select_dropdown_safe') {
+        // select_dropdown_safe was historically phone-country-only; still refuse.
+        if (phoneCountryControl || /phone.?country|country.?code|dial.?code/i.test(`${label || ''} ${fieldHints.label}`)) {
+          return {
+            selector,
+            success: true,
+            skipped: true,
+            reason: 'phone_country_manual_review',
+            action: 'skip',
+          };
+        }
+      }
 
       // Guard: skip phone extension fields when AI sends a phone number
       if (isPhoneExtensionField(el)) {
@@ -1455,7 +1561,7 @@
       }
 
       // Guard: skip phone-number-like values for fields not identified as phone
-      if (!isPhoneField(el) && !isPhoneCountryCodeField(el) && looksLikePhoneNumber(value)) {
+      if (!isPhoneField(el) && !phoneCountryControl && looksLikePhoneNumber(value)) {
         return { selector, success: true, skipped: true, reason: 'value looks like phone number for non-phone field' };
       }
 
@@ -3680,6 +3786,8 @@
       getNearbyHeading,
       matchPhoneCountryCodeOption,
       extractDialCode,
+      isSelectCountryInPhoneWidget,
+      findSharedPhoneComponent,
 
       // Timeout / flow internals for testing
       get API_TIMEOUT_MS() { return API_TIMEOUT_MS; },

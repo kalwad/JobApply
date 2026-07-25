@@ -7,12 +7,19 @@ Public-site interaction must **never** submit an application. Stop before the fi
 
 ## Prerequisites
 
-1. Branch `stage1/slim-autofill` @ `cf3e729` (or later acceptance-gap commit)
-2. Backend: `uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8085`
-3. Open http://127.0.0.1:8085 → Settings: complete profile, saved Q&A, Ollama health OK
-4. Chrome (prefer a separate profile): Load unpacked `extension/`
+1. Branch `stage1/slim-autofill` (confirm `git merge-base --is-ancestor 250266c HEAD`)
+2. Backend: `uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8085` (restart after pulls)
+3. Open http://127.0.0.1:8085 → Settings: set **First / Middle / Last** explicitly (not only Full Name), saved Q&A, Ollama health OK
+4. Chrome: Load unpacked from this repo’s `extension/` → **Reload** after every pull → hard-refresh the application tab
 5. Extension popup server URL: `http://localhost:8085` (required by host permissions; backend stays on `127.0.0.1`)
 6. One public application URL each for Greenhouse, Lever, Workday
+
+### Greenhouse phone-country diagnostic (before claiming pass)
+
+1. Manually set phone country to **United States (+1)** on the live form.
+2. Trigger JobApply → review → Fill approved fields (do **not** submit).
+3. Watch whether the phone-country control stays +1 or flips (e.g. to +355) when the number is filled.
+4. Expected Stage 1 behavior: JobApply **skips** the phone-country control (manual), fills the national number, leaves an existing +1 selection alone.
 
 ## Test order
 
@@ -53,8 +60,18 @@ On each site:
 ```
 Platform: Greenhouse
 Date:
+Git HEAD:
+Extension reloaded from this checkout:
+Backend restarted:
 Job path/domain:
 Platform correctly detected:
+First/middle/last names correct:
+Address country = United States:
+Phone country skipped (manual) or verified United States (+1):
+Phone country never showed +355 / Albania:
+Phone national number correct:
+Existing +1 preserved when pre-selected:
+Work authorization Yes/No (never a country name):
 Fields detected:
 Fields correctly filled:
 Fields missed:

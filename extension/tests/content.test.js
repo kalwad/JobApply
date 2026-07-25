@@ -2120,6 +2120,49 @@ describe('startFillFlow overall timeout', () => {
   }, 15000);
 });
 
+describe('Greenhouse phone-country widget classification', () => {
+  function loadPhoneWidgetFixture() {
+    const html = readFileSync(
+      join(__dirname, '..', '..', 'fixtures', 'greenhouse', 'phone-country-widget.html'),
+      'utf-8',
+    );
+    document.documentElement.innerHTML = html;
+  }
+
+  it('classifies Select country next to phone as phone_country, not address country', () => {
+    loadPhoneWidgetFixture();
+    const fields = api.enrichFieldHints(api.extractFormData());
+    const phoneCountry = fields.find(f => f.selector === '#phone_country_trigger' || f.id === 'phone_country_trigger');
+    const addressCountry = fields.find(f => f.selector === '#address_country' || f.id === 'address_country');
+    expect(phoneCountry).toBeTruthy();
+    expect(phoneCountry.fieldKind).toBe('phone_country');
+    expect(addressCountry?.fieldKind).not.toBe('phone_country');
+  });
+
+  it('refuses to autofill the phone-country control (manual review)', async () => {
+    loadPhoneWidgetFixture();
+    const result = await api.fillField(
+      '#phone_country_trigger',
+      'United States (+1)',
+      'select_dropdown',
+      1,
+      'Select country',
+    );
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe('phone_country_manual_review');
+    expect(document.getElementById('phone_country_iso').value).toBe('');
+    expect(document.getElementById('phone_country_trigger').textContent).toMatch(/Select country/i);
+  });
+
+  it('isSelectCountryInPhoneWidget is true only inside the phone widget', () => {
+    loadPhoneWidgetFixture();
+    const trigger = document.getElementById('phone_country_trigger');
+    const addr = document.getElementById('address_country');
+    expect(api.isSelectCountryInPhoneWidget(trigger)).toBe(true);
+    expect(api.isSelectCountryInPhoneWidget(addr)).toBe(false);
+  });
+});
+
 describe('matchPhoneCountryCodeOption', () => {
   const options = [
     { value: 'AF', text: 'Afghanistan (+93)' },
