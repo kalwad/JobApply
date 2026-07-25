@@ -23,6 +23,10 @@ def _is_excluded(pattern: str, searchable: str, field_id: str = "") -> bool:
             return True
         if _re.search(r"country\s*(?:phone\s*)?code|phone\s*country|phone\s*ext|device\s*type", s):
             return True
+    # City/town must not match work-auth / sponsorship questions.
+    if r"\bcity\b" in pattern or r"\btown\b" in pattern:
+        if _re.search(r"authori[sz]e|sponsor|visa|citizenship|eligible|work\s+in", s):
+            return True
     return False
 
 
@@ -129,7 +133,6 @@ def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], 
         placeholder = (field.get("placeholder") or "").lower()
         field_id = (field.get("id") or "").lower()
         searchable = f"{label} {name} {placeholder} {field_id}"
-        heading = (field.get("nearbyHeading") or "").lower()
 
         matched = False
         for pattern, value, action in rules:
@@ -183,19 +186,9 @@ def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], 
                 matched = True
                 break
 
-        if not matched:
-            if "phone" in heading and "country" not in searchable and "code" not in searchable:
-                phone = profile.get("phone", "")
-                if phone:
-                    mappings.append({
-                        "selector": field["selector"],
-                        "value": phone,
-                        "action": "fill_text",
-                        "confidence": 0.9,
-                        "field_label": field.get("label", ""),
-                    })
-                    matched_selectors.add(field["selector"])
-                    matched = True
+        # Do NOT infer phone from nearbyHeading — Greenhouse/React forms often
+        # share a parent whose first heading is "Phone", which previously stamped
+        # the phone number onto every subsequent field at confidence 0.9.
 
         if not matched:
             remaining.append(field)
