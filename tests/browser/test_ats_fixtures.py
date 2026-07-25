@@ -17,6 +17,17 @@ def _ensure_screenshot_dir() -> Path:
     return SCREENSHOT_DIR
 
 
+def _safe_screenshot(page, path: Path) -> None:
+    """Best-effort screenshot; xvfb/CI can flake on captureScreenshot."""
+    try:
+        page.screenshot(path=str(path), full_page=False)
+    except Exception:
+        try:
+            page.screenshot(path=str(path), full_page=False, timeout=5000)
+        except Exception:
+            pass
+
+
 def _wait_review_overlay(page, timeout=30000):
     page.wait_for_selector(".ja-autofill-approve-btn", timeout=timeout)
     assert page.locator(".ja-autofill-review").count() >= 1
@@ -47,7 +58,7 @@ def test_ats_fixture_detect_extract_and_review_cancel(ats_page, extension_contex
 
     _wait_review_overlay(ats_page)
     shot = _ensure_screenshot_dir() / f"{ats}-review-overlay.png"
-    ats_page.screenshot(path=str(shot), full_page=True)
+    _safe_screenshot(ats_page, shot)
 
     # Proposed values visible for review
     review_text = ats_page.locator(".ja-autofill-review").inner_text()
@@ -114,7 +125,7 @@ def test_ats_fixture_approve_fill_and_protections(ats_page, extension_context, a
     )
 
     shot = _ensure_screenshot_dir() / f"{ats}-after-approve.png"
-    ats_page.screenshot(path=str(shot), full_page=True)
+    _safe_screenshot(ats_page, shot)
 
     state = ats_page.evaluate(
         """() => {
