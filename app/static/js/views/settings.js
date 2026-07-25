@@ -1226,6 +1226,8 @@ function renderTabAI(container, aiSettings, scraperKeys, emailSettings, embeddin
             <h2 style="font-size:1.125rem;font-weight:600;margin-bottom:16px">AI Provider</h2>
             <p style="color:var(--text-secondary);margin-bottom:16px;font-size:0.875rem">
                 Configure which AI backend to use for job scoring, resume analysis, and application autofill.
+                <strong>Recommended:</strong> Ollama (local). Selecting a cloud provider (Anthropic, OpenAI, Gemini, OpenRouter, Bedrock)
+                means profile data and application field labels/context are sent to that provider when autofill or AI features run.
             </p>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
                 <div>
