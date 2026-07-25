@@ -231,19 +231,46 @@
 
   function findLabel(el) {
     try {
-      // 0. Lever / Greenhouse question cards: prefer the clean application-label
-      // inside li.application-question (avoids "Current location No location found…").
+      const type = (el.type || '').toLowerCase();
+      const isOptionControl = type === 'checkbox' || type === 'radio';
       const questionCard = el.closest?.(
         'li.application-question, .application-question, li.custom-question, .custom-question'
       );
-      if (questionCard) {
+
+      // 0a. Checkbox/radio options: use the nearest option label text — NEVER the
+      // group .application-label (that made every Lever language read as the heading).
+      if (isOptionControl) {
+        const parentLabel = el.closest('label');
+        if (parentLabel && (!questionCard || !parentLabel.querySelector('.application-label'))) {
+          const clone = parentLabel.cloneNode(true);
+          clone.querySelectorAll('input, select, textarea').forEach((c) => c.remove());
+          const text = clone.textContent.trim().replace(/\s+/g, ' ');
+          if (text && text.length < 200) return text;
+        }
+        // Sibling text next to the input (common Lever pattern)
+        let sib = el.nextSibling;
+        while (sib) {
+          if (sib.nodeType === Node.TEXT_NODE && sib.textContent.trim()) {
+            return sib.textContent.trim().replace(/\s+/g, ' ');
+          }
+          if (sib.nodeType === Node.ELEMENT_NODE) {
+            const t = (sib.textContent || '').trim().replace(/\s+/g, ' ');
+            if (t && t.length < 120 && !/✱|\*$/.test(t)) return t;
+            break;
+          }
+          sib = sib.nextSibling;
+        }
+      }
+
+      // 0b. Lever / Greenhouse question cards: prefer clean application-label for
+      // the primary control only (not each checkbox in a multi-option group).
+      if (questionCard && !isOptionControl) {
         const appLabel = questionCard.querySelector(
           ':scope > label .application-label, :scope > .application-label, '
           + ':scope > label > div.application-label, .application-label'
         );
         if (appLabel) {
           const t = (appLabel.textContent || '').trim().replace(/\s+/g, ' ');
-          // Strip required asterisks and trailing UI chrome
           const cleaned = t.replace(/[✱*]\s*$/, '').trim();
           if (cleaned && cleaned.length < 200) return cleaned;
         }
@@ -255,11 +282,13 @@
         if (label) {
           // Prefer nested .application-label over the whole label blob
           const nested = label.querySelector('.application-label');
-          if (nested) {
+          if (nested && !isOptionControl) {
             const t = (nested.textContent || '').trim().replace(/\s+/g, ' ');
             if (t) return t.replace(/[✱*]\s*$/, '').trim();
           }
-          return label.textContent.trim();
+          const clone = label.cloneNode(true);
+          clone.querySelectorAll('input, select, textarea').forEach((c) => c.remove());
+          return clone.textContent.trim().replace(/\s+/g, ' ');
         }
       }
 
@@ -281,7 +310,7 @@
       const parentLabel = el.closest('label');
       if (parentLabel) {
         const nested = parentLabel.querySelector('.application-label');
-        if (nested) {
+        if (nested && !isOptionControl) {
           const t = (nested.textContent || '').trim().replace(/\s+/g, ' ');
           if (t) return t.replace(/[✱*]\s*$/, '').trim();
         }
@@ -3846,37 +3875,65 @@
       currentState = 'review';
       createOverlay();
       overlayEl.classList.add(`${PREFIX}-overlay-review`);
+      // Clear drag-position / status-mode inline styles so pin + grid CSS win.
+      overlayEl.style.left = '';
+      overlayEl.style.top = '';
+      overlayEl.style.right = '';
+      overlayEl.style.bottom = '';
+      overlayEl.style.width = '';
+      overlayEl.style.height = '';
       const body = overlayEl.querySelector(`.${PREFIX}-overlay-body`);
+      if (body) body.style.display = '';
+      // Remove any leftover footer from a prior review pass.
+      overlayEl.querySelector(`.${PREFIX}-review-actions`)?.remove();
+
       const fillable = mappings.filter(m => m.action && m.action !== 'skip');
       const reviewCount = fillable.filter(m => (m.confidence || 1) < 0.8).length;
-      // Show every fillable row in a scrollable list (do not truncate to 25).
-      const shown = fillable;
-      // Chrome / meta / overwrite stay fixed; only the <ul> scrolls; actions stay pinned.
+      // DIV list (not <ul>) — Lever form CSS collapses bare lists and hid Fill.
+      // Actions are a direct overlay child (sibling of body), never inside the list.
+      const formatReviewValue = (m) => {
+        if (m.displayValue) return String(m.displayValue);
+        if (m.optionLabel) return String(m.optionLabel);
+        if (m.action === 'check_checkbox') {
+          const v = String(m.value ?? '').toLowerCase();
+          if (v === 'yes' || v === 'true' || v === '1') {
+            const fl = String(m.field_label || '');
+            const m2 = fl.match(/^language:\s*(.+)$/i);
+            if (m2) return m2[1].trim();
+            return 'checked';
+          }
+        }
+        return String(m.value ?? '');
+      };
       body.innerHTML = `
         <div class="${PREFIX}-review-chrome">
           <p><strong>Review ${fillable.length} proposed fill${fillable.length === 1 ? '' : 's'}</strong></p>
           <p class="${PREFIX}-review-meta">${reviewCount} need review (confidence &lt; 0.8). Nonempty fields stay protected.</p>
-          <p class="${PREFIX}-review-meta">Profile matches only — no AI wait. Scroll the list for all fields.</p>
+          <p class="${PREFIX}-review-meta">Scroll the field list. Fill/Cancel are pinned under it.</p>
           <button type="button" class="${PREFIX}-diag-btn">Copy sanitized diagnostics</button>
           <label class="${PREFIX}-review-overwrite">
             <input type="checkbox" class="${PREFIX}-overwrite-toggle" ${overwriteExistingFields ? 'checked' : ''}/>
             Overwrite existing field values
           </label>
         </div>
-        <ul class="${PREFIX}-review-list" tabindex="0" aria-label="Proposed fills">
-          ${shown.map(m => {
+        <div class="${PREFIX}-review-list" role="list" tabindex="0" aria-label="Proposed fills (${fillable.length})">
+          ${fillable.map(m => {
             const conf = m.confidence == null ? 1 : m.confidence;
             const cls = conf < 0.8 ? 'yellow' : 'green';
-            const label = (m.field_label || m.label || m.selector || '').toString().slice(0, 60);
-            const val = String(m.value ?? '').slice(0, 80);
-            return `<li class="${PREFIX}-review-item ${cls}"><span class="${PREFIX}-dot ${cls}"></span><strong>${escapeHtml(label)}</strong>: ${escapeHtml(val)} <em>(${conf.toFixed(2)})</em></li>`;
+            const label = (m.field_label || m.label || m.selector || '').toString().slice(0, 70);
+            const val = formatReviewValue(m).slice(0, 80);
+            return `<div role="listitem" class="${PREFIX}-review-item ${cls}"><span class="${PREFIX}-dot ${cls}"></span><strong>${escapeHtml(label)}</strong>: ${escapeHtml(val)} <em>(${conf.toFixed(2)})</em></div>`;
           }).join('')}
-        </ul>
-        <div class="${PREFIX}-review-actions">
-          <button type="button" class="${PREFIX}-cancel-btn">Cancel — don't fill</button>
-          <button type="button" class="${PREFIX}-approve-btn">Fill approved fields</button>
         </div>
       `;
+
+      const actions = document.createElement('div');
+      actions.className = `${PREFIX}-review-actions`;
+      actions.innerHTML = `
+        <button type="button" class="${PREFIX}-cancel-btn">Cancel — don't fill</button>
+        <button type="button" class="${PREFIX}-approve-btn">Fill approved fields</button>
+      `;
+      overlayEl.appendChild(actions);
 
       const overwriteToggle = body.querySelector(`.${PREFIX}-overwrite-toggle`);
       overwriteToggle?.addEventListener('change', (e) => {
@@ -3902,13 +3959,14 @@
       });
 
       const finish = (result) => {
+        overlayEl?.querySelector(`.${PREFIX}-review-actions`)?.remove();
         overlayEl?.classList.remove(`${PREFIX}-overlay-review`);
         resolve(result);
       };
-      body.querySelector(`.${PREFIX}-approve-btn`).addEventListener('click', () => {
+      actions.querySelector(`.${PREFIX}-approve-btn`).addEventListener('click', () => {
         finish(mappings);
       });
-      body.querySelector(`.${PREFIX}-cancel-btn`).addEventListener('click', () => {
+      actions.querySelector(`.${PREFIX}-cancel-btn`).addEventListener('click', () => {
         finish(null);
       });
     });

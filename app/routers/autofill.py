@@ -378,12 +378,16 @@ def _expand_language_mappings(field: dict, profile: dict) -> list[dict]:
                 selector = f'input[name="{fname}"][value="{val}"]'
             else:
                 selector = field["selector"]
+            option_label = matched["label"] or matched["value"]
             out.append({
                 "selector": selector,
                 "value": "yes",
                 "action": "check_checkbox",
                 "confidence": 0.95,
-                "field_label": f"{label}: {matched['label']}".strip(": "),
+                # Short review label — avoid "Language Skill(s): Language Skill(s): yes"
+                "field_label": f"Language: {option_label}",
+                "optionLabel": option_label,
+                "displayValue": option_label,
                 "inventoryCategory": "filled_from_profile",
                 "semanticType": "languages",
                 "supportingFactIds": [],

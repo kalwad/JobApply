@@ -155,6 +155,23 @@ describe('findLabel', () => {
     const input = createInput({ type: 'text' });
     expect(api.findLabel(input)).toBe('');
   });
+
+  it('uses checkbox option text, not Lever group .application-label', () => {
+    const li = document.createElement('li');
+    li.className = 'application-question';
+    li.innerHTML = `
+      <label><div class="application-label">Language Skill(s) (Check all that apply)</div></label>
+      <ul>
+        <li><label><input type="checkbox" name="cards[abc][field0]" value="English (ENG)"> English (ENG)</label></li>
+        <li><label><input type="checkbox" name="cards[abc][field0]" value="Spanish (SPA)"> Spanish (SPA)</label></li>
+      </ul>
+    `;
+    document.body.appendChild(li);
+    const boxes = li.querySelectorAll('input[type="checkbox"]');
+    expect(api.findLabel(boxes[0])).toBe('English (ENG)');
+    expect(api.findLabel(boxes[1])).toBe('Spanish (SPA)');
+    expect(api.findLabel(boxes[0])).not.toMatch(/Language Skill/i);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -2521,15 +2538,17 @@ describe('review overlay Fill/Cancel and Expand', () => {
     expect(approve.textContent).toMatch(/Fill approved/i);
     expect(cancel.textContent).toMatch(/Cancel/i);
 
-    // Actions are siblings of the scrollable list (not trapped inside <ul>).
+    // Actions are a direct overlay child (outside body) so Lever CSS cannot clip Fill.
     const list = overlay.querySelector('.ja-autofill-review-list');
     const chrome = overlay.querySelector('.ja-autofill-review-chrome');
+    const body = overlay.querySelector('.ja-autofill-overlay-body');
     expect(list).not.toBeNull();
+    expect(list.tagName).toBe('DIV');
     expect(chrome).not.toBeNull();
     expect(list.contains(actions)).toBe(false);
+    expect(body.contains(actions)).toBe(false);
+    expect(actions.parentElement).toBe(overlay);
     expect(list.querySelectorAll('.ja-autofill-review-item').length).toBe(40);
-    expect(overlay.querySelector('.ja-autofill-overlay-body').contains(actions)).toBe(true);
-    // Actions come after the scrollable list in DOM order (pinned footer).
     expect(
       actions.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_PRECEDING
     ).toBeTruthy();
