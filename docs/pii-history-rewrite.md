@@ -28,3 +28,12 @@ git grep -n '<old-phone>' origin/stage1/slim-autofill
 ```
 
 Do not restate the real phone number in commits, issues, or docs.
+
+## Commit mapping (this rewrite)
+
+| Role | Hash |
+|------|------|
+| Local backup (pre-rewrite tip, not pushed) | `c92d07b0074aece48b090ae738a56f2e253dd7b7` |
+| Rewritten tip (force-pushed) | `e0231aa45413013a302aff0f49878a62ed4f7022` |
+
+`main` was not rewritten.
