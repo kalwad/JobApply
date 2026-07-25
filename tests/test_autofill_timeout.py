@@ -192,3 +192,34 @@ def test_deterministic_fill_greenhouse_phone_and_country_code():
     assert phone_mapping["value"] == "(555) 123-4567"
     assert phone_mapping["action"] == "fill_text"
     assert code_mapping["action"] == "select_dropdown_safe"
+
+
+def test_deterministic_fill_ignores_phone_nearby_heading():
+    """A shared parent heading of 'Phone' must not fill GPA/essay with the phone number."""
+    fields = [
+        {"selector": "#gpa", "name": "gpa", "id": "gpa",
+         "label": "What is your current cumulative GPA on a 4.0 scale?",
+         "tag": "input", "type": "text", "placeholder": "", "currentValue": "",
+         "nearbyHeading": "Phone"},
+        {"selector": "#why", "name": "why", "id": "why",
+         "label": "Why are you interested in this specific role?",
+         "tag": "textarea", "type": "", "placeholder": "", "currentValue": "",
+         "nearbyHeading": "Phone"},
+    ]
+    mappings, remaining = _deterministic_fill(fields, PROFILE)
+    assert mappings == []
+    assert len(remaining) == 2
+
+
+def test_deterministic_fill_city_skips_work_authorization():
+    profile = {**PROFILE, "address_city": "Sterling Heights", "authorized_to_work_us": "Yes"}
+    fields = [
+        {"selector": "#work_auth", "name": "work_auth", "id": "work_auth",
+         "label": "Are you currently authorized to work in the United States?",
+         "tag": "input", "type": "text", "placeholder": "", "currentValue": ""},
+        {"selector": "#city", "name": "city", "id": "city", "label": "City",
+         "tag": "input", "type": "text", "placeholder": "", "currentValue": ""},
+    ]
+    mappings, remaining = _deterministic_fill(fields, profile)
+    assert any(m["selector"] == "#city" and m["value"] == "Sterling Heights" for m in mappings)
+    assert not any(m["selector"] == "#work_auth" and m["value"] == "Sterling Heights" for m in mappings)

@@ -2105,19 +2105,45 @@ describe('startFillFlow overall timeout', () => {
     // Start the flow (don't await — it will hang without overall timeout)
     api.startFillFlow();
 
-    // Advance to 56s: analyzeForm resolves, fill begins
+    // Advance to 56s: analyzeForm resolves; review is skipped in tests
     await vi.advanceTimersByTimeAsync(56000);
     // Allow microtasks (fill, dynamic field detection) to settle
     await vi.advanceTimersByTimeAsync(2000);
-    // Advance to 91s total: overall timeout should fire
-    await vi.advanceTimersByTimeAsync(33000);
+    // Fill phase has its own 90s timeout (review wait is excluded)
+    await vi.advanceTimersByTimeAsync(90000);
 
-    // Check the overlay — at 91s, the overall timeout should have fired
+    // Check the overlay — fill-phase overall timeout should have fired
     const overlay = document.getElementById('ja-autofill-overlay');
     expect(overlay).not.toBeNull();
     const statusEl = overlay.querySelector('.ja-autofill-overlay-status');
     expect(statusEl.textContent).toMatch(/timed?\s*out|too long/i);
   }, 15000);
+});
+
+describe('sanitizeMappings / getNearbyHeading', () => {
+  it('drops phone-like values on non-phone fields', () => {
+    const cleaned = api.sanitizeMappings([
+      { selector: '#phone', field_label: 'Phone', value: '5551234567', action: 'fill_text', confidence: 1 },
+      { selector: '#gpa', field_label: 'What is your current cumulative GPA?', value: '5551234567', action: 'fill_text', confidence: 0.9 },
+      { selector: '#why', field_label: 'Why are you interested?', value: '5551234567', action: 'fill_text', confidence: 0.9 },
+      { selector: '#linkedin', field_label: 'LinkedIn Profile', value: 'https://linkedin.com/in/x', action: 'fill_text', confidence: 1 },
+    ]);
+    expect(cleaned.map(m => m.selector)).toEqual(['#phone', '#linkedin']);
+  });
+
+  it('uses the nearest preceding section heading, not the first heading in the form', () => {
+    const form = createForm();
+    const hPhone = document.createElement('h2');
+    hPhone.textContent = 'Phone';
+    form.appendChild(hPhone);
+    createInput({ id: 'phone', name: 'phone', type: 'tel' }, form);
+    const hEdu = document.createElement('h2');
+    hEdu.textContent = 'Education';
+    form.appendChild(hEdu);
+    const gpa = createInput({ id: 'gpa', name: 'gpa', type: 'text' }, form);
+    // Old parent.querySelector('h2') returned "Phone" for every field under the form.
+    expect(api.getNearbyHeading(gpa)).toMatch(/education/i);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════

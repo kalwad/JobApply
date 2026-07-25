@@ -254,12 +254,33 @@
 
   function getNearbyHeading(el) {
     try {
+      // Prefer the fieldset legend that actually wraps this control.
+      const fieldset = el.closest('fieldset');
+      if (fieldset) {
+        const legend = fieldset.querySelector(':scope > legend');
+        if (legend?.textContent) return legend.textContent.trim().slice(0, 200);
+      }
+
+      // Walk previous siblings (and parents' previous siblings) for a heading.
+      // Do NOT use parent.querySelector('h1...') — that returns the first heading
+      // in a huge form subtree (often "Phone"), poisoning every later field.
       let node = el;
-      for (let i = 0; i < 10; i++) {
+      for (let depth = 0; depth < 8 && node; depth++) {
+        let sib = node.previousElementSibling;
+        while (sib) {
+          if (/^H[1-6]$/i.test(sib.tagName) || sib.tagName === 'LEGEND') {
+            const text = sib.textContent?.trim();
+            if (text) return text.slice(0, 200);
+          }
+          // Header-only sibling containers (no nested inputs)
+          if (sib.querySelector && !sib.querySelector('input, select, textarea, [contenteditable="true"]')) {
+            const inner = sib.querySelector('h1, h2, h3, h4, h5, h6, legend');
+            const text = inner?.textContent?.trim();
+            if (text) return text.slice(0, 200);
+          }
+          sib = sib.previousElementSibling;
+        }
         node = node.parentElement;
-        if (!node) break;
-        const heading = node.querySelector('h1, h2, h3, h4, h5, h6, legend');
-        if (heading) return heading.textContent.trim().slice(0, 200);
       }
       return '';
     } catch {
@@ -2379,6 +2400,30 @@
 
   // ─── Review-before-fill ──────────────────────────────────────
 
+  function fieldLooksLikePhone(mapping) {
+    const text = `${mapping.field_label || ''} ${mapping.label || ''} ${mapping.selector || ''}`.toLowerCase();
+    return /\bphone\b|\bmobile\b|\bcell\b|\btelephone\b|\btel\b/.test(text)
+      || /\[type=["']?tel["']?\]/.test(mapping.selector || '');
+  }
+
+  function valueLooksLikePhone(value) {
+    const digits = String(value ?? '').replace(/\D/g, '');
+    return digits.length >= 10 && digits.length <= 15;
+  }
+
+  /** Drop phone numbers mapped onto GPA / essay / address / etc. */
+  function sanitizeMappings(mappings) {
+    if (!Array.isArray(mappings)) return [];
+    return mappings.filter((m) => {
+      if (!m || m.action === 'skip') return true;
+      if (valueLooksLikePhone(m.value) && !fieldLooksLikePhone(m)) {
+        debugLog('Dropped phone-like value on non-phone field', m.selector, m.field_label);
+        return false;
+      }
+      return true;
+    });
+  }
+
   function reviewMappingsBeforeFill(mappings) {
     if (window.__jaSkipReview || window.__jaAutofillTest) {
       return Promise.resolve(mappings);
@@ -2387,11 +2432,14 @@
     return new Promise((resolve) => {
       currentState = 'review';
       createOverlay();
+      overlayEl.classList.add(`${PREFIX}-overlay-review`);
       const body = overlayEl.querySelector(`.${PREFIX}-overlay-body`);
       const fillable = mappings.filter(m => m.action && m.action !== 'skip');
       const reviewCount = fillable.filter(m => (m.confidence || 1) < 0.8).length;
+      const shown = fillable.slice(0, 25);
+      const extra = fillable.length - shown.length;
       body.innerHTML = `
-        <div class="${PREFIX}-review">
+        <div class="${PREFIX}-review-panel">
           <p><strong>Review ${fillable.length} proposed fill${fillable.length === 1 ? '' : 's'}</strong></p>
           <p class="${PREFIX}-review-meta">${reviewCount} need review (confidence &lt; 0.8). Nonempty fields stay protected.</p>
           <label class="${PREFIX}-review-overwrite">
@@ -2399,7 +2447,7 @@
             Overwrite existing field values
           </label>
           <ul class="${PREFIX}-review-list">
-            ${fillable.slice(0, 40).map(m => {
+            ${shown.map(m => {
               const conf = m.confidence == null ? 1 : m.confidence;
               const cls = conf < 0.8 ? 'yellow' : 'green';
               const label = (m.field_label || m.label || m.selector || '').toString().slice(0, 60);
@@ -2407,6 +2455,7 @@
               return `<li class="${PREFIX}-review-item ${cls}"><span class="${PREFIX}-dot ${cls}"></span><strong>${escapeHtml(label)}</strong>: ${escapeHtml(val)} <em>(${conf.toFixed(2)})</em></li>`;
             }).join('')}
           </ul>
+          ${extra > 0 ? `<p class="${PREFIX}-review-meta">+${extra} more not shown</p>` : ''}
           <div class="${PREFIX}-review-actions">
             <button class="${PREFIX}-approve-btn">Fill approved fields</button>
             <button class="${PREFIX}-cancel-btn">Cancel</button>
@@ -2420,11 +2469,15 @@
         try { chrome.storage.local.set({ overwriteExistingFields }); } catch { /* ignore */ }
       });
 
+      const finish = (result) => {
+        overlayEl?.classList.remove(`${PREFIX}-overlay-review`);
+        resolve(result);
+      };
       body.querySelector(`.${PREFIX}-approve-btn`).addEventListener('click', () => {
-        resolve(mappings);
+        finish(mappings);
       });
       body.querySelector(`.${PREFIX}-cancel-btn`).addEventListener('click', () => {
-        resolve(null);
+        finish(null);
       });
     });
   }
@@ -2479,6 +2532,11 @@
         showOverlay('Analyzing form...');
       }
 
+      // Analyze under timeout. Review waits outside the timeout so a long review
+      // panel does not abort the fill.
+      let mappings = null;
+      let analyzeAborted = false;
+
       await withTimeout((async () => {
         preSubmitValues = captureFormValues();
 
@@ -2504,6 +2562,7 @@
         // confusing overlays in tracking/footer/privacy iframes
         if (isInIframe() && !structuredFields.length) {
           removeOverlay();
+          analyzeAborted = true;
           return;
         }
 
@@ -2512,6 +2571,7 @@
             'done',
             'No form fields detected on this page. Open the application form, then try Fill again.'
           );
+          analyzeAborted = true;
           return;
         }
 
@@ -2559,6 +2619,7 @@
           );
         } catch (err) {
           updateOverlay('error', `Timed out analyzing form. Is the server running?`);
+          analyzeAborted = true;
           return;
         }
 
@@ -2572,10 +2633,11 @@
 
         if (!response || !response.ok) {
           updateOverlay('error', `Error: ${response?.error || 'Analysis failed'}`);
+          analyzeAborted = true;
           return;
         }
 
-        let mappings = response.data?.mappings || [];
+        mappings = response.data?.mappings || [];
         const analyzeError = response.data?.error || '';
 
         if (!mappings.length) {
@@ -2585,25 +2647,36 @@
               ? `${analyzeError}. No profile fields could be matched — check Settings → Profile and that Ollama is running.`
               : 'No fillable fields found'
           );
+          analyzeAborted = true;
           return;
         }
 
         if (analyzeError) {
-          showOverlay(`${analyzeError} — filling ${mappings.length} matched profile field(s)...`);
+          showOverlay(`${analyzeError} — prepared ${mappings.length} matched profile field(s) for review...`);
         }
 
         // Post-process: fill skipped fields that match custom Q&A
-        mappings = await applyCustomQA(mappings);
-
-        // Stage 1: review-before-fill (tests may set __jaSkipReview)
-        const approved = await reviewMappingsBeforeFill(mappings);
-        if (!approved) {
-          updateOverlay('done', 'Fill cancelled — no fields were changed.');
-          currentState = 'idle';
-          return;
+        mappings = sanitizeMappings(await applyCustomQA(mappings));
+        if (!mappings.length) {
+          updateOverlay('done', 'No reliable field matches after filtering. Fill remaining fields manually.');
+          analyzeAborted = true;
         }
-        mappings = approved;
+      })(), OVERALL_TIMEOUT_MS, 'Autofill analysis');
 
+      if (analyzeAborted || !mappings?.length) {
+        return;
+      }
+
+      // Stage 1: review-before-fill (tests may set __jaSkipReview) — not timed
+      const approved = await reviewMappingsBeforeFill(mappings);
+      if (!approved) {
+        updateOverlay('done', 'Fill cancelled — no fields were changed.');
+        currentState = 'idle';
+        return;
+      }
+      mappings = approved;
+
+      await withTimeout((async () => {
         currentState = 'filling';
         const result = await fillForm(mappings, atsAdapter);
 
@@ -2643,7 +2716,7 @@
         } else {
           startMultiPageTracking(result.filledCount);
         }
-      })(), OVERALL_TIMEOUT_MS, 'Autofill operation');
+      })(), OVERALL_TIMEOUT_MS, 'Autofill fill');
     } catch (err) {
       if (err.message && err.message.includes('timed out')) {
         updateOverlay('error', 'Autofill timed out. The operation took too long — please try again or fill remaining fields manually.');
@@ -3516,6 +3589,8 @@
       isEffectivelyEmpty,
       isSubmitControl,
       reviewMappingsBeforeFill,
+      sanitizeMappings,
+      getNearbyHeading,
 
       // Timeout / flow internals for testing
       get API_TIMEOUT_MS() { return API_TIMEOUT_MS; },
