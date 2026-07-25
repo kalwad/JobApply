@@ -1,0 +1,85 @@
+name: JobApply Core CI
+
+on:
+  push:
+    branches: [main, stage1/**]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-core:
+    name: Backend Core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - run: uv sync --dev
+      - name: Install Playwright Chromium
+        run: uv run playwright install chromium --with-deps
+      - name: Run Stage 1 core backend tests
+        env:
+          JOBAPPLY_SLIM_MODE: "true"
+          JOBAPPLY_HOST: "127.0.0.1"
+        run: |
+          mkdir -p test-results
+          uv run pytest --tb=short --junitxml=test-results/backend-core-unit.xml \
+            tests/test_config.py \
+            tests/test_ai_client.py \
+            tests/test_ai_settings.py \
+            tests/test_ai_retry.py \
+            tests/test_autofill_timeout.py \
+            tests/test_profile_extended.py \
+            tests/test_resumes.py \
+            tests/test_pdf_generator.py \
+            tests/test_docx_export.py \
+            tests/test_autofill_stage1.py
+      - name: Run Stage 1 browser fixture acceptance
+        env:
+          JOBAPPLY_SLIM_MODE: "true"
+          JOBAPPLY_HOST: "127.0.0.1"
+        run: |
+          mkdir -p test-results docs/screenshots
+          xvfb-run -a uv run pytest --tb=short --junitxml=test-results/backend-core-browser.xml \
+            tests/browser
+
+  extension:
+    name: Extension Vitest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extension
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+      - run: npm install -g pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm config set ignore-scripts false && pnpm rebuild esbuild || true
+      - run: |
+          mkdir -p ../test-results
+          pnpm exec vitest run --reporter=junit --outputFile=../test-results/extension.xml
+
+  frontend:
+    name: Frontend Vitest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app/static
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+      - run: npm install -g pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm config set ignore-scripts false && pnpm rebuild esbuild || true
+      - name: Run retained frontend tests
+        run: |
+          mkdir -p ../../test-results
+          pnpm exec vitest run tests/router.test.js tests/api.test.js tests/utils.test.js \
+            --reporter=junit --outputFile=../../test-results/frontend-core.xml
