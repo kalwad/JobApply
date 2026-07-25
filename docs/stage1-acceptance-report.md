@@ -15,7 +15,7 @@ WIP / audit refs preserved: `grok/stage1-6-checkpoint`, `audit/stage1-6`, `basel
 | `9e4ac52` | feat: add review-before-fill and structured fill reports |
 | `f3132d9` | test: add browser-level ATS fixtures and safety invariants |
 | `e28245b` | ci: separate core acceptance from upstream diagnostics |
-| *(docs commit)* | docs: add Stage 1 setup security and smoke-test guides |
+| `21b16c7` | docs: add Stage 1 setup security and smoke-test guides |
 
 ## Commands run
 
