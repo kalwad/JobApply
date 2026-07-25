@@ -33,7 +33,12 @@ def _shot(name: str) -> Path:
 
 def _wait_review(page, timeout=30000):
     page.wait_for_selector(".ja-autofill-approve-btn", timeout=timeout)
-    assert page.locator(".ja-autofill-review").count() >= 1
+    # Review mode: overlay gets ja-autofill-overlay-review; body uses review-panel.
+    assert (
+        page.locator(".ja-autofill-overlay-review").count() >= 1
+        or page.locator(".ja-autofill-review-panel").count() >= 1
+        or page.locator(".ja-autofill-review").count() >= 1
+    )
 
 
 def _dom_snapshot(page) -> dict:
@@ -98,7 +103,10 @@ def test_ats_fixture_review_cancel_no_submit(ats_page, extension_context, error_
     # Label accurately: pre-fill review on synthetic fixture
     require_screenshot(ats_page, _shot(f"{ats}-review-overlay.png"))
 
-    review_text = ats_page.locator(".ja-autofill-review").inner_text()
+    review_root = ats_page.locator(
+        ".ja-autofill-review-panel, .ja-autofill-overlay-review, .ja-autofill-review"
+    ).first
+    review_text = review_root.inner_text()
     assert "Review" in review_text
     assert re.search(r"Ada|Lovelace|ada@|Contact me by email|Authorized|sponsorship", review_text, re.I)
 

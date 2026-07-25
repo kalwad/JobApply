@@ -11,6 +11,33 @@
   },
   "results": [
     {
+      "selector": "#wd-terms",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": false,
+      "reason": "manual review \u2014 legal attestation",
+      "action": "skip",
+      "field_label": "I agree to the terms and conditions"
+    },
+    {
+      "selector": "#wd-gender",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": false,
+      "reason": "EEO skipped unless explicitly enabled",
+      "action": "skip",
+      "field_label": "Gender (voluntary)"
+    },
+    {
+      "selector": "#workday-application > fieldset:nth-of-type(3) > label:nth-of-type(1) > input",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": false,
+      "reason": "EEO skipped unless explicitly enabled",
+      "action": "skip",
+      "field_label": "Yes"
+    },
+    {
       "selector": "#wd-first",
       "success": true,
       "skipped": false,
@@ -72,33 +99,6 @@
       "reason": "nonempty field protected",
       "action": "check_checkbox",
       "field_label": "Receive SMS updates"
-    },
-    {
-      "selector": "#wd-terms",
-      "success": true,
-      "skipped": true,
-      "alreadyCompleted": false,
-      "reason": "manual review \u2014 legal attestation",
-      "action": "skip",
-      "field_label": "I agree to the terms and conditions"
-    },
-    {
-      "selector": "#wd-gender",
-      "success": true,
-      "skipped": true,
-      "alreadyCompleted": false,
-      "reason": "EEO skipped unless explicitly enabled",
-      "action": "skip",
-      "field_label": "Gender (voluntary)"
-    },
-    {
-      "selector": "#workday-application > fieldset:nth-of-type(3) > label:nth-of-type(1) > input",
-      "success": true,
-      "skipped": true,
-      "alreadyCompleted": false,
-      "reason": "EEO skipped unless explicitly enabled",
-      "action": "skip",
-      "field_label": "Yes"
     },
     {
       "selector": "button[type='submit'], input[type='submit']",
