@@ -6,7 +6,7 @@ from httpx import AsyncClient, ASGITransport
 from unittest.mock import AsyncMock, patch
 
 from app.database import Database
-from app.routers.autofill import _deterministic_fill
+from app.routers.autofill import _deterministic_fill, _match_phone_country_option
 
 
 @pytest.fixture
@@ -223,3 +223,18 @@ def test_deterministic_fill_city_skips_work_authorization():
     mappings, remaining = _deterministic_fill(fields, profile)
     assert any(m["selector"] == "#city" and m["value"] == "Sterling Heights" for m in mappings)
     assert not any(m["selector"] == "#work_auth" and m["value"] == "Sterling Heights" for m in mappings)
+
+
+def test_match_phone_country_prefers_us_plus_one_not_albania():
+    """'+1' must not substring-match Albania (+355) or Algeria (+213)."""
+    options = [
+        {"value": "AF", "text": "Afghanistan (+93)"},
+        {"value": "AL", "text": "Albania (+355)"},
+        {"value": "DZ", "text": "Algeria (+213)"},
+        {"value": "AS", "text": "American Samoa (+1)"},
+        {"value": "US", "text": "United States (+1)"},
+        {"value": "CA", "text": "Canada (+1)"},
+    ]
+    assert _match_phone_country_option("United States (+1)", options) == "United States (+1)"
+    assert _match_phone_country_option("+1", options) == "United States (+1)"
+    assert _match_phone_country_option("1", options) == "United States (+1)"

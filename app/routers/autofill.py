@@ -73,11 +73,80 @@ def _match_option(value: str, options) -> str | None:
         if abbrev and abbrev.lower() in opt_lower and value_lower in opt_lower:
             return opt
 
-    for opt in option_strs:
-        if value_lower in opt.lower() or opt.lower() in value_lower:
-            return opt
+    # Avoid matching short tokens ("us", "1", "ca") as substrings of longer labels.
+    if len(value_lower) >= 3:
+        for opt in option_strs:
+            opt_lower = opt.lower().strip()
+            if len(opt_lower) < 2:
+                continue
+            if value_lower in opt_lower or (len(opt_lower) >= 3 and opt_lower in value_lower):
+                return opt
 
     return None
+
+
+def _extract_dial_code(value: str) -> str | None:
+    """Extract an international dial code like '1' from '+1' or 'United States (+1)'."""
+    if not value:
+        return None
+    m = _re.search(r"\(\s*\+(\d{1,4})\s*\)", value)
+    if m:
+        return m.group(1)
+    m = _re.fullmatch(r"\+?(\d{1,4})", value.strip())
+    return m.group(1) if m else None
+
+
+def _match_phone_country_option(value: str, options) -> str | None:
+    """Match phone-country / dial-code dropdowns without confusing +1 with +355/+213."""
+    if not value or not options:
+        return None
+
+    parsed = []
+    for opt in options:
+        if isinstance(opt, dict):
+            text = str(opt.get("text") or opt.get("value") or "")
+            raw_val = str(opt.get("value") or "")
+        else:
+            text = str(opt)
+            raw_val = text
+        if not text.strip() and not raw_val.strip():
+            continue
+        parsed.append((text, raw_val))
+
+    value_lower = value.lower().strip()
+    dial = _extract_dial_code(value)
+    country_name = _re.sub(r"\s*\(\s*\+\d{1,4}\s*\)\s*", " ", value_lower).strip()
+    country_name = _re.sub(r"\s+", " ", country_name)
+
+    best_text = None
+    best_score = -1
+    for text, raw_val in parsed:
+        t = text.lower().strip()
+        v = raw_val.lower().strip()
+        score = 0
+
+        if t == value_lower or v == value_lower:
+            score = 100
+        elif country_name and (t == country_name or t.startswith(country_name + " ") or country_name in t):
+            score = 85
+
+        if dial:
+            dial_in_parens = bool(_re.search(rf"\(\s*\+{dial}\s*\)", t))
+            dial_exact_text = bool(_re.fullmatch(rf"\+?{dial}", t))
+            dial_exact_value = bool(_re.fullmatch(rf"\+?{dial}", v))
+            if dial_in_parens or dial_exact_text or dial_exact_value:
+                score = max(score, 60)
+                if country_name and any(part and part in t for part in country_name.split()):
+                    score = max(score, 92)
+            # For NANP (+1), prefer United States over American Samoa / Canada / etc.
+            if dial == "1" and _re.search(r"\bunited states\b|\busa\b|\bu\.s\.a?\b", t):
+                score = max(score, 96)
+
+        if score > best_score:
+            best_score = score
+            best_text = text.strip() or raw_val.strip()
+
+    return best_text if best_score >= 60 else None
 
 
 def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], list[dict]]:
@@ -150,9 +219,14 @@ def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], 
                     else:
                         action = "fill_text"
 
-                if action == "select_dropdown" and field.get("options"):
+                if action in ("select_dropdown", "select_dropdown_safe") and field.get("options"):
                     options = field["options"]
-                    best = _match_option(value, options)
+                    # Phone-country uses select_dropdown_safe — match dial codes exactly
+                    # so "+1" does not hit Albania (+355) / Algeria (+213) via substring.
+                    if action == "select_dropdown_safe":
+                        best = _match_phone_country_option(value, options) or _match_option(value, options)
+                    else:
+                        best = _match_option(value, options)
                     if best:
                         value = best
 
@@ -464,6 +538,9 @@ async def analyze_form(request: Request):
         if not isinstance(ai_mappings, list):
             ai_mappings = []
         ai_mappings = _filter_eeo_mappings(ai_mappings, fill_eeo)
+        # Deterministic profile matches win over slower/noisier AI for the same field.
+        seen = {m.get("selector") for m in deterministic_mappings if m.get("selector")}
+        ai_mappings = [m for m in ai_mappings if m.get("selector") not in seen]
         return {
             "mappings": deterministic_mappings + ai_mappings,
             "fill_eeo": fill_eeo,
