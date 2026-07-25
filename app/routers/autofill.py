@@ -1226,6 +1226,34 @@ async def analyze_form(request: Request):
     # Never send phone-country controls to AI — Stage 1 fail-safe.
     remaining_fields = [f for f in remaining_fields if not _is_phone_country_field(f)]
 
+    profile_presence = {
+        "locationPresent": bool(_compose_location(profile or {})),
+        "addressCityPresent": bool(((profile or {}).get("address_city") or "").strip()),
+        "addressStatePresent": bool(((profile or {}).get("address_state") or "").strip()),
+        "preferredNamePresent": bool(((profile or {}).get("preferred_name") or "").strip()),
+        "linkedinPresent": bool(((profile or {}).get("linkedin_url") or "").strip()),
+        "githubPresent": bool(((profile or {}).get("github_url") or "").strip()),
+        "portfolioPresent": bool((
+            ((profile or {}).get("portfolio_url") or "")
+            or ((profile or {}).get("website_url") or "")
+        ).strip()),
+        "workHistoryCount": len((profile or {}).get("work_history") or []),
+        "currentWorkHistoryCount": len([
+            j for j in ((profile or {}).get("work_history") or [])
+            if isinstance(j, dict) and j.get("is_current") in (1, True, "1", "true", "yes")
+        ]),
+        "currentCompanyResolution": (
+            "resolved" if _current_company(profile or {})[0]
+            else (_current_company(profile or {})[1] or "current_company_missing")
+        ),
+        "educationCount": len((profile or {}).get("education") or []),
+        "languageCount": len((profile or {}).get("languages") or []),
+        "timezonePresent": bool((
+            ((profile or {}).get("timezone") or "")
+            or ((profile or {}).get("time_zone") or "")
+        ).strip()),
+    }
+
     if not remaining_fields:
         inventory = _build_field_inventory(form_fields, deterministic_mappings)
         return {
@@ -1233,6 +1261,7 @@ async def analyze_form(request: Request):
             "fill_eeo": fill_eeo,
             "ats_name": ats_name,
             "inventory": inventory,
+            "profile_presence": profile_presence,
         }
 
     # When EEO fill is disabled, drop remaining demographic fields before AI.
@@ -1250,6 +1279,7 @@ async def analyze_form(request: Request):
                 "fill_eeo": fill_eeo,
                 "ats_name": ats_name,
                 "inventory": inventory,
+                "profile_presence": profile_presence,
             }
 
     client = getattr(request.app.state, "ai_client", None)
@@ -1260,6 +1290,7 @@ async def analyze_form(request: Request):
             "fill_eeo": fill_eeo,
             "ats_name": ats_name,
             "inventory": inventory,
+            "profile_presence": profile_presence,
             "error": "No AI provider for remaining fields",
         }
 
@@ -1319,6 +1350,7 @@ async def analyze_form(request: Request):
             "fill_eeo": fill_eeo,
             "ats_name": ats_name,
             "inventory": _build_field_inventory(form_fields, combined),
+            "profile_presence": profile_presence,
         }
     except asyncio.TimeoutError:
         # Keep deterministic profile matches — do not discard them on AI timeout.
@@ -1328,6 +1360,7 @@ async def analyze_form(request: Request):
             "fill_eeo": fill_eeo,
             "ats_name": ats_name,
             "inventory": _build_field_inventory(form_fields, deterministic_mappings),
+            "profile_presence": profile_presence,
             "error": f"AI analysis timed out after {ai_timeout}s",
         }
     except json.JSONDecodeError:
@@ -1336,6 +1369,7 @@ async def analyze_form(request: Request):
             "fill_eeo": fill_eeo,
             "ats_name": ats_name,
             "inventory": _build_field_inventory(form_fields, deterministic_mappings),
+            "profile_presence": profile_presence,
             "error": "Failed to parse AI response",
         }
     except Exception as e:

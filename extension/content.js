@@ -33,8 +33,10 @@
 
   function getBuildInfo() {
     const info = (typeof globalThis !== 'undefined' && globalThis.__JA_BUILD_INFO__) || {};
+    const source = info.sourceSha || info.shortSha || 'unknown';
     return {
-      shortSha: info.shortSha || 'unknown',
+      shortSha: source,
+      sourceSha: source,
       sha: info.sha || 'unknown',
       branch: info.branch || 'unknown',
       committedAt: info.committedAt || '',
@@ -52,9 +54,29 @@
   /** Last analyze/fill snapshot for Copy sanitized diagnostics (no PII values). */
   let lastDiagnosticsSnapshot = null;
 
-  // Track original field values for undo support
+  /**
+   * Verified fill outcomes — source of truth for the completion panel.
+   * originalValues only stores undo snapshots for status==="filled".
+   * status: pending | filled | already_completed | skipped | failed | undone
+   */
+  const fieldResults = new Map(); // selector -> FieldResult
+  // Undo snapshots for successfully filled fields only
   const originalValues = new Map(); // selector -> { originalValue, label, value, confidence, action }
   let overlayMode = 'status'; // status | compact | expanded
+
+  function setFieldResult(selector, partial) {
+    const prev = fieldResults.get(selector) || {};
+    fieldResults.set(selector, {
+      selector,
+      label: partial.label ?? prev.label ?? '',
+      proposedValue: partial.proposedValue ?? prev.proposedValue ?? '',
+      originalValue: partial.originalValue ?? prev.originalValue ?? '',
+      status: partial.status ?? prev.status ?? 'pending',
+      reason: partial.reason ?? prev.reason ?? '',
+      confidence: partial.confidence ?? prev.confidence ?? 1,
+      action: partial.action ?? prev.action ?? '',
+    });
+  }
 
   const PLACEHOLDER_VALUES = new Set([
     '', 'select', 'select one', 'select an option', 'choose', 'choose one',
@@ -209,10 +231,36 @@
 
   function findLabel(el) {
     try {
+      // 0. Lever / Greenhouse question cards: prefer the clean application-label
+      // inside li.application-question (avoids "Current location No location found…").
+      const questionCard = el.closest?.(
+        'li.application-question, .application-question, li.custom-question, .custom-question'
+      );
+      if (questionCard) {
+        const appLabel = questionCard.querySelector(
+          ':scope > label .application-label, :scope > .application-label, '
+          + ':scope > label > div.application-label, .application-label'
+        );
+        if (appLabel) {
+          const t = (appLabel.textContent || '').trim().replace(/\s+/g, ' ');
+          // Strip required asterisks and trailing UI chrome
+          const cleaned = t.replace(/[✱*]\s*$/, '').trim();
+          if (cleaned && cleaned.length < 200) return cleaned;
+        }
+      }
+
       // 1. Explicit <label for="">
       if (el.id) {
         const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-        if (label) return label.textContent.trim();
+        if (label) {
+          // Prefer nested .application-label over the whole label blob
+          const nested = label.querySelector('.application-label');
+          if (nested) {
+            const t = (nested.textContent || '').trim().replace(/\s+/g, ' ');
+            if (t) return t.replace(/[✱*]\s*$/, '').trim();
+          }
+          return label.textContent.trim();
+        }
       }
 
       // 2. aria-labelledby
@@ -232,9 +280,14 @@
       // 4. Parent label
       const parentLabel = el.closest('label');
       if (parentLabel) {
+        const nested = parentLabel.querySelector('.application-label');
+        if (nested) {
+          const t = (nested.textContent || '').trim().replace(/\s+/g, ' ');
+          if (t) return t.replace(/[✱*]\s*$/, '').trim();
+        }
         const clone = parentLabel.cloneNode(true);
-        clone.querySelectorAll('input, select, textarea').forEach(c => c.remove());
-        const text = clone.textContent.trim();
+        clone.querySelectorAll('input, select, textarea, .dropdown-results, .dropdown-no-results, .dropdown-loading-results').forEach(c => c.remove());
+        const text = clone.textContent.trim().replace(/\s+/g, ' ');
         if (text) return text;
       }
 
@@ -382,7 +435,7 @@
     const fields = [];
     const seen = new Set();
 
-    const selectors = 'input, select, textarea, [contenteditable="true"], [role="combobox"], [role="textbox"], [role="spinbutton"], button[aria-haspopup], [role="button"][aria-haspopup], [data-automation-id][aria-haspopup], [data-automation-id*="select"], [data-automation-id*="dropdown"], [data-automation-id*="stateProvince"], [data-automation-id*="countryRegion"]';
+    const selectors = 'input, select, textarea, [contenteditable="true"], [role="combobox"], [role="textbox"], [role="spinbutton"], [role="checkbox"], [role="radio"], button[aria-haspopup], [role="button"][aria-haspopup], [data-automation-id][aria-haspopup], [data-automation-id*="select"], [data-automation-id*="dropdown"], [data-automation-id*="stateProvince"], [data-automation-id*="countryRegion"]';
 
     // Search both light DOM and shadow DOM
     const elements = deepQuerySelectorAll(root, selectors);
@@ -1889,6 +1942,8 @@
         };
       }
       const hidden = findLocationHiddenCompanion(el);
+      // If a companion identity field exists on this component, require it.
+      // Do not invent a document-wide hidden requirement for components that omit it.
       if (hidden && !String(hidden.value || '').trim()) {
         return {
           ...result,
@@ -1938,42 +1993,84 @@
     if (!el) return false;
     const id = (el.id || '').toLowerCase();
     const name = (el.name || '').toLowerCase();
-    return id === 'job_application_location'
-      || name === 'job_application[location]'
-      || (id.includes('location') && !!findLocationHiddenCompanion(el));
+    const label = `${findLabel(el) || ''}`.toLowerCase();
+    if (id === 'job_application_location' || name === 'job_application[location]') return true;
+    if (name === 'job_application[location]' || /job_application.*location/.test(name)) return true;
+    // Live Greenhouse Remix: location city autocomplete (not phone country)
+    if (/\blocation\b|\bcity\b/.test(label) && !/\bphone\b|\bdial\b/.test(label)
+        && (el.getAttribute('role') === 'combobox' || el.getAttribute('aria-autocomplete')
+          || el.closest('[class*="autocomplete"], [class*="typeahead"], [class*="select"]'))) {
+      return /greenhouse|boards\.greenhouse|job-boards\.greenhouse/i.test(location.href)
+        || !!document.querySelector('#grnhse_app, #app_form, #application_form');
+    }
+    return false;
+  }
+
+  function isLeverLocationControl(el) {
+    if (!el) return false;
+    return el.id === 'location-input'
+      || (el.name === 'location' && !!el.closest?.('li.application-question, .application-form'))
+      || (el.classList?.contains?.('location-input'));
+  }
+
+  function findOwnedLocationDropdown(el) {
+    // Only listboxes / results owned by this control or inside its question card.
+    const listId = el.getAttribute('aria-controls') || el.getAttribute('aria-owns');
+    if (listId) {
+      try {
+        const owned = document.getElementById(listId);
+        if (owned) return owned;
+      } catch { /* skip */ }
+    }
+    const card = el.closest?.(
+      'li.application-question, .application-question, .autocomplete, [class*="autocomplete"], form'
+    ) || el.parentElement;
+    if (!card) return null;
+    const local = card.querySelector(
+      '[role="listbox"], .dropdown-results, [class*="dropdown-results"], '
+      + 'ul[id*="list"], [class*="suggestion"]'
+    );
+    return local || null;
+  }
+
+  function locationCommitLooksGood(el, expected, hidden) {
+    const visible = String(el?.value || el?.textContent || '').trim();
+    if (!visible) return false;
+    const exp = String(expected || '').trim().toLowerCase();
+    const city = exp.split(',')[0].trim();
+    const vis = visible.toLowerCase();
+    if (city && !vis.includes(city) && !exp.includes(vis.slice(0, Math.min(12, vis.length)))) {
+      // Visible text unrelated to what we asked for
+      if (!vis.includes(exp.slice(0, 8))) return false;
+    }
+    // If a companion identity field exists, it must be nonempty.
+    if (hidden && !String(hidden.value || '').trim()) return false;
+    return true;
   }
 
   /**
-   * Greenhouse-specific location: type → owned listbox → click suggestion →
-   * verify visible + hidden place ID. Never first-option / keyboard fallback.
+   * Greenhouse-specific location: type → owned listbox only → click suggestion →
+   * verify visible commit (+ hidden ID when present). Never document-wide / first-option.
    */
   async function fillGreenhouseLocation(el, value) {
     const query = String(value || '').trim();
     if (!query) {
       return { success: false, reason: 'empty location value' };
     }
-    const listId = el.getAttribute('aria-controls') || el.getAttribute('aria-owns');
-    let listbox = null;
-    if (listId) {
-      try { listbox = document.getElementById(listId); } catch { /* skip */ }
-    }
 
     setNativeValue(el, '');
     dispatchEvents(el, ['focus', 'input']);
     el.focus?.();
     await sleep(50);
-    // Type city fragment (before comma) — Greenhouse filters on city name.
     const typeQuery = query.split(',')[0].trim() || query;
     simulateTyping(el, typeQuery);
 
     let matched = null;
+    let dropdown = null;
     for (let wait = 0; wait < 8; wait++) {
       await sleep(wait < 3 ? 200 : 350);
-      const dropdown = listbox && !listbox.hidden
-        ? listbox
-        : findTypeaheadDropdown(el);
+      dropdown = findOwnedLocationDropdown(el);
       if (!dropdown) continue;
-      // Unhide if Greenhouse still has hidden attr while aria-expanded
       try {
         if (dropdown.hasAttribute?.('hidden') && el.getAttribute('aria-expanded') === 'true') {
           dropdown.hidden = false;
@@ -1983,13 +2080,11 @@
       if (!options.length) continue;
       matched = fuzzyMatchDropdownOption(options, query, { label: 'Location (City)', id: el.id })
         || fuzzyMatchDropdownOption(options, typeQuery, { label: 'Location (City)', id: el.id });
-      // Exact substring on option text (city, state, country)
       if (!matched) {
-        const q = query.toLowerCase();
         const tq = typeQuery.toLowerCase();
         matched = options.find((o) => {
           const t = (o.textContent || '').trim().toLowerCase();
-          return t === q || t.startsWith(tq) || t.includes(tq);
+          return t === query.toLowerCase() || t.startsWith(tq) || t.includes(tq);
         }) || null;
       }
       if (matched) break;
@@ -1997,29 +2092,93 @@
 
     if (!matched) {
       dispatchEvents(el, ['blur']);
-      return { success: false, reason: 'no matching Greenhouse location suggestion' };
+      return { success: false, reason: 'no matching Greenhouse location suggestion in owned listbox' };
     }
 
     clickOption(matched);
-    await sleep(300);
+    await sleep(350);
     const selectedText = (matched.textContent || '').trim() || query;
-    // Do not blur until we verify — blur clears uncommitted values.
     const hidden = findLocationHiddenCompanion(el);
-    if (!hidden || !String(hidden.value || '').trim()) {
+    // When the component exposes a place ID, require it. Otherwise require stable visible text.
+    if (hidden && !String(hidden.value || '').trim()) {
       return {
         success: false,
         reason: 'location suggestion click did not set place ID',
         selectedText,
       };
     }
+    if (!locationCommitLooksGood(el, query, hidden)) {
+      return { success: false, reason: 'visible location not committed', selectedText };
+    }
     dispatchEvents(el, ['blur']);
-    await sleep(350);
-    if (!String(hidden.value || '').trim() || !String(el.value || '').trim()) {
+    await sleep(400);
+    if (!locationCommitLooksGood(el, query, hidden)) {
       return {
         success: false,
         reason: 'Greenhouse cleared location after blur',
         selectedText,
       };
+    }
+    return { success: true, selectedText: el.value || selectedText };
+  }
+
+  /**
+   * Lever location (#location-input): type → .dropdown-results in the same
+   * application-question → click → verify #selected-location.
+   */
+  async function fillLeverLocation(el, value) {
+    const query = String(value || '').trim();
+    if (!query) return { success: false, reason: 'empty location value' };
+
+    setNativeValue(el, '');
+    dispatchEvents(el, ['focus', 'input']);
+    el.focus?.();
+    await sleep(50);
+    const typeQuery = query.split(',')[0].trim() || query;
+    simulateTyping(el, typeQuery);
+
+    let matched = null;
+    for (let wait = 0; wait < 10; wait++) {
+      await sleep(wait < 4 ? 250 : 400);
+      const dropdown = findOwnedLocationDropdown(el);
+      if (!dropdown) continue;
+      // Lever options are often direct children of .dropdown-results (not role=option)
+      let options = getDropdownOptions(dropdown);
+      if (!options.length) {
+        options = Array.from(dropdown.children).filter((c) => {
+          const t = (c.textContent || '').trim();
+          return t && !/no location found|loading/i.test(t);
+        });
+      }
+      if (!options.length) continue;
+      const tq = typeQuery.toLowerCase();
+      matched = options.find((o) => (o.textContent || '').trim().toLowerCase().includes(tq))
+        || fuzzyMatchDropdownOption(options, query, { label: 'Current location', id: el.id })
+        || null;
+      if (matched) break;
+    }
+
+    if (!matched) {
+      dispatchEvents(el, ['blur']);
+      return { success: false, reason: 'no matching Lever location suggestion' };
+    }
+
+    clickOption(matched);
+    await sleep(350);
+    const selectedText = (matched.textContent || '').trim() || query;
+    const hidden = document.getElementById('selected-location')
+      || el.closest('li, .application-question')?.querySelector('input[name="selectedLocation"]');
+    if (!hidden || !String(hidden.value || '').trim()) {
+      return {
+        success: false,
+        reason: 'Lever location not committed (selectedLocation empty)',
+        selectedText,
+      };
+    }
+    dispatchEvents(el, ['blur']);
+    await sleep(300);
+    if (!String(hidden.value || '').trim() || !String(el.value || '').trim()) {
+      return { success: false, reason: 'Lever cleared location after blur', selectedText };
     }
     return { success: true, selectedText: el.value || selectedText };
   }
@@ -2076,11 +2235,24 @@
         return { selector, success: true, skipped: true, reason: 'value looks like phone number for non-phone field' };
       }
 
-      // Capture original value before filling (for undo support)
+      // Capture original value before filling (for undo — only recorded on verified success)
       const origVal = getCurrentFieldValue(el);
+      const fieldLabel = label || findLabel(el) || el.name || el.id || selector;
+      setFieldResult(selector, {
+        label: fieldLabel,
+        proposedValue: String(value ?? ''),
+        originalValue: origVal,
+        status: 'pending',
+        confidence: confidence || 1,
+        action,
+      });
 
       // Stage 1: never overwrite nonempty fields unless explicitly enabled
       if (!overwriteExistingFields && action !== 'skip' && !isEffectivelyEmpty(origVal)) {
+        setFieldResult(selector, {
+          status: 'already_completed',
+          reason: 'nonempty field protected',
+        });
         return {
           selector,
           success: true,
@@ -2089,15 +2261,6 @@
           alreadyCompleted: true,
         };
       }
-      const fieldLabel = label || findLabel(el) || el.name || el.id || selector;
-      originalValues.set(selector, {
-        originalValue: origVal,
-        label: fieldLabel,
-        value: String(value),
-        confidence: confidence || 1,
-        action,
-        undone: false,
-      });
 
       // Scroll element into view so it's interactable
       try {
@@ -2149,7 +2312,7 @@
 
           // 5. Check if this is a typeahead/autocomplete field (has ARIA hints)
           const locationField = looksLikeLocationField(el, label || fieldHints.label);
-          // Greenhouse location: dedicated handler (listbox + hidden place ID).
+          // Greenhouse location: dedicated handler (owned listbox + commit verify).
           if (locationField && isGreenhouseLocationControl(el)) {
             const gh = await fillGreenhouseLocation(el, fillValue);
             if (!gh.success) {
@@ -2164,6 +2327,25 @@
               { selector, success: true, action, selectedText: gh.selectedText },
               el,
               gh.selectedText || fillValue,
+              action,
+              { requireCommit: true },
+            );
+          }
+          // Lever location: #location-input + .dropdown-results + selectedLocation
+          if (locationField && isLeverLocationControl(el)) {
+            const lv = await fillLeverLocation(el, fillValue);
+            if (!lv.success) {
+              return {
+                selector,
+                success: false,
+                reason: lv.reason || 'Lever location not committed',
+                inventoryCategory: 'failed_verification',
+              };
+            }
+            return withVerification(
+              { selector, success: true, action, selectedText: lv.selectedText },
+              el,
+              lv.selectedText || fillValue,
               action,
               { requireCommit: true },
             );
@@ -2584,17 +2766,75 @@
       closeOpenDropdowns();
       await sleep(100);
 
-      if (result.success && !result.skipped) {
-        filledCount++;
-        updateOverlay('filling', `Filling ${filledCount}/${totalMappable} fields...`);
-
+      const fieldLabel = mapping.label || mapping.field_label || mapping.selector;
+      const proposed = String(mapping.value ?? '');
+      if (result.alreadyCompleted) {
+        setFieldResult(mapping.selector, {
+          label: fieldLabel,
+          proposedValue: proposed,
+          status: 'already_completed',
+          reason: result.reason || 'already completed',
+          confidence: mapping.confidence || 1,
+          action: mapping.action,
+        });
+      } else if (result.skipped) {
+        setFieldResult(mapping.selector, {
+          label: fieldLabel,
+          proposedValue: proposed,
+          status: 'skipped',
+          reason: result.reason || 'skipped',
+          confidence: mapping.confidence || 1,
+          action: mapping.action,
+        });
         try {
           const el = resolveElement(mapping.selector);
+          el?.classList.remove(`${PREFIX}-filled`, `${PREFIX}-review`);
+        } catch { /* skip */ }
+      } else if (result.success) {
+        filledCount++;
+        updateOverlay('filling', `Filling ${filledCount}/${totalMappable} fields...`);
+        // Undo map only for verified successes
+        try {
+          const el = resolveElement(mapping.selector);
+          const prev = fieldResults.get(mapping.selector);
+          originalValues.set(mapping.selector, {
+            originalValue: prev?.originalValue ?? '',
+            label: fieldLabel,
+            value: proposed,
+            confidence: mapping.confidence || 1,
+            action: mapping.action,
+            undone: false,
+          });
           if (el) {
             const confidence = mapping.confidence || 1;
             el.classList.add(confidence >= 0.8 ? `${PREFIX}-filled` : `${PREFIX}-review`);
           }
         } catch { /* skip */ }
+        setFieldResult(mapping.selector, {
+          label: fieldLabel,
+          proposedValue: proposed,
+          status: 'filled',
+          reason: '',
+          confidence: mapping.confidence || 1,
+          action: mapping.action,
+        });
+      } else {
+        setFieldResult(mapping.selector, {
+          label: fieldLabel,
+          proposedValue: proposed,
+          status: 'failed',
+          reason: result.reason || 'verification failed',
+          confidence: mapping.confidence || 1,
+          action: mapping.action,
+        });
+        // Never leave a green highlight on a failed commit
+        try {
+          const el = resolveElement(mapping.selector);
+          el?.classList.remove(`${PREFIX}-filled`, `${PREFIX}-review`);
+          el?.classList.add(`${PREFIX}-failed`);
+        } catch { /* skip */ }
+        // Ensure failed attempts are not undoable as "filled"
+        originalValues.delete(mapping.selector);
       }
     }
 
@@ -2870,7 +3110,7 @@
           <button type="button" class="${PREFIX}-overlay-close" title="Close" aria-label="Close">&#x2715;</button>
         </div>
       </div>
-      <div class="${PREFIX}-overlay-build">JobApply build: ${build.shortSha}</div>
+      <div class="${PREFIX}-overlay-build">JobApply source: ${build.sourceSha || build.shortSha}</div>
       <div class="${PREFIX}-overlay-body">
         <span class="${PREFIX}-overlay-status">Initializing...</span>
       </div>
@@ -2958,23 +3198,35 @@
   function getOverlayCounts() {
     let filled = 0;
     let review = 0;
+    let failed = 0;
     let undone = 0;
-    for (const [, entry] of originalValues) {
-      if (entry.undone) {
+    let already = 0;
+    for (const [, entry] of fieldResults) {
+      if (entry.status === 'filled') {
+        if (entry.confidence < 0.8) review++;
+        else filled++;
+      } else if (entry.status === 'failed') {
+        failed++;
+      } else if (entry.status === 'undone') {
         undone++;
-      } else if (entry.confidence < 0.8) {
-        review++;
-      } else {
-        filled++;
+      } else if (entry.status === 'already_completed') {
+        already++;
       }
     }
-    return { filled, review, undone, total: originalValues.size };
+    return {
+      filled,
+      review,
+      failed,
+      undone,
+      already,
+      total: fieldResults.size,
+    };
   }
 
   function renderCompactPill() {
     if (!overlayEl) return;
 
-    const { filled, review } = getOverlayCounts();
+    const { filled, review, failed } = getOverlayCounts();
     const body = overlayEl.querySelector(`.${PREFIX}-overlay-body`);
     if (!body) return;
 
@@ -2985,11 +3237,12 @@
     const parts = [];
     if (filled > 0) parts.push(`${filled} filled`);
     if (review > 0) parts.push(`${review} review`);
-    if (!parts.length) parts.push('0 fields');
+    if (failed > 0) parts.push(`${failed} failed`);
+    if (!parts.length) parts.push('0 filled');
 
     body.innerHTML = `
       <div class="${PREFIX}-overlay-pill" title="Click to expand field list">
-        <span class="${PREFIX}-overlay-pill-check">&#x2713;</span>
+        <span class="${PREFIX}-overlay-pill-check">${failed && !filled ? '!' : '&#x2713;'}</span>
         <span class="${PREFIX}-overlay-pill-text">${parts.join(' \u00B7 ')}</span>
         <span class="${PREFIX}-overlay-pill-expand">&#x25BC;</span>
       </div>
@@ -3011,23 +3264,41 @@
     overlayEl.classList.add(`${PREFIX}-overlay-expanded`);
     overlayMode = 'expanded';
 
-    const entries = Array.from(originalValues.entries());
+    // Show verified outcomes — never treat attempted/failed as green filled
+    const entries = Array.from(fieldResults.entries()).filter(([, e]) => (
+      e.status === 'filled' || e.status === 'failed' || e.status === 'undone'
+      || e.status === 'already_completed'
+    ));
     if (!entries.length) {
-      body.innerHTML = `<span class="${PREFIX}-overlay-status">No fields tracked.</span>`;
+      body.innerHTML = `<span class="${PREFIX}-overlay-status">No verified fills.</span>`;
       return;
     }
 
     const rows = entries.map(([selector, entry]) => {
-      const dotClass = entry.undone ? 'gray' : (entry.confidence < 0.8 ? 'yellow' : 'green');
-      const displayValue = entry.undone ? `(undone) ${entry.originalValue || 'empty'}` : entry.value;
+      let dotClass = 'gray';
+      let displayValue = '';
+      let undoBtnHtml = '';
+      if (entry.status === 'filled') {
+        dotClass = entry.confidence < 0.8 ? 'yellow' : 'green';
+        displayValue = entry.proposedValue || '';
+        undoBtnHtml = `<button class="${PREFIX}-undo-btn" data-selector="${escapeHtml(selector)}" title="Undo">&#x21A9;</button>`;
+      } else if (entry.status === 'failed') {
+        dotClass = 'red';
+        displayValue = `failed to commit — manual entry required`;
+      } else if (entry.status === 'undone') {
+        dotClass = 'gray';
+        displayValue = `(undone)`;
+      } else if (entry.status === 'already_completed') {
+        dotClass = 'gray';
+        displayValue = 'already completed';
+      }
+      // Never show proposed personal values for failed rows
       const truncatedValue = displayValue.length > 50 ? displayValue.slice(0, 47) + '...' : displayValue;
-      const truncatedLabel = entry.label.length > 30 ? entry.label.slice(0, 27) + '...' : entry.label;
-      const undoBtnHtml = entry.undone
-        ? ''
-        : `<button class="${PREFIX}-undo-btn" data-selector="${escapeHtml(selector)}" title="Undo">&#x21A9;</button>`;
+      const label = entry.label || selector;
+      const truncatedLabel = label.length > 30 ? label.slice(0, 27) + '...' : label;
 
       return `
-        <div class="${PREFIX}-overlay-field-row" data-selector="${escapeHtml(selector)}">
+        <div class="${PREFIX}-overlay-field-row ${entry.status === 'failed' ? `${PREFIX}-row-failed` : ''}" data-selector="${escapeHtml(selector)}">
           <span class="${PREFIX}-status-dot ${dotClass}"></span>
           <div class="${PREFIX}-overlay-field-info">
             <span class="${PREFIX}-overlay-field-label">${escapeHtml(truncatedLabel)}</span>
@@ -3049,7 +3320,7 @@
 
     body.style.display = 'block';
 
-    // Undo button handlers
+    // Undo button handlers — only for verified fills
     body.querySelectorAll(`.${PREFIX}-undo-btn`).forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -3064,8 +3335,10 @@
   }
 
   function undoField(selector) {
+    const result = fieldResults.get(selector);
+    if (!result || result.status !== 'filled') return;
     const entry = originalValues.get(selector);
-    if (!entry || entry.undone) return;
+    if (!entry) return;
 
     const el = resolveElement(selector);
     if (!el) return;
@@ -3077,8 +3350,10 @@
     // Remove highlight classes
     el.classList.remove(`${PREFIX}-filled`);
     el.classList.remove(`${PREFIX}-review`);
+    el.classList.remove(`${PREFIX}-failed`);
 
-    entry.undone = true;
+    setFieldResult(selector, { status: 'undone', reason: 'undone by user' });
+    originalValues.delete(selector);
 
     // Re-render the current overlay mode
     if (overlayMode === 'expanded') {
@@ -3101,9 +3376,9 @@
       || opts.newSection
       || /no form fields|no fillable|cancelled|unsupported|new application section|timed out|error:/i.test(msg);
 
-    // Successful completion with tracked fills → compact pill.
+    // Successful completion with tracked outcomes → compact pill.
     // Errors / unsupported / new-section messages must NEVER be hidden by the old pill.
-    if (state === 'done' && originalValues.size > 0 && !forceStatus) {
+    if (state === 'done' && fieldResults.size > 0 && !forceStatus) {
       overlayMode = 'compact';
       renderCompactPill();
       return;
@@ -3150,6 +3425,7 @@
 
   function clearPageScopedState(opts = {}) {
     originalValues.clear();
+    fieldResults.clear();
     preSubmitValues = {};
     overlayMode = 'status';
     try {
@@ -3580,7 +3856,7 @@
       body.innerHTML = `
         <div class="${PREFIX}-review-panel">
           <p><strong>Review ${fillable.length} proposed fill${fillable.length === 1 ? '' : 's'}</strong></p>
-          <p class="${PREFIX}-review-meta">JobApply build: ${build.shortSha}</p>
+          <p class="${PREFIX}-review-meta">JobApply source: ${build.sourceSha || build.shortSha}</p>
           <p class="${PREFIX}-review-meta">${reviewCount} need review (confidence &lt; 0.8). Nonempty fields stay protected.</p>
           <button type="button" class="${PREFIX}-diag-btn">Copy sanitized diagnostics</button>
           <label class="${PREFIX}-review-overwrite">
@@ -4959,11 +5235,16 @@
       verifyFilled,
       withVerification,
       fillGreenhouseLocation,
+      fillLeverLocation,
       isGreenhouseLocationControl,
+      isLeverLocationControl,
       findLocationHiddenCompanion,
+      findOwnedLocationDropdown,
       buildSanitizedDiagnostics,
       collectAndCopySanitizedDiagnostics,
       getBuildInfo,
+      get fieldResults() { return fieldResults; },
+      getOverlayCounts,
       looksLikeLocationField,
       getNearbyHeading,
       matchPhoneCountryCodeOption,

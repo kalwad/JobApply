@@ -330,6 +330,15 @@
 
     enhanceExtraction(fields) {
       for (const field of fields) {
+        // Prefer Lever application-label text (cleaner than full <label> blobs)
+        if (field.label && /no location found|loading|analyzing resume/i.test(field.label)) {
+          const cleaned = String(field.label)
+            .replace(/no location found[\s\S]*/i, '')
+            .replace(/loading[\s\S]*/i, '')
+            .replace(/analyzing resume[\s\S]*/i, '')
+            .trim();
+          if (cleaned) field.label = cleaned;
+        }
         const text = `${field.label || ''} ${field.name || ''} ${field.id || ''} ${field.nearbyHeading || ''}`.toLowerCase();
         // Label / name semantic stamps FIRST. cards[...] defaults must not
         // overwrite preferred_name / university / languages as open_ended_question.

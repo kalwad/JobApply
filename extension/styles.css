@@ -344,8 +344,21 @@
   background: #eab308;
 }
 
+.ja-autofill-status-dot.red {
+  background: #ef4444;
+}
+
 .ja-autofill-status-dot.gray {
   background: #71717a;
+}
+
+.ja-autofill-failed {
+  outline: 1px solid #ef4444 !important;
+  outline-offset: 1px;
+}
+
+.ja-autofill-row-failed .ja-autofill-overlay-field-value {
+  color: #fca5a5;
 }
 
 /* ─── Undo button ───────────────────────────────────────── */

@@ -487,16 +487,53 @@ def create_app(db_path: str | None = None, testing: bool = False) -> FastAPI:
 
     @app.get("/api/meta")
     async def app_meta():
+        import subprocess
+        from pathlib import Path
+
+        packaged = {
+            "shortSha": "unknown",
+            "sourceSha": "unknown",
+            "sha": "unknown",
+            "branch": "unknown",
+            "committedAt": "",
+        }
         try:
             from app import build_info as _build_info
-            build = {
+            packaged = {
                 "shortSha": getattr(_build_info, "SHORT_SHA", "unknown"),
+                "sourceSha": getattr(_build_info, "SOURCE_SHA", getattr(_build_info, "SHORT_SHA", "unknown")),
                 "sha": getattr(_build_info, "SHA", "unknown"),
                 "branch": getattr(_build_info, "BRANCH", "unknown"),
                 "committedAt": getattr(_build_info, "COMMITTED_AT", ""),
             }
         except Exception:
-            build = {"shortSha": "unknown", "sha": "unknown", "branch": "unknown", "committedAt": ""}
+            pass
+
+        # Prefer live checkout SHA so /api/meta matches the running tree (no stamp lag).
+        live_short, live_full, live_branch = "", "", ""
+        try:
+            root = Path(__file__).resolve().parents[1]
+            live_short = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"], cwd=root, text=True, stderr=subprocess.DEVNULL,
+            ).strip()
+            live_full = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=root, text=True, stderr=subprocess.DEVNULL,
+            ).strip()
+            live_branch = subprocess.check_output(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=root, text=True, stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            pass
+
+        build = {
+            **packaged,
+            "shortSha": live_short or packaged["shortSha"],
+            "sourceSha": live_short or packaged.get("sourceSha") or packaged["shortSha"],
+            "sha": live_full or packaged["sha"],
+            "branch": live_branch or packaged["branch"],
+            "liveGit": bool(live_short),
+            "packagedSha": packaged["shortSha"],
+        }
         return {
             "name": "JobApply",
             "slim_mode": bool(getattr(app.state, "slim_mode", True)),

@@ -1673,9 +1673,11 @@ describe('multi-page tracking', () => {
 // ═══════════════════════════════════════════════════════════════
 
 describe('originalValues tracking', () => {
-  it('is populated after fillField', async () => {
+  it('is populated after verified fillForm success', async () => {
     createInput({ id: 'tracked', type: 'text' });
-    await api.fillField('#tracked', 'test value', 'fill_text', 0.9, 'Tracked Field');
+    await api.fillForm([
+      { selector: '#tracked', value: 'test value', action: 'fill_text', confidence: 0.9, field_label: 'Tracked Field' },
+    ]);
 
     expect(api.originalValues.size).toBeGreaterThanOrEqual(1);
     const entry = api.originalValues.get('#tracked');
@@ -1684,26 +1686,33 @@ describe('originalValues tracking', () => {
     expect(entry.label).toBe('Tracked Field');
     expect(entry.confidence).toBe(0.9);
     expect(entry.undone).toBe(false);
+    expect(api.fieldResults.get('#tracked')?.status).toBe('filled');
   });
 
   it('stores original value for undo', async () => {
+    api.overwriteExistingFields = true;
     const input = createInput({ id: 'undo-test', type: 'text', value: 'original' });
-    await api.fillField('#undo-test', 'new value', 'fill_text');
+    await api.fillForm([
+      { selector: '#undo-test', value: 'new value', action: 'fill_text', confidence: 1, field_label: 'Undo' },
+    ]);
 
     const entry = api.originalValues.get('#undo-test');
     expect(entry.originalValue).toBe('original');
   });
 
   it('undoField restores original value', async () => {
+    api.overwriteExistingFields = true;
     const input = createInput({ id: 'undo-field', type: 'text', value: 'before' });
-    await api.fillField('#undo-field', 'after', 'fill_text');
+    await api.fillForm([
+      { selector: '#undo-field', value: 'after', action: 'fill_text', confidence: 1, field_label: 'Undo' },
+    ]);
     expect(input.value).toBe('after');
 
     api.undoField('#undo-field');
     expect(input.value).toBe('before');
 
-    const entry = api.originalValues.get('#undo-field');
-    expect(entry.undone).toBe(true);
+    expect(api.fieldResults.get('#undo-field')?.status).toBe('undone');
+    expect(api.originalValues.has('#undo-field')).toBe(false);
   });
 });
 
@@ -2649,7 +2658,9 @@ describe('Workday same-URL section transitions', () => {
       <h1>My Information</h1>
       <input id="fn" name="firstName" data-automation-id="legalNameSection_firstName" />
     `;
-    await api.fillField('#fn', 'Ada', 'fill_text', 0.9, 'First Name');
+    await api.fillForm([
+      { selector: '#fn', value: 'Ada', action: 'fill_text', confidence: 0.9, field_label: 'First Name' },
+    ]);
     expect(api.originalValues.size).toBeGreaterThan(0);
     api.startMultiPageTracking(1);
 
@@ -2711,20 +2722,26 @@ describe('overlay lifecycle', () => {
 
   it('error message is not hidden by prior completion pill', async () => {
     createInput({ id: 'x', type: 'text' });
-    await api.fillField('#x', 'v', 'fill_text', 0.9, 'X');
-    expect(api.originalValues.size).toBe(1);
+    await api.fillForm([
+      { selector: '#x', value: 'v', action: 'fill_text', confidence: 0.9, field_label: 'X' },
+    ]);
+    expect(api.fieldResults.get('#x')?.status).toBe('filled');
     api.updateOverlay('done', 'No fillable fields found on this section.', { forceStatus: true });
     const overlay = document.getElementById('ja-autofill-overlay');
     expect(overlay.textContent).toMatch(/No fillable fields/i);
     expect(overlay.classList.contains('ja-autofill-overlay-compact')).toBe(false);
   });
 
-  it('clearPageScopedState clears originalValues', async () => {
+  it('clearPageScopedState clears originalValues and fieldResults', async () => {
     createInput({ id: 'y', type: 'text' });
-    await api.fillField('#y', 'v', 'fill_text');
+    await api.fillForm([
+      { selector: '#y', value: 'v', action: 'fill_text', confidence: 1, field_label: 'Y' },
+    ]);
     expect(api.originalValues.size).toBe(1);
+    expect(api.fieldResults.size).toBe(1);
     api.clearPageScopedState({ keepCumulative: true });
     expect(api.originalValues.size).toBe(0);
+    expect(api.fieldResults.size).toBe(0);
   });
 });
 

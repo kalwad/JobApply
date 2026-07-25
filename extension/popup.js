@@ -22,15 +22,21 @@ function extensionBuild() {
 
 function renderBuildRow() {
   const ext = extensionBuild();
-  const be = backendBuild?.shortSha || backendBuild?.git_sha;
-  let text = `JobApply build: ${ext.shortSha}`;
+  const extSha = ext.sourceSha || ext.shortSha;
+  const be = backendBuild?.sourceSha || backendBuild?.shortSha || backendBuild?.git_sha;
+  let text = `JobApply source: ${extSha}`;
   if (be) {
-    text += be === ext.shortSha
+    text += be === extSha
       ? ` · backend match`
-      : ` · backend ${be} (mismatch)`;
+      : ` · backend ${be} (reload/restart)`;
   }
   buildRow.textContent = text;
-  buildRow.title = `extension ${ext.sha}${backendBuild?.sha ? `\nbackend ${backendBuild.sha}` : ''}`;
+  buildRow.title = [
+    `extension source ${extSha}`,
+    ext.sha ? `extension sha ${ext.sha}` : '',
+    backendBuild?.sha ? `backend sha ${backendBuild.sha}` : '',
+    backendBuild?.liveGit ? 'backend liveGit=true' : '',
+  ].filter(Boolean).join('\n');
 }
 
 async function init() {

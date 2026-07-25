@@ -201,6 +201,28 @@ describe('fixture adapter detect + extract', () => {
     expect(input.value).toMatch(/Sterling Heights/i);
   });
 
+  it('failed location verification does not count as filled in overlay state', async () => {
+    const html = readFileSync(join(FIXTURES, 'greenhouse', 'location-autocomplete.html'), 'utf-8');
+    const match = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    document.body.innerHTML = match ? match[1] : html;
+    // No suggestion listeners wired → Greenhouse location handler cannot commit.
+    const result = await ctx.api.fillForm([
+      {
+        selector: '#job_application_location',
+        value: 'Sterling Heights',
+        action: 'fill_text',
+        confidence: 1,
+        field_label: 'Location (City)*',
+      },
+    ]);
+    expect(result.filledCount).toBe(0);
+    const counts = ctx.api.getOverlayCounts();
+    expect(counts.filled).toBe(0);
+    expect(counts.failed).toBeGreaterThanOrEqual(1);
+    expect(ctx.api.originalValues.has('#job_application_location')).toBe(false);
+    expect(ctx.api.fieldResults.get('#job_application_location')?.status).toBe('failed');
+  });
+
   it('sanitized diagnostics never include field values or URLs', () => {
     const html = readFileSync(join(FIXTURES, 'lever', 'profile-links.html'), 'utf-8');
     const match = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);

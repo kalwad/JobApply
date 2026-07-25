@@ -15,7 +15,7 @@ Public-site interaction must **never** submit an application. Stop before the fi
 2. Backend: `uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8085` (restart after pulls)
 3. Open http://127.0.0.1:8085 → Settings: set **First / Middle / Last** explicitly (not only Full Name), saved Q&A, Ollama health OK
 4. Chrome: Load unpacked from this repo’s `extension/` → **Reload** after every pull → **close and reopen** the application tab (do not rely on soft refresh)
-5. Confirm popup shows `JobApply build: <sha>` matching `git rev-parse --short HEAD` and backend `/api/meta` `build.shortSha`
+5. Confirm popup shows `JobApply source: <sha>` matching `git rev-parse --short HEAD` and backend `/api/meta` `build.sourceSha` (live Git). Restart the backend after every pull.
 6. Extension popup server URL: `http://localhost:8085` (required by host permissions; backend stays on `127.0.0.1`)
 7. One public application URL each for Greenhouse, Lever, Workday
 8. Before filing bugs: popup/overlay **Copy sanitized diagnostics** (no PII) — paste into the chat
