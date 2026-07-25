@@ -1,9 +1,9 @@
-/* CareerPulse AutoFill — content script styles
-   All classes prefixed with cp-autofill- to avoid conflicts */
+/* JobApply – Application Copilot — content script styles
+   All classes prefixed with ja-autofill- to avoid conflicts */
 
 /* ─── Overlay ────────────────────────────────────────────── */
 
-#cp-autofill-overlay {
+#ja-autofill-overlay {
   position: fixed;
   bottom: 20px;
   right: 20px;
@@ -21,18 +21,18 @@
 }
 
 /* Compact pill: shrink width to fit summary text */
-#cp-autofill-overlay.cp-autofill-overlay-compact {
+#ja-autofill-overlay.ja-autofill-overlay-compact {
   width: auto;
   min-width: 180px;
   max-width: 280px;
 }
 
 /* Expanded panel: widen for the field list */
-#cp-autofill-overlay.cp-autofill-overlay-expanded {
+#ja-autofill-overlay.ja-autofill-overlay-expanded {
   width: 320px;
 }
 
-.cp-autofill-overlay-header {
+.ja-autofill-overlay-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -43,11 +43,11 @@
   user-select: none;
 }
 
-.cp-autofill-overlay-header:active {
+.ja-autofill-overlay-header:active {
   cursor: grabbing;
 }
 
-.cp-autofill-overlay-title {
+.ja-autofill-overlay-title {
   font-weight: 600;
   font-size: 12px;
   color: #3b82f6;
@@ -55,12 +55,12 @@
   text-transform: uppercase;
 }
 
-.cp-autofill-overlay-actions {
+.ja-autofill-overlay-actions {
   display: flex;
   gap: 4px;
 }
 
-.cp-autofill-overlay-actions button {
+.ja-autofill-overlay-actions button {
   background: none;
   border: none;
   color: #71717a;
@@ -71,23 +71,23 @@
   line-height: 1;
 }
 
-.cp-autofill-overlay-actions button:hover {
+.ja-autofill-overlay-actions button:hover {
   background: #27272a;
   color: #fff;
 }
 
-.cp-autofill-overlay-body {
+.ja-autofill-overlay-body {
   padding: 12px 14px;
 }
 
-.cp-autofill-overlay-status {
+.ja-autofill-overlay-status {
   color: #a1a1aa;
   line-height: 1.4;
 }
 
 /* ─── Compact pill ──────────────────────────────────────── */
 
-.cp-autofill-overlay-pill {
+.ja-autofill-overlay-pill {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -95,23 +95,23 @@
   padding: 2px 0;
 }
 
-.cp-autofill-overlay-pill:hover {
+.ja-autofill-overlay-pill:hover {
   opacity: 0.85;
 }
 
-.cp-autofill-overlay-pill-check {
+.ja-autofill-overlay-pill-check {
   color: #22c55e;
   font-size: 14px;
   font-weight: 700;
 }
 
-.cp-autofill-overlay-pill-text {
+.ja-autofill-overlay-pill-text {
   color: #d4d4d8;
   font-size: 13px;
   white-space: nowrap;
 }
 
-.cp-autofill-overlay-pill-expand {
+.ja-autofill-overlay-pill-expand {
   color: #71717a;
   font-size: 10px;
   margin-left: auto;
@@ -119,14 +119,14 @@
 
 /* ─── Expanded field list ───────────────────────────────── */
 
-.cp-autofill-overlay-field-list {
+.ja-autofill-overlay-field-list {
   max-height: 260px;
   overflow-y: auto;
   margin: 0 -14px;
   padding: 0 14px;
 }
 
-.cp-autofill-overlay-field-row {
+.ja-autofill-overlay-field-row {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -135,11 +135,11 @@
   position: relative;
 }
 
-.cp-autofill-overlay-field-row:last-child {
+.ja-autofill-overlay-field-row:last-child {
   border-bottom: none;
 }
 
-.cp-autofill-overlay-field-info {
+.ja-autofill-overlay-field-info {
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -147,7 +147,7 @@
   flex: 1;
 }
 
-.cp-autofill-overlay-field-label {
+.ja-autofill-overlay-field-label {
   font-size: 11px;
   color: #a1a1aa;
   white-space: nowrap;
@@ -155,7 +155,7 @@
   text-overflow: ellipsis;
 }
 
-.cp-autofill-overlay-field-value {
+.ja-autofill-overlay-field-value {
   font-size: 12px;
   color: #e4e4e7;
   white-space: nowrap;
@@ -165,28 +165,28 @@
 
 /* ─── Status dots ───────────────────────────────────────── */
 
-.cp-autofill-status-dot {
+.ja-autofill-status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 
-.cp-autofill-status-dot.green {
+.ja-autofill-status-dot.green {
   background: #22c55e;
 }
 
-.cp-autofill-status-dot.yellow {
+.ja-autofill-status-dot.yellow {
   background: #eab308;
 }
 
-.cp-autofill-status-dot.gray {
+.ja-autofill-status-dot.gray {
   background: #71717a;
 }
 
 /* ─── Undo button ───────────────────────────────────────── */
 
-.cp-autofill-undo-btn {
+.ja-autofill-undo-btn {
   background: none;
   border: none;
   color: #71717a;
@@ -199,18 +199,18 @@
   flex-shrink: 0;
 }
 
-.cp-autofill-overlay-field-row:hover .cp-autofill-undo-btn {
+.ja-autofill-overlay-field-row:hover .ja-autofill-undo-btn {
   opacity: 1;
 }
 
-.cp-autofill-undo-btn:hover {
+.ja-autofill-undo-btn:hover {
   background: #27272a;
   color: #f87171;
 }
 
 /* ─── Collapse link ─────────────────────────────────────── */
 
-.cp-autofill-overlay-collapse {
+.ja-autofill-overlay-collapse {
   text-align: center;
   padding: 6px 0 2px;
   cursor: pointer;
@@ -218,25 +218,25 @@
   font-size: 11px;
 }
 
-.cp-autofill-overlay-collapse:hover {
+.ja-autofill-overlay-collapse:hover {
   color: #a1a1aa;
 }
 
 /* ─── Field highlights ───────────────────────────────────── */
 
-.cp-autofill-filled {
+.ja-autofill-filled {
   box-shadow: 0 0 0 2px #22c55e60, 0 0 8px #22c55e30 !important;
   outline: none !important;
 }
 
-.cp-autofill-review {
+.ja-autofill-review {
   box-shadow: 0 0 0 2px #eab30860, 0 0 8px #eab30830 !important;
   outline: none !important;
 }
 
 /* ─── Learn prompt modal ─────────────────────────────────── */
 
-#cp-autofill-learn-prompt {
+#ja-autofill-learn-prompt {
   position: fixed;
   bottom: 24px;
   right: 24px;
@@ -245,7 +245,7 @@
   pointer-events: none;
 }
 
-.cp-autofill-learn-modal {
+.ja-autofill-learn-modal {
   width: 360px;
   max-width: 90vw;
   max-height: 50vh;
@@ -260,7 +260,7 @@
   pointer-events: auto;
 }
 
-.cp-autofill-learn-header {
+.ja-autofill-learn-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -268,13 +268,13 @@
   border-bottom: 1px solid #27272a;
 }
 
-.cp-autofill-learn-title {
+.ja-autofill-learn-title {
   font-size: 14px;
   font-weight: 600;
   margin: 0;
 }
 
-.cp-autofill-learn-close {
+.ja-autofill-learn-close {
   background: none;
   border: none;
   color: #71717a;
@@ -284,17 +284,17 @@
   line-height: 1;
 }
 
-.cp-autofill-learn-close:hover {
+.ja-autofill-learn-close:hover {
   color: #fff;
 }
 
-.cp-autofill-learn-list {
+.ja-autofill-learn-list {
   padding: 4px 12px;
   overflow-y: auto;
   flex: 1;
 }
 
-.cp-autofill-learn-item {
+.ja-autofill-learn-item {
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -303,34 +303,34 @@
   cursor: pointer;
 }
 
-.cp-autofill-learn-item:last-child {
+.ja-autofill-learn-item:last-child {
   border-bottom: none;
 }
 
-.cp-autofill-learn-item input[type="checkbox"] {
+.ja-autofill-learn-item input[type="checkbox"] {
   margin-top: 2px;
   accent-color: #3b82f6;
 }
 
-.cp-autofill-learn-item-detail {
+.ja-autofill-learn-item-detail {
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
 }
 
-.cp-autofill-learn-item-label {
+.ja-autofill-learn-item-label {
   font-size: 12px;
   color: #71717a;
 }
 
-.cp-autofill-learn-item-value {
+.ja-autofill-learn-item-value {
   font-size: 13px;
   color: #e4e4e7;
   word-break: break-word;
 }
 
-.cp-autofill-learn-actions {
+.ja-autofill-learn-actions {
   display: flex;
   gap: 8px;
   padding: 12px 16px;
@@ -338,7 +338,7 @@
   justify-content: flex-end;
 }
 
-.cp-autofill-learn-save {
+.ja-autofill-learn-save {
   background: #3b82f6;
   color: #fff;
   border: none;
@@ -349,11 +349,11 @@
   cursor: pointer;
 }
 
-.cp-autofill-learn-save:hover {
+.ja-autofill-learn-save:hover {
   background: #2563eb;
 }
 
-.cp-autofill-learn-dismiss {
+.ja-autofill-learn-dismiss {
   background: #27272a;
   color: #a1a1aa;
   border: 1px solid #3f3f46;
@@ -363,14 +363,14 @@
   cursor: pointer;
 }
 
-.cp-autofill-learn-dismiss:hover {
+.ja-autofill-learn-dismiss:hover {
   background: #3f3f46;
   color: #fff;
 }
 
 /* ─── Auto-detection badge ──────────────────────────────────── */
 
-.cp-auto-badge {
+.ja-auto-badge {
   position: fixed;
   bottom: 20px;
   right: 20px;
@@ -390,11 +390,11 @@
   user-select: none;
 }
 
-.cp-auto-badge.cp-badge-medium {
+.ja-auto-badge.ja-badge-medium {
   opacity: 0.7;
 }
 
-.cp-auto-badge-main {
+.ja-auto-badge-main {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -403,16 +403,16 @@
   white-space: nowrap;
 }
 
-.cp-auto-badge-main:hover {
+.ja-auto-badge-main:hover {
   color: #fff;
 }
 
-.cp-auto-badge-icon {
+.ja-auto-badge-icon {
   flex-shrink: 0;
   color: #3b82f6;
 }
 
-.cp-auto-badge-dismiss {
+.ja-auto-badge-dismiss {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -430,7 +430,7 @@
   padding: 0;
 }
 
-.cp-auto-badge-dismiss:hover {
+.ja-auto-badge-dismiss:hover {
   color: #fff;
   background: rgba(63, 63, 70, 0.4);
 }
@@ -448,13 +448,13 @@
 
 /* ─── File upload helper ──────────────────────────────────── */
 
-.cp-autofill-upload-highlight {
+.ja-autofill-upload-highlight {
   box-shadow: 0 0 0 2px #eab30880, 0 0 12px #eab30840 !important;
   outline: none !important;
   border-radius: 4px;
 }
 
-.cp-autofill-upload-helper {
+.ja-autofill-upload-helper {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -471,12 +471,12 @@
   max-width: 320px;
 }
 
-.cp-autofill-upload-helper-text {
+.ja-autofill-upload-helper-text {
   line-height: 1.4;
   color: #a1a1aa;
 }
 
-.cp-autofill-upload-helper-btn {
+.ja-autofill-upload-helper-btn {
   align-self: flex-start;
   background: #3b82f6;
   color: #fff;
@@ -489,29 +489,29 @@
   transition: background 0.15s;
 }
 
-.cp-autofill-upload-helper-btn:hover {
+.ja-autofill-upload-helper-btn:hover {
   background: #2563eb;
 }
 
-.cp-autofill-upload-helper-btn:disabled {
+.ja-autofill-upload-helper-btn:disabled {
   background: #52525b;
   color: #a1a1aa;
   cursor: not-allowed;
 }
 
-.cp-autofill-upload-helper-downloaded {
+.ja-autofill-upload-helper-downloaded {
   border-color: #22c55e60;
 }
 
-.cp-autofill-upload-helper-downloaded .cp-autofill-upload-helper-text {
+.ja-autofill-upload-helper-downloaded .ja-autofill-upload-helper-text {
   color: #4ade80;
 }
 
-.cp-autofill-upload-helper-downloaded .cp-autofill-upload-helper-btn {
+.ja-autofill-upload-helper-downloaded .ja-autofill-upload-helper-btn {
   background: #22c55e;
 }
 
-.cp-autofill-upload-helper-downloaded .cp-autofill-upload-helper-btn:disabled {
+.ja-autofill-upload-helper-downloaded .ja-autofill-upload-helper-btn:disabled {
   background: #22c55e;
   color: #fff;
   cursor: default;
@@ -519,14 +519,14 @@
 
 /* ─── Job Board Overlay: Save Button & Score Badge ───────── */
 
-.cp-overlay-actions {
+.ja-overlay-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 6px 0 2px;
 }
 
-.cp-overlay-save-btn {
+.ja-overlay-save-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -544,37 +544,37 @@
   line-height: 1.4;
 }
 
-.cp-overlay-save-btn:hover:not(:disabled) {
+.ja-overlay-save-btn:hover:not(:disabled) {
   background: #2563eb;
 }
 
-.cp-overlay-save-btn:disabled {
+.ja-overlay-save-btn:disabled {
   cursor: default;
 }
 
-.cp-overlay-save-btn.cp-overlay-saving {
+.ja-overlay-save-btn.ja-overlay-saving {
   background: #52525b;
   color: #a1a1aa;
   cursor: wait;
 }
 
-.cp-overlay-save-btn.cp-overlay-saved {
+.ja-overlay-save-btn.ja-overlay-saved {
   background: #22c55e;
   color: #fff;
 }
 
-.cp-overlay-save-btn.cp-overlay-error {
+.ja-overlay-save-btn.ja-overlay-error {
   background: #ef4444;
   color: #fff;
 }
 
-.cp-overlay-save-btn.cp-overlay-error:hover {
+.ja-overlay-save-btn.ja-overlay-error:hover {
   background: #dc2626;
 }
 
 /* ─── Score badge ────────────────────────────────────────── */
 
-.cp-overlay-score-badge {
+.ja-overlay-score-badge {
   position: absolute;
   top: 8px;
   right: 8px;
@@ -594,22 +594,22 @@
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
 }
 
-.cp-overlay-score-badge.cp-overlay-score-high {
+.ja-overlay-score-badge.ja-overlay-score-high {
   background: #22c55e;
 }
 
-.cp-overlay-score-badge.cp-overlay-score-mid {
+.ja-overlay-score-badge.ja-overlay-score-mid {
   background: #eab308;
   color: #18181b;
 }
 
-.cp-overlay-score-badge.cp-overlay-score-low {
+.ja-overlay-score-badge.ja-overlay-score-low {
   background: #71717a;
 }
 
 /* ─── Queue fill banner ─────────────────────────────────── */
 
-#cp-autofill-queue-banner {
+#ja-autofill-queue-banner {
   position: fixed;
   top: 0;
   left: 0;
@@ -618,7 +618,7 @@
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 
-.cp-autofill-queue-banner-inner {
+.ja-autofill-queue-banner-inner {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -631,7 +631,7 @@
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
 }
 
-.cp-autofill-queue-banner-progress {
+.ja-autofill-queue-banner-progress {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -646,7 +646,7 @@
   flex-shrink: 0;
 }
 
-.cp-autofill-queue-banner-label {
+.ja-autofill-queue-banner-label {
   flex: 1;
   white-space: nowrap;
   overflow: hidden;
@@ -654,15 +654,15 @@
   color: #d4d4d8;
 }
 
-.cp-autofill-queue-banner-actions {
+.ja-autofill-queue-banner-actions {
   display: flex;
   gap: 6px;
   flex-shrink: 0;
 }
 
-.cp-autofill-queue-done-btn,
-.cp-autofill-queue-skip-btn,
-.cp-autofill-queue-cancel-btn {
+.ja-autofill-queue-done-btn,
+.ja-autofill-queue-skip-btn,
+.ja-autofill-queue-cancel-btn {
   border: none;
   border-radius: 6px;
   padding: 5px 12px;
@@ -672,32 +672,32 @@
   white-space: nowrap;
 }
 
-.cp-autofill-queue-done-btn {
+.ja-autofill-queue-done-btn {
   background: #22c55e;
   color: #fff;
 }
 
-.cp-autofill-queue-done-btn:hover {
+.ja-autofill-queue-done-btn:hover {
   background: #16a34a;
 }
 
-.cp-autofill-queue-skip-btn {
+.ja-autofill-queue-skip-btn {
   background: #52525b;
   color: #d4d4d8;
 }
 
-.cp-autofill-queue-skip-btn:hover {
+.ja-autofill-queue-skip-btn:hover {
   background: #71717a;
   color: #fff;
 }
 
-.cp-autofill-queue-cancel-btn {
+.ja-autofill-queue-cancel-btn {
   background: none;
   border: 1px solid #3f3f46;
   color: #a1a1aa;
 }
 
-.cp-autofill-queue-cancel-btn:hover {
+.ja-autofill-queue-cancel-btn:hover {
   background: #27272a;
   color: #fff;
 }
