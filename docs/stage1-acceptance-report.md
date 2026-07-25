@@ -1,7 +1,8 @@
 # Stage 1 acceptance report
 
 Branch: `stage1/slim-autofill`  
-**Freeze HEAD (operator re-smoke tip):** `ad6d0df` (code freeze `7ffb7d2` + docs pin).  
+**Code freeze (extension/tests):** `7ffb7d2` — reload unpacked extension from this commit or newer tip of `stage1/slim-autofill`.  
+Docs-only commits after `7ffb7d2` do not change autofill behavior.  
 PR: https://github.com/kalwad/JobApply/pull/1 — **not approved for merge** until same-HEAD live ATS re-smoke completes and the owner explicitly confirms.
 
 WIP / audit refs preserved: `grok/stage1-6-checkpoint`, `audit/stage1-6`, `baseline/untouched`, tag `baseline/careerpulse-upstream`.
@@ -13,7 +14,8 @@ Record after each push of Stage 1 acceptance work:
 | Item | Value |
 |------|--------|
 | Branch | `stage1/slim-autofill` |
-| Frozen commit | `ad6d0df1788aea1845d1bc08a6608739da5fab01` (code: `7ffb7d2`) |
+| Code freeze | `7ffb7d2f84c4fa5830abca7c266bfef13f59a14f` |
+| Branch tip | `git rev-parse origin/stage1/slim-autofill` |
 | Workday live status | **My Information page passed on the current local build** — steps 2–7 not passed |
 | Greenhouse / Lever live status | **Provisional** on older HEADs — must re-smoke on frozen HEAD |
 | Merge | **Blocked** until owner confirms |
