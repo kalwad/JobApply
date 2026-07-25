@@ -2834,7 +2834,19 @@
       return 'phone';
     }
     if (/\bcity\b/.test(text)) return 'city';
-    if (/\b(e-?mail|email)\b/.test(text)) return 'email';
+    // Prefer label/name only for contact-email checkbox — selectors like
+    // input[name="contact_pref"][value="email"] must not share this bucket.
+    const labelName = `${m.field_label || ''} ${m.label || ''}`.toLowerCase();
+    if (
+      /contact_by_email/.test(text)
+      || /\bcontact\s*me\s*by\s*email\b/.test(labelName)
+      || /\bemail\s*me\s*about\b/.test(labelName)
+    ) {
+      return 'contact_by_email';
+    }
+    if (/\b(e-?mail|email)\b/.test(labelName) || /\[type=["']?email["']?\]/.test(m.selector || '')) {
+      return 'email';
+    }
     if (/\bfirst\s*name\b/.test(text)) return 'first_name';
     if (/\bmiddle\s*name\b/.test(text)) return 'middle_name';
     if (/\blast\s*name\b/.test(text)) return 'last_name';

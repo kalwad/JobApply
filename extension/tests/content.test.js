@@ -2280,6 +2280,7 @@ describe('sanitizeMappings / getNearbyHeading', () => {
       { selector: '#phone-alt', field_label: 'Phone', value: '5551234567', action: 'fill_text', confidence: 0.7 },
       { selector: '#phone-sms-opt-in', field_label: 'Phone SMS Opt In', value: 'true', action: 'check_checkbox', confidence: 0.9 },
       { selector: '#email', field_label: 'Email', value: 'user@example.com', action: 'fill_text', confidence: 1 },
+      { selector: '#contact_by_email', field_label: 'Contact me by email', value: 'yes', action: 'check_checkbox', confidence: 0.95 },
     ]);
     const cities = cleaned.filter(m => /city/i.test(m.field_label || '') && m.action === 'fill_text');
     const phones = cleaned.filter(m => mappingIsPhoneNumberProposal(m));
@@ -2289,6 +2290,32 @@ describe('sanitizeMappings / getNearbyHeading', () => {
     expect(phones[0].selector).toBe('[data-automation-id="phone-number"]');
     expect(cleaned.some(m => m.selector === '#phone-sms-opt-in')).toBe(true);
     expect(cleaned.some(m => m.selector === '#email')).toBe(true);
+    expect(cleaned.some(m => m.selector === '#contact_by_email')).toBe(true);
+  });
+
+  it('does not collapse contact_pref radio with email value into contact_by_email', () => {
+    const cleaned = api.sanitizeMappings([
+      { selector: '#email', field_label: 'Email', value: 'user@example.com', action: 'fill_text', confidence: 0.95 },
+      {
+        selector: 'input[name="contact_pref"][value="email"]',
+        field_label: 'Preferred contact',
+        value: 'phone',
+        action: 'click_radio',
+        confidence: 0.9,
+      },
+      {
+        selector: '#contact_by_email',
+        field_label: 'Contact me by email',
+        value: 'yes',
+        action: 'check_checkbox',
+        confidence: 0.95,
+      },
+    ]);
+    expect(cleaned.map(m => m.selector).sort()).toEqual([
+      '#contact_by_email',
+      '#email',
+      'input[name="contact_pref"][value="email"]',
+    ].sort());
   });
 
   function mappingIsPhoneNumberProposal(m) {

@@ -11,6 +11,24 @@
   },
   "results": [
     {
+      "selector": "#lever-privacy",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": false,
+      "reason": "manual review \u2014 legal attestation",
+      "action": "skip",
+      "field_label": "I accept the privacy policy"
+    },
+    {
+      "selector": "#lever-gender",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": false,
+      "reason": "EEO skipped unless explicitly enabled",
+      "action": "skip",
+      "field_label": "Gender identity (voluntary)"
+    },
+    {
       "selector": "#lever-name",
       "success": true,
       "skipped": false,
@@ -63,24 +81,6 @@
       "reason": "nonempty field protected",
       "action": "check_checkbox",
       "field_label": "Text me SMS reminders"
-    },
-    {
-      "selector": "#lever-privacy",
-      "success": true,
-      "skipped": true,
-      "alreadyCompleted": false,
-      "reason": "manual review \u2014 legal attestation",
-      "action": "skip",
-      "field_label": "I accept the privacy policy"
-    },
-    {
-      "selector": "#lever-gender",
-      "success": true,
-      "skipped": true,
-      "alreadyCompleted": false,
-      "reason": "EEO skipped unless explicitly enabled",
-      "action": "skip",
-      "field_label": "Gender identity (voluntary)"
     },
     {
       "selector": "button[type='submit'], input[type='submit']",

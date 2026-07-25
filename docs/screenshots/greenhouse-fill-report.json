@@ -11,6 +11,24 @@
   },
   "results": [
     {
+      "selector": "#gh-terms",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": false,
+      "reason": "manual review \u2014 legal attestation",
+      "action": "skip",
+      "field_label": "I agree to the terms of service"
+    },
+    {
+      "selector": "#race",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": false,
+      "reason": "EEO skipped unless explicitly enabled",
+      "action": "skip",
+      "field_label": "Race / Ethnicity (EEO)"
+    },
+    {
       "selector": "#first_name",
       "success": true,
       "skipped": false,
@@ -81,24 +99,6 @@
       "reason": "nonempty field protected",
       "action": "check_checkbox",
       "field_label": "Subscribe to updates"
-    },
-    {
-      "selector": "#gh-terms",
-      "success": true,
-      "skipped": true,
-      "alreadyCompleted": false,
-      "reason": "manual review \u2014 legal attestation",
-      "action": "skip",
-      "field_label": "I agree to the terms of service"
-    },
-    {
-      "selector": "#race",
-      "success": true,
-      "skipped": true,
-      "alreadyCompleted": false,
-      "reason": "EEO skipped unless explicitly enabled",
-      "action": "skip",
-      "field_label": "Race / Ethnicity (EEO)"
     },
     {
       "selector": "button[type='submit'], input[type='submit']",
