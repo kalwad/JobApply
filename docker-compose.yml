@@ -1,5 +1,5 @@
 services:
-  careerpulse:
+  jobapply:
     build: .
     ports:
       - "8085:8085"

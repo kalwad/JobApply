@@ -55,7 +55,7 @@ def test_generate_resume_pdf_metadata():
     doc = fitz.open(stream=result, filetype="pdf")
     meta = doc.metadata
     assert "John Doe" in meta.get("title", "")
-    assert "CareerPulse" in meta.get("creator", "")
+    assert "JobApply" in meta.get("creator", "")
     doc.close()
 
 
