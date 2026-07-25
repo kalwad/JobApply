@@ -49,13 +49,18 @@ fillBtn.addEventListener('click', async () => {
     if (!tab?.id) throw new Error('No active tab');
     // Broadcast to all frames so Greenhouse/Lever iframe embeds receive startFill.
     const result = await chrome.runtime.sendMessage({ type: 'broadcastStartFill', tabId: tab.id });
-    if (result && result.ok === false) throw new Error(result.error || 'Fill failed');
+    if (!result || result.ok === false || !result.acceptedCount) {
+      const msg = result?.error
+        || 'No application frame accepted the request. Reload the extension and page.';
+      throw new Error(msg);
+    }
+    // Close only when at least one content frame acknowledged startFill.
     window.close();
   } catch (err) {
     console.error('Fill error:', err);
     fillBtn.textContent = 'Fill Application';
     fillBtn.disabled = false;
-    statusText.textContent = 'Refresh the page and try again';
+    statusText.textContent = err.message || 'Refresh the page and try again';
     statusDot.className = 'status-dot disconnected';
   }
 });

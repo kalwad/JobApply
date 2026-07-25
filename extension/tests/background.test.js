@@ -500,18 +500,33 @@ describe('broadcastStartFill', () => {
   });
 
   it('broadcasts startFill to all frames in sender tab', async () => {
+    globalThis.chrome.tabs.sendMessage.mockResolvedValue({
+      ok: true, accepted: true, state: 'analyzing',
+    });
     const result = await sendMessage(
       { type: 'broadcastStartFill' },
       { tab: { id: 99 } }
     );
     expect(result.ok).toBe(true);
     expect(result.frames).toBe(2);
+    expect(result.acceptedCount).toBe(2);
     expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(
       99, { type: 'startFill' }, { frameId: 0 },
     );
     expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(
       99, { type: 'startFill' }, { frameId: 15 },
     );
+  });
+
+  it('returns ok:false when zero frames accept', async () => {
+    globalThis.chrome.tabs.sendMessage.mockRejectedValue(new Error('Receiving end does not exist'));
+    const result = await sendMessage(
+      { type: 'broadcastStartFill' },
+      { tab: { id: 99 } }
+    );
+    expect(result.ok).toBe(false);
+    expect(result.acceptedCount).toBe(0);
+    expect(result.error).toMatch(/No application frame accepted/i);
   });
 
   it('returns error when no tab context', async () => {

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Workday — My Experience</title></head>
+<body>
+  <h1>My Experience</h1>
+  <div data-automation-id="progressBar" aria-label="step 2 of 7">step 2 of 7</div>
+
+  <section>
+    <h2>Work Experience</h2>
+    <button type="button">Add</button>
+  </section>
+  <section>
+    <h2>Education</h2>
+    <button type="button">Add</button>
+  </section>
+  <section>
+    <h2>Certifications</h2>
+    <button type="button">Add</button>
+  </section>
+  <section>
+    <h2>Skills</h2>
+    <p>Type to Add Skills</p>
+    <input type="text" aria-label="Type to Add Skills" />
+  </section>
+  <section>
+    <h2>Resume/CV</h2>
+    <input type="file" id="wd-resume" />
+  </section>
+  <section>
+    <h2>Websites</h2>
+    <button type="button">Add</button>
+  </section>
+  <section>
+    <h2>Social Network URLs</h2>
+    <label>LinkedIn <input type="url" name="linkedin" id="wd-linkedin" /></label>
+  </section>
+
+  <button type="button" data-automation-id="bottom-navigation-next-button">Save and Continue</button>
+  <script>
+    window.__submitEventCount = 0;
+    window.__submitButtonClickCount = 0;
+    window.__requestSubmitCount = 0;
+  </script>
+</body>
+</html>

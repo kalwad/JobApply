@@ -307,6 +307,25 @@ async def update_search_terms(request: Request):
     return {"ok": True, "search_terms": terms}
 
 
+@router.post("/search-config/clear-analysis")
+async def clear_legacy_analysis(request: Request):
+    """Clear saved heuristic/analysis fields; keep resume_text and search_terms."""
+    db = request.app.state.db
+    cfg = await db.get_search_config() or {}
+    await db.save_search_config(
+        cfg.get("resume_text") or "",
+        cfg.get("search_terms") or [],
+        job_titles=[],
+        key_skills=[],
+        seniority="",
+        summary="",
+        ats_score=0,
+        ats_issues=[],
+        ats_tips=[],
+    )
+    return {"ok": True}
+
+
 @router.post("/search-config/exclude-terms")
 async def update_exclude_terms(request: Request):
     body = await request.json()
@@ -710,18 +729,26 @@ async def upload_resume(request: Request, file: UploadFile = File(...)):
     db = request.app.state.db
     current_config = await db.get_search_config() or {}
     full_profile = await db.get_full_profile()
-    # get_full_profile shape: may nest profile under keys — normalize
+    # get_full_profile returns flat dict with work_history/education/skills lists.
     current_profile = full_profile if isinstance(full_profile, dict) else {}
+    work_n = len(current_profile.get("work_history") or [])
+    edu_n = len(current_profile.get("education") or [])
+    skills_n = len(current_profile.get("skills") or [])
+    langs_n = len(current_profile.get("languages") or [])
+    certs_n = len(current_profile.get("certifications") or [])
+    db_path = getattr(request.app.state, "db_path", "") or ""
+    db_basename = db_path.rsplit("/", 1)[-1] if db_path else ""
 
     draft_id = str(uuid.uuid4())
     draft = {
         "draft_id": draft_id,
         "filename": original_name,
-        "byte_size": len(content),
+        "byte_size": int(len(content)),
         "uploaded_at": uploaded_at,
         "resume_text": resume_text,
         "analysis": analysis,
         "profile_proposed": profile_data,
+        "db_basename": db_basename,
         "current_config": {
             "search_terms": current_config.get("search_terms") or [],
             "job_titles": current_config.get("job_titles") or [],
@@ -732,14 +759,12 @@ async def upload_resume(request: Request, file: UploadFile = File(...)):
             "resume_length": len(current_config.get("resume_text") or ""),
         },
         "current_profile_summary": {
-            "work_history_count": len(current_profile.get("work_history") or []),
-            "education_count": len(current_profile.get("education") or []),
-            "skills_count": len(current_profile.get("skills") or []),
-            "languages_count": len(current_profile.get("languages") or []),
-            "certifications_count": len(current_profile.get("certifications") or []),
-            "email": (current_profile.get("profile") or current_profile).get("email")
-                     if isinstance(current_profile.get("profile"), dict)
-                     else current_profile.get("email"),
+            "work_history_count": work_n,
+            "education_count": edu_n,
+            "skills_count": skills_n,
+            "languages_count": langs_n,
+            "certifications_count": certs_n,
+            "email_present": bool(current_profile.get("email")),
         },
         "stages": stages,
     }
@@ -751,7 +776,7 @@ async def upload_resume(request: Request, file: UploadFile = File(...)):
         "draft": True,
         "draft_id": draft_id,
         "filename": original_name,
-        "byte_size": len(content),
+        "byte_size": int(len(content)),
         "uploaded_at": uploaded_at,
         "stages": stages,
         "resume_length": len(resume_text),
@@ -759,6 +784,7 @@ async def upload_resume(request: Request, file: UploadFile = File(...)):
         "profile_proposed": profile_data,
         "current_config": draft["current_config"],
         "current_profile_summary": draft["current_profile_summary"],
+        "db_basename": db_basename,
         "profile_parsed": bool(profile_data),
         # Convenience mirrors for older clients (still draft-only — not persisted).
         "search_terms": analysis.get("search_terms") or [],

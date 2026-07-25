@@ -2634,3 +2634,156 @@ describe('fillField — Workday state failure reporting', () => {
     expect(button.textContent).toBe('Select One');
   }, 20000);
 });
+
+// ═══════════════════════════════════════════════════════════════
+// Same-URL section fingerprint + overlay lifecycle (Workday)
+// ═══════════════════════════════════════════════════════════════
+
+describe('Workday same-URL section transitions', () => {
+  it('buildSectionFingerprint changes when My Information becomes My Experience', () => {
+    document.body.innerHTML = `
+      <h1>My Information</h1>
+      <label>First Name <input id="fn" name="firstName" data-automation-id="legalNameSection_firstName" /></label>
+    `;
+    const fp1 = api.buildSectionFingerprint();
+
+    document.body.innerHTML = `
+      <h1>My Experience</h1>
+      <h2>Work Experience</h2>
+      <button type="button">Add</button>
+      <h2>Education</h2>
+      <button type="button">Add</button>
+      <input type="file" />
+      <p>Type to Add Skills</p>
+    `;
+    const fp2 = api.buildSectionFingerprint();
+    expect(fp1).not.toBe(fp2);
+    expect(fp2).toMatch(/my experience/i);
+  });
+
+  it('ordinary field value mutations do not change fingerprint', () => {
+    createInput({ id: 'city', name: 'city', type: 'text', 'data-automation-id': 'city' });
+    createLabel('city', 'City');
+    const fp1 = api.buildSectionFingerprint();
+    document.getElementById('city').value = 'Ann Arbor';
+    const fp2 = api.buildSectionFingerprint();
+    expect(fp1).toBe(fp2);
+  });
+
+  it('detects new section after same-URL DOM swap and shows Analyze', async () => {
+    document.body.innerHTML = `
+      <h1>My Information</h1>
+      <input id="fn" name="firstName" data-automation-id="legalNameSection_firstName" />
+    `;
+    await api.fillField('#fn', 'Ada', 'fill_text', 0.9, 'First Name');
+    expect(api.originalValues.size).toBeGreaterThan(0);
+    api.startMultiPageTracking(1);
+
+    document.body.innerHTML = `
+      <h1>My Experience</h1>
+      <h2>Work Experience</h2>
+      <button type="button">Add</button>
+      <input type="file" />
+      <p>Type to Add Skills</p>
+    `;
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(api.originalValues.size).toBe(0);
+    expect(api.currentState).toBe('idle');
+    const overlay = document.getElementById('ja-autofill-overlay');
+    expect(overlay).toBeTruthy();
+    expect(overlay.textContent).toMatch(/New application section detected/i);
+    expect(overlay.querySelector('.ja-autofill-analyze-section-btn')).toBeTruthy();
+    expect(document.querySelector('[data-automation-id="bottom-navigation-next-button"]')).toBeNull();
+  });
+
+  it('JobApply overlay mutations alone do not trigger a new section', async () => {
+    document.body.innerHTML = `<h1>My Information</h1><input id="a" name="a" />`;
+    api.startMultiPageTracking(0);
+    const fpBefore = api.buildSectionFingerprint();
+
+    const junk = document.createElement('div');
+    junk.id = 'ja-autofill-overlay';
+    junk.textContent = 'noise';
+    document.body.appendChild(junk);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    // Fingerprint of page content unchanged; overlay-only mutation ignored.
+    expect(api.buildSectionFingerprint()).toBe(fpBefore);
+    expect(document.body.textContent).not.toMatch(/New application section detected/i);
+  });
+});
+
+describe('overlay lifecycle', () => {
+  it('recreates overlay when previous node is detached', () => {
+    const first = api.createOverlay();
+    expect(first.isConnected).toBe(true);
+    first.remove();
+    expect(api.overlayIsLive()).toBe(false);
+    const second = api.createOverlay();
+    expect(second.isConnected).toBe(true);
+    expect(second).not.toBe(first);
+    expect(document.getElementById('ja-autofill-overlay')).toBe(second);
+  });
+
+  it('close button dismisses overlay and returns to idle', () => {
+    api.currentState = 'done';
+    const overlay = api.createOverlay();
+    overlay.querySelector('.ja-autofill-overlay-close').click();
+    expect(document.getElementById('ja-autofill-overlay')).toBeNull();
+    expect(api.currentState).toBe('idle');
+  });
+
+  it('error message is not hidden by prior completion pill', async () => {
+    createInput({ id: 'x', type: 'text' });
+    await api.fillField('#x', 'v', 'fill_text', 0.9, 'X');
+    expect(api.originalValues.size).toBe(1);
+    api.updateOverlay('done', 'No fillable fields found on this section.', { forceStatus: true });
+    const overlay = document.getElementById('ja-autofill-overlay');
+    expect(overlay.textContent).toMatch(/No fillable fields/i);
+    expect(overlay.classList.contains('ja-autofill-overlay-compact')).toBe(false);
+  });
+
+  it('clearPageScopedState clears originalValues', async () => {
+    createInput({ id: 'y', type: 'text' });
+    await api.fillField('#y', 'v', 'fill_text');
+    expect(api.originalValues.size).toBe(1);
+    api.clearPageScopedState({ keepCumulative: true });
+    expect(api.originalValues.size).toBe(0);
+  });
+});
+
+describe('Workday My Experience collapsed unsupported', () => {
+  it('detects collapsed My Experience fixture shape', () => {
+    const html = readFileSync(
+      join(__dirname, '..', '..', 'fixtures', 'workday', 'my-experience-collapsed.html'),
+      'utf-8',
+    );
+    document.documentElement.innerHTML = html.replace(/^[\s\S]*<html[^>]*>/i, '').replace(/<\/html>[\s\S]*$/i, '');
+    // jsdom may not parse full document replace well — set body directly
+    const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    document.body.innerHTML = bodyMatch ? bodyMatch[1] : html;
+    expect(api.looksLikeWorkdayMyExperienceCollapsed()).toBe(true);
+  });
+
+  it('startFillFlow shows explicit unsupported message and does not click Save', async () => {
+    const bodyMatch = readFileSync(
+      join(__dirname, '..', '..', 'fixtures', 'workday', 'my-experience-collapsed.html'),
+      'utf-8',
+    ).match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    document.body.innerHTML = bodyMatch[1];
+    let saveClicks = 0;
+    document.querySelector('[data-automation-id="bottom-navigation-next-button"]')
+      ?.addEventListener('click', () => { saveClicks += 1; });
+
+    const result = await api.startFillFlow({ force: true });
+    expect(result.unsupported).toBe(true);
+    const overlay = document.getElementById('ja-autofill-overlay');
+    expect(overlay.textContent).toMatch(/My Experience detected/i);
+    expect(overlay.textContent).toMatch(/Stage 1\.1/i);
+    expect(overlay.querySelector('.ja-autofill-analyze-section-btn')).toBeTruthy();
+    expect(saveClicks).toBe(0);
+    expect(api.currentState).toBe('idle');
+  });
+});

@@ -1,7 +1,7 @@
 # Live ATS supervised smoke test (Stage 1)
 
-**Status:** Greenhouse / Lever — **provisional** (must re-smoke on frozen HEAD) · Workday — **“My Information” page passed on the current local build** (steps 2–7 outstanding).  
-**Code freeze:** `7ffb7d2` on `stage1/slim-autofill` (Workday state, City/Phone dedupe, review regressions; browser fixtures green). Docs-only commits after that hash are OK for re-smoke.  
+**Status:** Greenhouse / Lever — **provisional** · Workday — **My Information passed. Same-URL section transition support is being corrected. Structured My Experience automation is not yet implemented.**  
+**Do not claim Workday fully passed.** Toolbar must always show a visible result; collapsed My Experience returns an explicit unsupported message until Stage 1.1.  
 Automated tests cover only synthetic fixtures under `fixtures/`. Do **not** claim full live ATS verification until Greenhouse, Lever, and Workday are all re-smoked on the **same frozen HEAD**.  
 **PR #1:** do not merge until that same-HEAD live verification completes and the owner explicitly confirms. Do not resume Stages 2–6.  
 **Phone-country:** Stage 1 keeps manual-review skip ([Issue #2](https://github.com/kalwad/JobApply/issues/2)). Do not re-automate in PR #1.  
@@ -94,8 +94,9 @@ Next: same-HEAD re-smoke after freeze
 
 ```
 Platform: Workday
-Status: Workday “My Information” page passed on the current local build.
-  Full Workday application (steps 2–7) NOT passed yet.
+Status: My Information passed. Same-URL section transition support is being
+  corrected. Structured My Experience automation is not yet implemented.
+  Full Workday application (steps 2–7) NOT passed.
 Date: 2026-07-25
 Job path/domain: myworkdayjobs.com (role sanitized)
 Platform correctly detected: yes

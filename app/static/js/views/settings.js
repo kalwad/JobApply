@@ -914,6 +914,17 @@ function renderTabWorkHistory(container, fp) {
 }
 
 // === Tab 3: Job Search ===
+function formatUploadSizeKb(byteSize, file) {
+    // Number(null) === 0 — treat null/undefined/'' as missing, not zero bytes.
+    if (byteSize !== null && byteSize !== undefined && byteSize !== '') {
+        const n = Number(byteSize);
+        if (Number.isFinite(n) && n >= 0) return `${(n / 1024).toFixed(1)} KB`;
+    }
+    const fromFile = file && Number(file.size);
+    if (Number.isFinite(fromFile) && fromFile >= 0) return `${(fromFile / 1024).toFixed(1)} KB`;
+    return '';
+}
+
 function renderResumeDraftPanel(panel, result, onApplied) {
     if (!panel) return;
     const analysis = result.analysis || result;
@@ -932,7 +943,16 @@ function renderResumeDraftPanel(panel, result, onApplied) {
     const titlePreview = (analysis.job_titles || []).slice(0, 5).map(jt => {
         const t = typeof jt === 'string' ? jt : jt.title;
         return escapeHtml(t || '');
-    }).join(', ');
+    }).filter(Boolean).join(', ');
+    const haveWork = curProf.work_history_count || 0;
+    const haveEdu = curProf.education_count || 0;
+    const haveSkills = curProf.skills_count || 0;
+    const profileWarn = (haveWork + haveEdu + haveSkills) === 0
+        ? `<div style="margin:8px 0;padding:8px 10px;border-radius:6px;background:rgba(245,158,11,0.12);font-size:0.8125rem;color:var(--text-secondary)">
+            Profile lists look empty in this database${result.db_basename ? ` (<code>${escapeHtml(result.db_basename)}</code>)` : ''}.
+            Check Settings → Work History before using “Import if empty”.
+           </div>`
+        : '';
 
     panel.innerHTML = `
         <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px;background:var(--bg-surface-secondary)">
@@ -941,6 +961,7 @@ function renderResumeDraftPanel(panel, result, onApplied) {
                 Approve only what you want saved. Suggested search terms and seniority are <strong>not</strong> applied automatically.
             </p>
             <div style="display:grid;gap:4px;margin-bottom:12px">${stages}</div>
+            ${profileWarn}
             <div style="font-size:0.875rem;margin-bottom:12px;line-height:1.5">
                 <div><strong>File:</strong> ${escapeHtml(result.filename || 'resume')} · ${result.resume_length || 0} chars extracted</div>
                 <div><strong>Seniority (draft):</strong> ${escapeHtml(analysis.seniority || 'unknown')}
@@ -948,9 +969,9 @@ function renderResumeDraftPanel(panel, result, onApplied) {
                 <div><strong>AI content heuristic:</strong> ${score}/100 <span style="color:var(--text-tertiary)">(not a real ATS test)</span></div>
                 <div><strong>Suggested titles:</strong> ${titlePreview || '—'}</div>
                 <div><strong>Suggested search terms:</strong> ${termPreview || '—'}</div>
-                <div><strong>Profile parse:</strong> work ${(proposed.work_history || []).length} (have ${curProf.work_history_count || 0}),
-                    edu ${(proposed.education || []).length} (have ${curProf.education_count || 0}),
-                    skills ${(proposed.skills || []).length} (have ${curProf.skills_count || 0})</div>
+                <div><strong>Profile parse:</strong> work ${(proposed.work_history || []).length} (have ${haveWork}),
+                    edu ${(proposed.education || []).length} (have ${haveEdu}),
+                    skills ${(proposed.skills || []).length} (have ${haveSkills})</div>
             </div>
             ${issues.length ? `<div style="margin-bottom:8px"><span style="font-size:0.75rem;font-weight:600;color:var(--text-tertiary)">ISSUES</span><ul style="margin:4px 0 0;padding-left:18px">${issues.map(i => `<li style="font-size:0.8125rem">${escapeHtml(i)}</li>`).join('')}</ul></div>` : ''}
             ${tips.length ? `<div style="margin-bottom:12px"><span style="font-size:0.75rem;font-weight:600;color:var(--text-tertiary)">TIPS</span><ul style="margin:4px 0 0;padding-left:18px">${tips.map(t => `<li style="font-size:0.8125rem">${escapeHtml(t)}</li>`).join('')}</ul></div>` : ''}
@@ -1039,29 +1060,28 @@ function renderTabJobSearch(container, config, profile, customQA) {
             <div id="resume-draft-panel" style="margin-top:16px"></div>
         </div>
 
-        ${hasAts ? `
-        <div class="card" style="padding:24px;margin-bottom:24px;${atsScore < 60 ? 'border-left:4px solid var(--danger)' : atsScore < 80 ? 'border-left:4px solid var(--warning, #f59e0b)' : 'border-left:4px solid var(--success, #22c55e)'}">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
-                <h2 style="font-size:1.125rem;font-weight:600;margin:0">AI Resume Content Heuristic</h2>
-                <span class="score-badge ${atsScore >= 80 ? 'score-badge-green' : atsScore >= 60 ? 'score-badge-amber' : 'score-badge-gray'}" style="font-size:1.25rem;padding:8px 16px">${atsScore}/100</span>
-            </div>
-            <p style="font-size:0.8125rem;color:var(--text-tertiary);margin:0 0 12px">Text-only model heuristic — not a real ATS parse of layout, fonts, or pages.</p>
-            ${atsIssues.length ? `<div style="margin-bottom:12px"><span style="font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-tertiary)">Issues Found</span><ul style="margin-top:8px;padding-left:20px;display:flex;flex-direction:column;gap:4px">${atsIssues.map(i => `<li style="font-size:0.875rem;color:var(--text-secondary)">${escapeHtml(i)}</li>`).join('')}</ul></div>` : ''}
-            ${atsTips.length ? `<div><span style="font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-tertiary)">Suggestions</span><ul style="margin-top:8px;padding-left:20px;display:flex;flex-direction:column;gap:4px">${atsTips.map(t => `<li style="font-size:0.875rem;color:var(--text-secondary)">${escapeHtml(t)}</li>`).join('')}</ul></div>` : ''}
-        </div>` : ''}
-
-        ${hasAnalysis ? `
-        <div class="card" style="padding:24px;margin-bottom:24px">
-            <h2 style="font-size:1.125rem;font-weight:600;margin-bottom:16px">Resume Analysis</h2>
-            ${summary ? `<p style="color:var(--text-secondary);margin-bottom:16px;font-size:0.9375rem;line-height:1.6">${escapeHtml(summary)}</p>` : ''}
-            ${seniority ? `<div style="margin-bottom:16px"><span style="font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-tertiary)">Seniority Level</span><div style="margin-top:4px;font-weight:600">${escapeHtml(seniority)}</div></div>` : ''}
-            ${keySkills.length ? `<div style="margin-bottom:16px"><span style="font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-tertiary)">Key Skills</span><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">${keySkills.map(s => `<span style="background:var(--bg-tertiary);color:var(--text-primary);padding:4px 10px;border-radius:6px;font-size:0.8125rem">${escapeHtml(s)}</span>`).join('')}</div></div>` : ''}
-            ${jobTitles.length ? `<div><span style="font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-tertiary)">Best-Fit Job Titles</span><div style="margin-top:8px;display:flex;flex-direction:column;gap:8px">${jobTitles.map(jt => {
-                const title = typeof jt === 'string' ? jt : jt.title;
-                const why = typeof jt === 'object' && jt.why ? jt.why : '';
-                return `<div style="padding:10px 14px;border-radius:8px;background:var(--bg-tertiary)"><div style="font-weight:600;font-size:0.9375rem">${escapeHtml(title)}</div>${why ? `<div style="color:var(--text-secondary);font-size:0.8125rem;margin-top:2px">${escapeHtml(why)}</div>` : ''}</div>`;
-            }).join('')}</div></div>` : ''}
-        </div>` : ''}
+        ${(hasAts || hasAnalysis) ? `
+        <details class="card" style="padding:24px;margin-bottom:24px" id="legacy-analysis-card">
+            <summary style="cursor:pointer;font-size:1.125rem;font-weight:600;list-style:none">
+                Legacy saved analysis <span style="font-size:0.75rem;font-weight:500;color:var(--text-tertiary)">(optional diagnostic — not the main résumé workflow)</span>
+            </summary>
+            <p style="font-size:0.8125rem;color:var(--text-tertiary);margin:12px 0">
+                Previously saved heuristic results. Clear them if they conflict with a new draft.
+                Job-specific résumé matching (Simplify-style) is Stage 2 — see docs/job-specific-resume-tailoring-spec.md.
+            </p>
+            ${hasAts ? `
+            <div style="margin-bottom:16px;${atsScore < 60 ? 'border-left:4px solid var(--danger);padding-left:12px' : atsScore < 80 ? 'border-left:4px solid var(--warning, #f59e0b);padding-left:12px' : 'border-left:4px solid var(--success, #22c55e);padding-left:12px'}">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                    <strong>AI Resume Content Heuristic</strong>
+                    <span class="score-badge ${atsScore >= 80 ? 'score-badge-green' : atsScore >= 60 ? 'score-badge-amber' : 'score-badge-gray'}" style="font-size:1rem;padding:6px 12px">${atsScore}/100</span>
+                </div>
+                ${atsIssues.length ? `<ul style="margin:8px 0;padding-left:20px">${atsIssues.map(i => `<li style="font-size:0.875rem;color:var(--text-secondary)">${escapeHtml(i)}</li>`).join('')}</ul>` : ''}
+                ${atsTips.length ? `<ul style="margin:8px 0;padding-left:20px">${atsTips.map(t => `<li style="font-size:0.875rem;color:var(--text-secondary)">${escapeHtml(t)}</li>`).join('')}</ul>` : ''}
+            </div>` : ''}
+            ${summary ? `<p style="color:var(--text-secondary);margin-bottom:12px;font-size:0.9375rem">${escapeHtml(summary)}</p>` : ''}
+            ${seniority ? `<div style="margin-bottom:8px;font-size:0.875rem"><strong>Seniority:</strong> ${escapeHtml(seniority)}</div>` : ''}
+            <button class="btn btn-ghost btn-sm" id="clear-legacy-analysis-btn" style="margin-top:8px">Clear legacy analysis</button>
+        </details>` : ''}
 
         <div class="card" style="padding:24px;margin-bottom:24px">
             <h2 style="font-size:1.125rem;font-weight:600;margin-bottom:16px">Search Terms</h2>
@@ -1221,7 +1241,11 @@ function renderTabJobSearch(container, config, profile, customQA) {
             clearInterval(tick);
             const fname = result.filename || file.name;
             const when = result.uploaded_at ? new Date(result.uploaded_at).toLocaleString() : 'just now';
-            statusEl.innerHTML = `Draft ready — <strong>${escapeHtml(fname)}</strong> · ${(result.byte_size / 1024).toFixed(1)} KB · ${escapeHtml(when)}. Nothing saved yet.`;
+            const sizeLabel = formatUploadSizeKb(result.byte_size, file);
+            statusEl.innerHTML = `Draft ready — <strong>${escapeHtml(fname)}</strong>`
+                + (sizeLabel ? ` · ${escapeHtml(sizeLabel)}` : '')
+                + ` · ${escapeHtml(when)}. Nothing saved yet.`
+                + (result.db_basename ? ` <span style="color:var(--text-tertiary)">(db: ${escapeHtml(result.db_basename)})</span>` : '');
             // Keep the selected file name visible: do not wipe the input via full re-render.
             renderResumeDraftPanel(draftPanel, result, async () => {
                 settingsData.config = await api.getSearchConfig();
@@ -1236,6 +1260,17 @@ function renderTabJobSearch(container, config, profile, customQA) {
         } finally {
             btn.disabled = false;
             btn.textContent = 'Upload & Analyze (draft)';
+        }
+    });
+
+    document.getElementById('clear-legacy-analysis-btn')?.addEventListener('click', async () => {
+        try {
+            await api.request('POST', '/api/search-config/clear-analysis', {});
+            settingsData.config = await api.getSearchConfig();
+            showToast('Legacy analysis cleared', 'success');
+            renderTabJobSearch(container, settingsData.config, profile, customQA);
+        } catch (err) {
+            showToast(err.message, 'error');
         }
     });
 

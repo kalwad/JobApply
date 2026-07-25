@@ -284,6 +284,12 @@ describe('fill button', () => {
       expect(document.getElementById('fillBtn').disabled).toBe(false);
     });
 
+    globalThis.chrome.runtime.sendMessage.mockImplementation((msg) => {
+      if (msg?.type === 'broadcastStartFill') {
+        return Promise.resolve({ ok: true, acceptedCount: 1, frames: 1 });
+      }
+      return Promise.resolve({ ok: true, data: {} });
+    });
     document.getElementById('fillBtn').click();
 
     await vi.waitFor(() => {
@@ -303,7 +309,7 @@ describe('fill button', () => {
     // Make broadcast hang briefly after connection check resolved
     globalThis.chrome.runtime.sendMessage.mockImplementation((msg) => {
       if (msg?.type === 'broadcastStartFill') {
-        return new Promise(r => setTimeout(() => r({ ok: true }), 100));
+        return new Promise(r => setTimeout(() => r({ ok: true, acceptedCount: 1 }), 100));
       }
       return Promise.resolve({ ok: true, data: {} });
     });
@@ -318,7 +324,7 @@ describe('fill button', () => {
       expect(document.getElementById('fillBtn').disabled).toBe(false);
     });
 
-    globalThis.chrome.runtime.sendMessage.mockResolvedValue({ ok: true });
+    globalThis.chrome.runtime.sendMessage.mockResolvedValue({ ok: true, acceptedCount: 1 });
     const closeSpy = vi.spyOn(window, 'close').mockImplementation(() => {});
     document.getElementById('fillBtn').click();
 
@@ -344,10 +350,36 @@ describe('fill button', () => {
     document.getElementById('fillBtn').click();
 
     await vi.waitFor(() => {
-      expect(document.getElementById('statusText').textContent).toBe('Refresh the page and try again');
+      expect(document.getElementById('statusText').textContent).toMatch(/Could not establish connection|Reload/i);
     });
     expect(document.getElementById('fillBtn').textContent).toBe('Fill Application');
     expect(document.getElementById('fillBtn').disabled).toBe(false);
+    expect(closeSpy).not.toHaveBeenCalled();
+    closeSpy.mockRestore();
+  });
+
+  it('stays open when zero frames accept startFill', async () => {
+    loadPopup();
+    await vi.waitFor(() => {
+      expect(document.getElementById('fillBtn').disabled).toBe(false);
+    });
+
+    globalThis.chrome.runtime.sendMessage.mockImplementation((msg) => {
+      if (msg?.type === 'broadcastStartFill') {
+        return Promise.resolve({
+          ok: false,
+          acceptedCount: 0,
+          error: 'No application frame accepted Fill Application. Reload the extension and page, then try again.',
+        });
+      }
+      return Promise.resolve({ ok: true, data: {} });
+    });
+    const closeSpy = vi.spyOn(window, 'close').mockImplementation(() => {});
+    document.getElementById('fillBtn').click();
+
+    await vi.waitFor(() => {
+      expect(document.getElementById('statusText').textContent).toMatch(/No application frame accepted/i);
+    });
     expect(closeSpy).not.toHaveBeenCalled();
     closeSpy.mockRestore();
   });

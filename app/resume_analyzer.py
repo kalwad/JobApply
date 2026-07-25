@@ -11,7 +11,9 @@ from app.ai_client import AIClient, parse_json_response
 
 logger = logging.getLogger(__name__)
 
+# "unknown" must rank below every concrete level — never above principal.
 SENIORITY_LEVELS = (
+    "unknown",
     "intern",
     "entry",
     "junior",
@@ -20,7 +22,6 @@ SENIORITY_LEVELS = (
     "staff",
     "lead",
     "principal",
-    "unknown",
 )
 
 # Cap inferred seniority unless total professional years justify higher levels.
@@ -204,13 +205,24 @@ def _seniority_rank(level: str) -> int:
     try:
         return SENIORITY_LEVELS.index(level)
     except ValueError:
-        return SENIORITY_LEVELS.index("unknown")
+        return 0  # treat unrecognized as unknown (lowest)
 
 
 def clamp_seniority(ai_level: str, work_history: list[dict] | None, today: date | None = None) -> str:
-    """Prefer deterministic experience duration; never inflate above evidence."""
-    years = professional_years(work_history, today)
-    deterministic = seniority_from_years(years) if (work_history or years > 0) else "unknown"
+    """Prefer deterministic experience duration; never inflate above evidence.
+
+    When parsed work history is empty/unusable, always return unknown — never let
+    an AI 'senior' survive. 'unknown' is not a rank ceiling above principal.
+    """
+    usable = [
+        j for j in (work_history or [])
+        if isinstance(j, dict) and (j.get("start_year") or j.get("company") or j.get("job_title"))
+    ]
+    if not usable:
+        return "unknown"
+
+    years = professional_years(usable, today)
+    deterministic = seniority_from_years(years)
     raw = (ai_level or "").strip().lower()
     if raw not in SENIORITY_LEVELS:
         # Legacy schema returned "senior/staff/lead/principal" as one string — treat as unknown.
@@ -219,10 +231,10 @@ def clamp_seniority(ai_level: str, work_history: list[dict] | None, today: date 
             raw = parts[0]
         else:
             raw = "unknown"
-    # Do not emit senior+ without enough years; clamp to deterministic ceiling.
-    if _seniority_rank(raw) > _seniority_rank(deterministic):
+    if raw == "unknown":
         return deterministic
-    if raw == "unknown" and deterministic != "unknown":
+    # Clamp AI down to deterministic ceiling (never inflate).
+    if _seniority_rank(raw) > _seniority_rank(deterministic):
         return deterministic
     return raw
 
@@ -332,13 +344,15 @@ async def analyze_resume(
     normalized_titles = []
     for jt in job_titles:
         if isinstance(jt, str):
-            normalized_titles.append({"title": jt, "why": "", "evidence": []})
-        elif isinstance(jt, dict) and jt.get("title"):
+            title = jt.strip()
+            if title:
+                normalized_titles.append({"title": title, "why": "", "evidence": []})
+        elif isinstance(jt, dict) and (jt.get("title") or "").strip():
             evidence = jt.get("evidence") or []
             if isinstance(evidence, str):
                 evidence = [evidence]
             normalized_titles.append({
-                "title": jt["title"],
+                "title": str(jt["title"]).strip(),
                 "why": jt.get("why") or "",
                 "evidence": list(evidence),
             })

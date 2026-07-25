@@ -425,11 +425,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             const all = await chrome.webNavigation.getAllFrames({ tabId });
             if (all?.length) frames = all;
           } catch { /* permission or API unavailable — top frame only */ }
-          await Promise.all(frames.map(f =>
-            chrome.tabs.sendMessage(tabId, { type: 'startFill' }, { frameId: f.frameId })
-              .catch(() => null)
-          ));
-          return { ok: true, frames: frames.length };
+          const results = await Promise.all(frames.map(async (f) => {
+            try {
+              const resp = await chrome.tabs.sendMessage(
+                tabId,
+                { type: 'startFill' },
+                { frameId: f.frameId },
+              );
+              const accepted = !!(resp && resp.ok && resp.accepted);
+              return {
+                frameId: f.frameId,
+                delivered: true,
+                accepted,
+                state: resp?.state || null,
+                fieldCount: resp?.fieldCount ?? null,
+                error: resp?.error || null,
+                unsupported: !!resp?.unsupported,
+              };
+            } catch (err) {
+              return {
+                frameId: f.frameId,
+                delivered: false,
+                accepted: false,
+                state: null,
+                fieldCount: null,
+                error: err?.message || String(err),
+              };
+            }
+          }));
+          const acceptedCount = results.filter(r => r.accepted).length;
+          if (!acceptedCount) {
+            return {
+              ok: false,
+              error: 'No application frame accepted Fill Application. Reload the extension and page, then try again.',
+              frames: results.length,
+              results,
+              acceptedCount: 0,
+            };
+          }
+          return {
+            ok: true,
+            frames: results.length,
+            results,
+            acceptedCount,
+          };
         }
         default:
           return { ok: false, error: `Unknown message type: ${message.type}` };

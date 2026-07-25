@@ -438,3 +438,60 @@ async def test_resume_draft_approve_selected_only(client, app):
     assert "Ada Lovelace" in (cfg.get("resume_text") or "")
     assert cfg.get("search_terms") == ["Software Engineer"]
     assert not cfg.get("seniority")
+
+
+@pytest.mark.asyncio
+async def test_resume_draft_reports_existing_profile_counts(client, app):
+    app.state.ai_client = None
+    app.state.testing = True
+    db = app.state.db
+    await db.save_work_history({
+        "company": "Acme",
+        "job_title": "Engineer",
+        "start_month": 1,
+        "start_year": 2024,
+        "is_current": 1,
+    })
+    await db.save_education({
+        "school": "UMich",
+        "degree_type": "BS",
+        "field_of_study": "CS",
+    })
+    await db.save_skill({"name": "Python"})
+    import io
+    files = {"file": ("resume.txt", io.BytesIO(b"Engineer resume"), "text/plain")}
+    resp = await client.post("/api/resume/upload", files=files)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["draft"] is True
+    assert data["byte_size"] == len(b"Engineer resume")
+    assert data.get("db_basename")
+    summary = data["current_profile_summary"]
+    assert summary["work_history_count"] >= 1
+    assert summary["education_count"] >= 1
+    assert summary["skills_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_clear_legacy_analysis(client, app):
+    db = app.state.db
+    await db.save_search_config(
+        "keep this resume text",
+        ["DevOps Engineer"],
+        job_titles=[{"title": "Senior DevOps Engineer"}],
+        key_skills=["AWS"],
+        seniority="senior",
+        summary="legacy summary",
+        ats_score=88,
+        ats_issues=["old issue"],
+        ats_tips=["old tip"],
+    )
+    resp = await client.post("/api/search-config/clear-analysis")
+    assert resp.status_code == 200
+    cfg = await db.get_search_config()
+    assert "keep this resume text" in (cfg.get("resume_text") or "")
+    assert cfg.get("search_terms") == ["DevOps Engineer"]
+    assert not cfg.get("seniority")
+    assert (cfg.get("ats_score") or 0) == 0
+    assert not (cfg.get("job_titles") or [])
+    assert not (cfg.get("summary") or "")

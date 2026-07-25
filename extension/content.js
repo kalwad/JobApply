@@ -2245,8 +2245,23 @@
   let overlayEl = null;
   let dragState = null;
 
+  function overlayIsLive() {
+    try {
+      return !!(
+        overlayEl
+        && overlayEl.isConnected
+        && overlayEl.ownerDocument === document
+        && document.getElementById(`${PREFIX}-overlay`) === overlayEl
+      );
+    } catch {
+      return false;
+    }
+  }
+
   function createOverlay() {
-    if (overlayEl) return overlayEl;
+    if (overlayIsLive()) return overlayEl;
+    // Workday SPA swaps can detach the previous overlay node — recreate.
+    overlayEl = null;
 
     overlayEl = document.createElement('div');
     overlayEl.id = `${PREFIX}-overlay`;
@@ -2266,7 +2281,7 @@
     document.body.appendChild(overlayEl);
 
     overlayEl.querySelector(`.${PREFIX}-overlay-close`).addEventListener('click', () => {
-      removeOverlay();
+      dismissOverlayToIdle();
     });
 
     const minBtn = overlayEl.querySelector(`.${PREFIX}-overlay-minimize`);
@@ -2475,19 +2490,28 @@
     }
   }
 
-  function updateOverlay(state, message) {
+  function updateOverlay(state, message, opts = {}) {
     const overlay = createOverlay();
     currentState = state;
+    const msg = String(message || state || '');
+    const forceStatus = !!opts.forceStatus
+      || state === 'error'
+      || state === 'analyzing'
+      || state === 'review'
+      || state === 'filling'
+      || opts.unsupported
+      || opts.newSection
+      || /no form fields|no fillable|cancelled|unsupported|new application section|timed out|error:/i.test(msg);
 
-    // During active operations (analyzing, filling, error), show status text
-    if (state === 'done' && originalValues.size > 0) {
-      // Switch to compact pill when fill is complete
+    // Successful completion with tracked fills → compact pill.
+    // Errors / unsupported / new-section messages must NEVER be hidden by the old pill.
+    if (state === 'done' && originalValues.size > 0 && !forceStatus) {
       overlayMode = 'compact';
       renderCompactPill();
       return;
     }
 
-    // Status mode: show text message
+    // Status mode: show text message (+ optional Analyze action)
     overlayEl.classList.remove(`${PREFIX}-overlay-compact`);
     overlayEl.classList.remove(`${PREFIX}-overlay-expanded`);
     overlayMode = 'status';
@@ -2495,7 +2519,14 @@
     const body = overlay.querySelector(`.${PREFIX}-overlay-body`);
     if (body) {
       body.style.display = 'block';
-      body.innerHTML = `<span class="${PREFIX}-overlay-status">${escapeHtml(message || state)}</span>`;
+      const analyzeBtn = (opts.showAnalyze || opts.newSection || opts.unsupported)
+        ? `<div style="margin-top:10px"><button type="button" class="${PREFIX}-analyze-section-btn">Analyze current section</button></div>`
+        : '';
+      body.innerHTML = `<span class="${PREFIX}-overlay-status">${escapeHtml(msg)}</span>${analyzeBtn}`;
+      body.querySelector(`.${PREFIX}-analyze-section-btn`)?.addEventListener('click', () => {
+        clearPageScopedState({ keepCumulative: true });
+        startFillFlow({ force: true });
+      });
     }
   }
 
@@ -2505,13 +2536,36 @@
 
   function removeOverlay() {
     if (overlayEl) {
-      overlayEl.remove();
+      try { overlayEl.remove(); } catch { /* ignore */ }
       overlayEl = null;
     }
     // Clean up drag listeners
     document.removeEventListener('mousemove', onDragMove);
     document.removeEventListener('mouseup', onDragEnd);
     dragState = null;
+  }
+
+  function dismissOverlayToIdle() {
+    removeOverlay();
+    currentState = 'idle';
+  }
+
+  function clearPageScopedState(opts = {}) {
+    originalValues.clear();
+    preSubmitValues = {};
+    overlayMode = 'status';
+    try {
+      document.querySelectorAll(`.${PREFIX}-highlight`).forEach(el => {
+        el.classList.remove(`${PREFIX}-highlight`);
+      });
+    } catch { /* ignore */ }
+    if (!opts.keepCumulative) {
+      // full reset also stops multipage when abandoning an application
+    }
+    if (overlayIsLive()) {
+      // Drop prior completion UI so the next message is visible
+      overlayEl.classList.remove(`${PREFIX}-overlay-compact`, `${PREFIX}-overlay-expanded`, `${PREFIX}-overlay-review`);
+    }
   }
 
   // ─── Learn prompt (post-submission) ───────────────────────────
@@ -2971,7 +3025,30 @@
 
   const OVERALL_TIMEOUT_MS = 90000; // Max time for entire fill flow
 
-  async function startFillFlow() {
+  function looksLikeWorkdayMyExperienceCollapsed() {
+    try {
+      const text = `${document.body?.innerText || ''}`.slice(0, 8000);
+      const headings = Array.from(document.querySelectorAll('h1, h2, h3, [role="heading"]'))
+        .map(h => (h.textContent || '').trim().toLowerCase())
+        .join(' | ');
+      const myExp = /my experience/i.test(text) || /my experience/i.test(headings);
+      if (!myExp) return false;
+      // Collapsed: Add buttons present, few actual text inputs for job/employer.
+      const addButtons = Array.from(document.querySelectorAll('button, a[role="button"]'))
+        .filter(b => /^(add|\+)$/i.test((b.textContent || '').trim()) || /add/i.test(b.getAttribute('aria-label') || ''));
+      const workInputs = document.querySelectorAll(
+        'input[data-automation-id*="jobTitle"], input[data-automation-id*="company"], '
+        + 'input[name*="company"], input[name*="employer"], textarea[name*="description"]',
+      );
+      const fileInputs = document.querySelectorAll('input[type="file"]');
+      const skills = /type to add skills|skills/i.test(text);
+      return addButtons.length >= 1 && workInputs.length === 0 && (fileInputs.length >= 1 || skills);
+    } catch {
+      return false;
+    }
+  }
+
+  async function startFillFlow(opts = {}) {
     await loadSafetySettings();
     try {
       // Remove the auto-detection badge if present
@@ -2980,7 +3057,22 @@
       // Real ATS iframe owns the form and this frame has no fields — no-op here.
       // Popup/badge/shortcut already broadcast startFill to all frames.
       if (shouldDeferToAtsIframe()) {
-        return;
+        return { deferred: true };
+      }
+
+      if (opts.force) {
+        clearPageScopedState({ keepCumulative: true });
+      }
+
+      // Workday My Experience (collapsed): Add buttons only — Stage 1.1 needed.
+      if (looksLikeWorkdayMyExperienceCollapsed()) {
+        const msg = 'Workday My Experience detected. Work Experience, Education, '
+          + 'Certifications, Websites, and résumé attachment require structured '
+          + 'section support (Stage 1.1). Open an individual entry manually with Add, '
+          + 'then Analyze current section — or continue after Stage 1.1 is installed.';
+        updateOverlay('done', msg, { unsupported: true, showAnalyze: true, forceStatus: true });
+        currentState = 'idle';
+        return { unsupported: true, reason: 'workday_my_experience_collapsed' };
       }
 
       currentState = 'analyzing';
@@ -3454,51 +3546,134 @@
   });
 
 
-  // ─── Multi-page form tracking ────────────────────────────────
+  // ─── Multi-page / same-URL section tracking ─────────────────
 
   let multiPageState = null;
+  let cumulativeFillStats = { pages: 0, filled: 0 };
+
+  function buildSectionFingerprint() {
+    // Non-PII fingerprint for Workday same-URL section transitions.
+    try {
+      const url = location.href.split('#')[0];
+      const ats = window.__jaAtsAdapters?.detectATS?.(location.href, document);
+      const platform = ats?.name || 'unknown';
+      const headings = Array.from(document.querySelectorAll('h1, h2, h3, [role="heading"]'))
+        .slice(0, 12)
+        .map(h => (h.textContent || '').trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 80))
+        .filter(Boolean);
+      const progress = Array.from(document.querySelectorAll(
+        '[data-automation-id*="progress"], [data-automation-id*="step"], '
+        + '[aria-current="step"], .css-1yys72e, [class*="progress"]',
+      ))
+        .slice(0, 6)
+        .map(el => (el.getAttribute('data-automation-id') || el.textContent || '')
+          .trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 60))
+        .filter(Boolean);
+      const sectionLabels = [
+        'work experience', 'education', 'certifications', 'skills',
+        'resume', 'cv', 'websites', 'social', 'my information', 'my experience',
+        'application questions', 'voluntary', 'self identify', 'review',
+      ].filter(label => {
+        try {
+          return (document.body?.innerText || '').toLowerCase().includes(label);
+        } catch { return false; }
+      });
+      const fieldSig = Array.from(document.querySelectorAll(
+        'input:not([type="hidden"]), select, textarea, [role="combobox"], '
+        + 'button[aria-haspopup], [data-automation-id]',
+      ))
+        .slice(0, 80)
+        .map(el => {
+          const auto = el.getAttribute('data-automation-id') || '';
+          const name = el.getAttribute('name') || '';
+          const id = el.id || '';
+          const type = (el.getAttribute('type') || el.tagName || '').toLowerCase();
+          const req = el.required ? '1' : '0';
+          return [auto, name, id, type, req].filter(Boolean).join(':');
+        })
+        .filter(Boolean)
+        .sort();
+      return JSON.stringify({
+        url,
+        platform,
+        headings,
+        progress,
+        sectionLabels,
+        fieldSig,
+      });
+    } catch {
+      return JSON.stringify({ url: location.href, platform: 'unknown' });
+    }
+  }
 
   function startMultiPageTracking(filledOnThisPage) {
     stopMultiPageTracking();
 
     const origin = location.origin;
+    cumulativeFillStats.pages += 1;
+    cumulativeFillStats.filled += filledOnThisPage || 0;
     multiPageState = {
       origin,
       currentPage: 1,
       totalFilled: filledOnThisPage || 0,
       lastUrl: location.href,
+      lastFingerprint: buildSectionFingerprint(),
       observer: null,
       debounceTimer: null,
       popstateHandler: null,
       hashchangeHandler: null,
     };
 
-    function onPageChange() {
+    function onPageChange(mutationList) {
       if (!multiPageState) return;
       if (location.origin !== multiPageState.origin) {
         stopMultiPageTracking();
         return;
       }
+      // Ignore mutations that only touch JobApply overlay/badge nodes.
+      // Do not include m.target when it is document/body — that would never ignore.
+      if (mutationList && mutationList.length) {
+        const isJaNode = (n) => {
+          if (!n || n.nodeType !== 1) return true;
+          const el = /** @type {Element} */ (n);
+          if (el === document.body || el === document.documentElement) return false;
+          return !!(el.closest?.(`#${PREFIX}-overlay, #${PREFIX}-multipage-badge, .${PREFIX}-badge`)
+            || (el.id || '').startsWith(PREFIX)
+            || (typeof el.className === 'string' && el.className.includes(PREFIX)));
+        };
+        const onlyJa = mutationList.every(m => {
+          const touched = [...m.addedNodes, ...m.removedNodes];
+          if (touched.length) return touched.every(isJaNode);
+          return isJaNode(m.target);
+        });
+        if (onlyJa) return;
+      }
       clearTimeout(multiPageState.debounceTimer);
-      multiPageState.debounceTimer = setTimeout(() => checkForNewPage(), 1000);
+      multiPageState.debounceTimer = setTimeout(() => checkForNewPage(), 800);
     }
 
     function checkForNewPage() {
       if (!multiPageState) return;
-      // Only detect a new page if the URL actually changed
       const currentUrl = location.href;
-      if (currentUrl === multiPageState.lastUrl) return;
-      const fields = extractFormData();
-      const unfilled = fields.filter(f => f.required && !f.currentValue);
-      if (unfilled.length >= 2) {
-        multiPageState.lastUrl = currentUrl;
-        multiPageState.currentPage++;
-        showMultiPageBadge(multiPageState.currentPage);
-      }
+      const fp = buildSectionFingerprint();
+      const urlChanged = currentUrl !== multiPageState.lastUrl;
+      const sectionChanged = fp !== multiPageState.lastFingerprint;
+      if (!urlChanged && !sectionChanged) return;
+
+      multiPageState.lastUrl = currentUrl;
+      multiPageState.lastFingerprint = fp;
+      multiPageState.currentPage++;
+
+      // Retire prior page fill state; keep cumulative counters only.
+      clearPageScopedState({ keepCumulative: true });
+      removeOverlay();
+      currentState = 'idle';
+
+      showNewSectionDetected(multiPageState.currentPage);
     }
 
-    // MutationObserver on body for DOM changes (SPA page transitions)
-    multiPageState.observer = new MutationObserver(() => onPageChange());
+    // MutationObserver on body for DOM changes (SPA / same-URL Workday steps)
+    multiPageState.observer = new MutationObserver((mutations) => onPageChange(mutations));
     multiPageState.observer.observe(document.body, { childList: true, subtree: true });
 
     // Popstate and hashchange for URL-based navigation
@@ -3540,20 +3715,36 @@
     multiPageState = null;
   }
 
+  function showNewSectionDetected(pageNum) {
+    const existing = document.getElementById(`${PREFIX}-multipage-badge`);
+    if (existing) existing.remove();
+
+    updateOverlay(
+      'done',
+      `New application section detected${pageNum ? ` (step ${pageNum})` : ''}. `
+        + 'Review the page, then analyze — JobApply will not fill automatically.',
+      { newSection: true, showAnalyze: true, forceStatus: true },
+    );
+    // Ready for Analyze / toolbar Fill — not stuck in a completed-fill state.
+    currentState = 'idle';
+  }
+
   function showMultiPageBadge(pageNum) {
+    showNewSectionDetected(pageNum);
     const existing = document.getElementById(`${PREFIX}-multipage-badge`);
     if (existing) existing.remove();
 
     const badge = document.createElement('div');
     badge.id = `${PREFIX}-multipage-badge`;
-    badge.textContent = `Page ${pageNum} detected \u2014 fill?`;
+    badge.textContent = `New section detected \u2014 analyze?`;
     badge.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:2147483647;'
       + 'padding:10px 18px;background:#1a73e8;color:#fff;border-radius:8px;'
       + 'font:14px/1.4 -apple-system,sans-serif;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.3);';
 
     badge.addEventListener('click', async () => {
       badge.remove();
-      await startFillFlow();
+      clearPageScopedState({ keepCumulative: true });
+      await startFillFlow({ force: true });
     });
     document.body.appendChild(badge);
   }
@@ -3682,14 +3873,46 @@
 
     try {
       switch (message.type) {
-        case 'startFill':
+        case 'startFill': {
           if (message.jobId) currentJobId = message.jobId;
-          startFillFlow().then(() => {
-            sendResponse({ ok: true, state: currentState });
-          }).catch(err => {
-            sendResponse({ ok: false, error: err.message });
+          if (currentState === 'analyzing' || currentState === 'filling' || currentState === 'review') {
+            sendResponse({
+              ok: false,
+              accepted: false,
+              busy: true,
+              state: currentState,
+              error: `JobApply is busy (${currentState}). Wait or press Escape, then try again.`,
+            });
+            return false;
+          }
+          // Parent page with a real ATS iframe: do not "accept" a silent no-op —
+          // the iframe frame must accept instead.
+          if (shouldDeferToAtsIframe()) {
+            sendResponse({
+              ok: true,
+              accepted: false,
+              deferred: true,
+              state: 'idle',
+              error: null,
+            });
+            return false;
+          }
+          // Acknowledge immediately so the popup can close; run analysis async.
+          sendResponse({
+            ok: true,
+            accepted: true,
+            state: 'analyzing',
+            fieldCount: null,
           });
-          return true;
+          Promise.resolve()
+            .then(() => startFillFlow({ force: !!message.force }))
+            .catch(err => {
+              try {
+                updateOverlay('error', `Error: ${err.message}`, { forceStatus: true });
+              } catch { /* ignore */ }
+            });
+          return false;
+        }
 
         case 'queueFill':
           startQueueFill(message).then(() => {
@@ -3726,9 +3949,8 @@
     }
 
     // Dismiss overlay if present
-    if (overlayEl) {
-      removeOverlay();
-      currentState = 'idle';
+    if (overlayEl || overlayIsLive()) {
+      dismissOverlayToIdle();
     }
   });
 
@@ -4079,6 +4301,18 @@
       startFillFlow,
       getNewMappings,
       updateOverlay,
+      createOverlay,
+      removeOverlay,
+      dismissOverlayToIdle,
+      clearPageScopedState,
+      buildSectionFingerprint,
+      looksLikeWorkdayMyExperienceCollapsed,
+      overlayIsLive,
+      showNewSectionDetected,
+      get currentState() { return currentState; },
+      set currentState(v) { currentState = v; },
+      get overlayEl() { return overlayEl; },
+      set overlayEl(v) { overlayEl = v; },
     };
   }
 

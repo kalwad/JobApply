@@ -16,7 +16,7 @@ Record after each push of Stage 1 acceptance work:
 | Branch | `stage1/slim-autofill` |
 | Code freeze | `7ffb7d2f84c4fa5830abca7c266bfef13f59a14f` |
 | Branch tip | `git rev-parse origin/stage1/slim-autofill` |
-| Workday live status | **My Information page passed on the current local build** — steps 2–7 not passed |
+| Workday live status | **My Information passed.** Same-URL section transitions + structured My Experience **not** passed. Steps 2–7 outstanding. |
 | Greenhouse / Lever live status | **Provisional** on older HEADs — must re-smoke on frozen HEAD |
 | Merge | **Blocked** until owner confirms |
 

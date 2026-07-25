@@ -117,3 +117,8 @@ def test_seniority_clamped_by_experience_years():
     assert clamp_seniority("senior", history, today) != "senior"
     assert clamp_seniority("principal", history, today) in ("intern", "entry", "junior", "mid")
     assert clamp_seniority("senior/staff/lead/principal", [], today) == "unknown"
+
+
+def test_empty_work_history_forces_unknown_seniority():
+    assert clamp_seniority("senior", [], date(2026, 7, 25)) == "unknown"
+    assert clamp_seniority("principal", None, date(2026, 7, 25)) == "unknown"
