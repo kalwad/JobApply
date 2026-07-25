@@ -1,9 +1,9 @@
 # Live ATS supervised smoke test (Stage 1)
 
-**Status:** Greenhouse pending final +1-preservation run → then Lever → Workday.  
+**Status:** Greenhouse **PASSED** (with known limitation) → next: Lever → Workday.  
 Automated tests cover only synthetic fixtures under `fixtures/`. Do **not** claim live ATS verification until each platform below is completed.  
 **PR #1:** do not merge until all three platforms pass supervised smoke. Do not resume Stages 2–6.  
-**Phone-country:** Stage 1 keeps manual-review skip (see backlog: verified ISO-based phone-country selection). Do not re-automate in PR #1.
+**Phone-country:** Stage 1 keeps manual-review skip ([Issue #2](https://github.com/kalwad/JobApply/issues/2)). Do not re-automate in PR #1.
 
 Public-site interaction must **never** submit an application. Stop before the final submit page.
 
@@ -59,31 +59,20 @@ On each site:
 
 ### Greenhouse
 
-**Interim live result (pre–preservation run):** names correct; national phone correct; phone-country not autofilled; +355 not inserted; user manually selected United States (+1).
-
-**Pass criteria (final run):** select +1 *before* JobApply; after fill, +1 still selected; first/middle/last correct; address country United States; work auth Yes/No only; EEO/legal/submit untouched; fill report shows phone country skipped/manual.
-
 ```
 Platform: Greenhouse
-Status: PENDING final +1-preservation run (then PASS with known limitation)
-Date:
-Git HEAD: 25b72dc+
-Extension reloaded from this checkout:
-Backend restarted:
-Job path/domain:
-Platform correctly detected:
-First/middle/last names correct:
-Address country = United States:
-Phone country skipped (manual):
-Phone country never showed +355 / Albania:
-Phone national number correct:
-Existing +1 preserved when pre-selected:
-Work authorization Yes/No (never a country name):
-EEO fields untouched:
-Legal agreements untouched:
-Final submit untouched:
-Fill report records phone country skipped/manual:
+Status: PASSED (supervised live)
+Date: 2026-07-24
+Git HEAD: 25b72dc+ / 1d635de+
+Preservation run: United States (+1) selected before JobApply; remained +1 after national number fill
+First/middle/last names: correct (Tanish / Ashok / Kalwad)
+Address country: United States (as applicable)
+Work authorization: Yes/No path — not a country name
+Phone national number: correct
+Phone country: manual; not autofilled; no +355
 Known limitations: Phone-country selector requires manual selection in Stage 1.
+EEO note: demographic self-ID (race/gender/veteran/disability) — user did not report changes; Stage 1 must leave these alone unless fill_eeo is enabled.
+Next: Lever supervised smoke
 ```
 
 ### Lever
