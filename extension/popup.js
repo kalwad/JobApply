@@ -23,7 +23,7 @@ async function checkConnection() {
     const response = await chrome.runtime.sendMessage({ type: 'checkConnection' });
     if (response && response.ok) {
       statusDot.classList.add('connected');
-      statusText.textContent = 'Connected to CareerPulse';
+      statusText.textContent = 'Connected to JobApply';
       fillBtn.disabled = false;
       isConnected = true;
     } else {

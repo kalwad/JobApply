@@ -169,7 +169,7 @@ async function getScoreForUrl(url) {
 
 let queueState = null; // { items: [], currentIndex: 0, tabId: null }
 
-const QUEUE_STORAGE_KEY = '__cpQueueState';
+const QUEUE_STORAGE_KEY = '__jaQueueState';
 const TAB_LOAD_TIMEOUT_MS = 30000; // Max wait for tab to reach 'complete'
 
 async function persistQueueState() {
