@@ -6,3 +6,7 @@ data/
 *.egg-info/
 .pytest_cache/
 .worktrees/
+
+# Node / tooling
+node_modules/
+**/pnpm-workspace.yaml
