@@ -23,7 +23,7 @@ async function checkConnection() {
     const response = await chrome.runtime.sendMessage({ type: 'checkConnection' });
     if (response && response.ok) {
       statusDot.classList.add('connected');
-      statusText.textContent = 'Connected to CareerPulse';
+      statusText.textContent = 'Connected to JobApply';
       fillBtn.disabled = false;
       isConnected = true;
     } else {
@@ -46,8 +46,10 @@ fillBtn.addEventListener('click', async () => {
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab) throw new Error('No active tab');
-    await chrome.tabs.sendMessage(tab.id, { type: 'startFill' });
+    if (!tab?.id) throw new Error('No active tab');
+    // Broadcast to all frames so Greenhouse/Lever iframe embeds receive startFill.
+    const result = await chrome.runtime.sendMessage({ type: 'broadcastStartFill', tabId: tab.id });
+    if (result && result.ok === false) throw new Error(result.error || 'Fill failed');
     window.close();
   } catch (err) {
     console.error('Fill error:', err);

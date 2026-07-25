@@ -2,19 +2,103 @@
   'use strict';
 
   // Guard against multiple injections
-  if (window.__cpAutofillLoaded) return;
-  window.__cpAutofillLoaded = true;
+  if (window.__jaAutofillLoaded) return;
+  window.__jaAutofillLoaded = true;
 
-  const PREFIX = 'cp-autofill';
-  const OVERLAY_PREFIX = 'cp-overlay';
+  const PREFIX = 'ja-autofill';
+  const OVERLAY_PREFIX = 'ja-overlay';
   const FIELD_TIMEOUT_MS = 8000;  // Max time per field fill
   const API_TIMEOUT_MS = 60000;   // Max time for API analyze call
   const SCAN_DEBOUNCE_MS = 1500;  // Debounce for MutationObserver re-scans
-  let currentState = 'idle'; // idle | analyzing | filling | done | error
+  let currentState = 'idle'; // idle | analyzing | review | filling | done | error
+
+  // Stage 1 safety defaults (overridable via chrome.storage.local)
+  let overwriteExistingFields = false;
+  let enableJobBoardOverlay = false;
+  let enableQueueFill = false;
+  // Detailed field/value logging is OFF by default (PII). Enable via chrome.storage.local.debugAutofill=true
+  let debugAutofill = false;
+
+  function debugLog(...args) {
+    if (!debugAutofill && !(typeof window !== 'undefined' && window.__jaAutofillTest)) return;
+    console.debug('[JobApply:debug]', ...args);
+  }
+
+  function redactValue(value) {
+    const s = String(value ?? '');
+    if (!s) return '';
+    if (s.length <= 2) return '**';
+    return s[0] + '***' + s.slice(-1);
+  }
 
   // Track original field values for undo support
   const originalValues = new Map(); // selector -> { originalValue, label, value, confidence, action }
   let overlayMode = 'status'; // status | compact | expanded
+
+  const PLACEHOLDER_VALUES = new Set([
+    '', 'select', 'select one', 'select an option', 'choose', 'choose one',
+    '--', '—', 'n/a', 'na', 'none', 'please select',
+  ]);
+
+  function isEffectivelyEmpty(value) {
+    const v = String(value ?? '').trim().toLowerCase();
+    return !v || PLACEHOLDER_VALUES.has(v);
+  }
+
+  function getCurrentFieldValue(el) {
+    if (!el) return '';
+    const type = (el.type || '').toLowerCase();
+    // Radios/checkboxes always have a value attribute; "filled" means selected.
+    if (type === 'radio' || type === 'checkbox') {
+      return el.checked ? String(el.value || 'on') : '';
+    }
+    if (el.isContentEditable || el.getAttribute?.('contenteditable') === 'true') {
+      return (el.textContent || '').trim();
+    }
+    // Custom Workday-style button dropdowns: use visible text only if it looks selected
+    if (el.tagName === 'BUTTON' && el.getAttribute('aria-haspopup')) {
+      return (el.textContent || '').trim();
+    }
+    return el.value || '';
+  }
+
+  function isSubmitControl(el) {
+    if (!el || !el.tagName) return false;
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    const text = (el.textContent || el.value || '').trim().toLowerCase();
+    if (type === 'submit') return true;
+    if (tag === 'button' && type === 'submit') return true;
+    if (/(^|\s)submit(\s|$)/.test(text) && /application|apply|form/.test(text)) return true;
+    if (text === 'submit application' || text === 'submit your application') return true;
+    return false;
+  }
+
+  async function loadSafetySettings() {
+    // Tests control flags via __jaAutofillTestAPI; avoid async storage races.
+    if (typeof window !== 'undefined' && window.__jaAutofillTest) {
+      return;
+    }
+    try {
+      const stored = await chrome.storage.local.get([
+        'overwriteExistingFields',
+        'enableJobBoardOverlay',
+        'enableQueueFill',
+        'debugAutofill',
+      ]);
+      overwriteExistingFields = !!stored.overwriteExistingFields;
+      enableJobBoardOverlay = !!stored.enableJobBoardOverlay;
+      enableQueueFill = !!stored.enableQueueFill;
+      debugAutofill = !!stored.debugAutofill;
+    } catch {
+      // Defaults already set
+    }
+  }
+
+  // Load once in production; tests set flags explicitly.
+  if (!(typeof window !== 'undefined' && window.__jaAutofillTest)) {
+    try { loadSafetySettings(); } catch { /* ignore */ }
+  }
 
   // ─── History interceptor (single patch, multiple callbacks) ──
 
@@ -170,12 +254,33 @@
 
   function getNearbyHeading(el) {
     try {
+      // Prefer the fieldset legend that actually wraps this control.
+      const fieldset = el.closest('fieldset');
+      if (fieldset) {
+        const legend = fieldset.querySelector(':scope > legend');
+        if (legend?.textContent) return legend.textContent.trim().slice(0, 200);
+      }
+
+      // Walk previous siblings (and parents' previous siblings) for a heading.
+      // Do NOT use parent.querySelector('h1...') — that returns the first heading
+      // in a huge form subtree (often "Phone"), poisoning every later field.
       let node = el;
-      for (let i = 0; i < 10; i++) {
+      for (let depth = 0; depth < 8 && node; depth++) {
+        let sib = node.previousElementSibling;
+        while (sib) {
+          if (/^H[1-6]$/i.test(sib.tagName) || sib.tagName === 'LEGEND') {
+            const text = sib.textContent?.trim();
+            if (text) return text.slice(0, 200);
+          }
+          // Header-only sibling containers (no nested inputs)
+          if (sib.querySelector && !sib.querySelector('input, select, textarea, [contenteditable="true"]')) {
+            const inner = sib.querySelector('h1, h2, h3, h4, h5, h6, legend');
+            const text = inner?.textContent?.trim();
+            if (text) return text.slice(0, 200);
+          }
+          sib = sib.previousElementSibling;
+        }
         node = node.parentElement;
-        if (!node) break;
-        const heading = node.querySelector('h1, h2, h3, h4, h5, h6, legend');
-        if (heading) return heading.textContent.trim().slice(0, 200);
       }
       return '';
     } catch {
@@ -276,7 +381,7 @@
         if (el.disabled) continue;
 
         // Skip our own overlay/badge elements
-        if (el.closest(`#${PREFIX}-overlay`) || el.closest(`#${PREFIX}-learn-prompt`) || el.closest('.cp-auto-badge')) continue;
+        if (el.closest(`#${PREFIX}-overlay`) || el.closest(`#${PREFIX}-learn-prompt`) || el.closest('.ja-auto-badge')) continue;
 
         const selector = buildSelector(el);
         if (!selector || seen.has(selector)) continue;
@@ -299,7 +404,8 @@
           label: findLabel(el),
           nearbyHeading: getNearbyHeading(el),
           required: el.required || el.getAttribute('aria-required') === 'true',
-          currentValue: el.value || el.textContent?.trim() || '',
+          // Radios/checkboxes: use checked state, not the value attribute ("on").
+          currentValue: getCurrentFieldValue(el),
           isContentEditable: el.isContentEditable && el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA',
           role: el.getAttribute('role') || null,
         };
@@ -321,6 +427,58 @@
 
   // ─── Post-extraction field enrichment ──────────────────────────
 
+  function findSharedPhoneComponent(el) {
+    if (!el || !el.closest) return null;
+    let node = el.parentElement;
+    while (node && node !== document.body) {
+      let phoneInput = null;
+      try {
+        phoneInput = node.querySelector(
+          'input[type="tel"], input[name*="phone" i]:not([name*="country" i]), input[id*="phone" i]:not([id*="country" i])'
+        );
+      } catch {
+        // Older engines without case-insensitive attribute selectors
+        phoneInput = node.querySelector('input[type="tel"]');
+        if (!phoneInput) {
+          for (const inp of node.querySelectorAll('input')) {
+            const n = `${inp.name || ''} ${inp.id || ''}`.toLowerCase();
+            if (/\bphone\b|\bmobile\b|\btel\b/.test(n) && !/country|code|ext/.test(n)) {
+              phoneInput = inp;
+              break;
+            }
+          }
+        }
+      }
+      if (phoneInput && phoneInput !== el) {
+        const controlCount = node.querySelectorAll(
+          'input:not([type="hidden"]), select, textarea, [role="combobox"], button[aria-haspopup]'
+        ).length;
+        // Bounded phone widget (country + number), not the whole application form.
+        if (controlCount > 0 && controlCount <= 8) return node;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function isSelectCountryInPhoneWidget(el) {
+    if (!el) return false;
+    try {
+      const hints = getFieldHints(el);
+      const aria = el.getAttribute('aria-label') || '';
+      const text = `${hints.label} ${hints.name} ${hints.id} ${hints.placeholder} ${aria} ${(el.textContent || '').slice(0, 80)}`.toLowerCase();
+      const looksCountry = /\bcountry\b|select country|country code|dial code/i.test(text);
+      if (!looksCountry) return false;
+      // Address-country fields live outside the phone widget.
+      if (/address|mailing|billing|residence|location/i.test(text) && !/phone|dial|mobile|tel/i.test(text)) {
+        return false;
+      }
+      return !!findSharedPhoneComponent(el);
+    } catch {
+      return false;
+    }
+  }
+
   function enrichFieldHints(fields) {
     for (const field of fields) {
       // Detect country code selects by dial-code options like "(+1)", "(+44)"
@@ -330,7 +488,26 @@
         ).length;
         if (dialCodeCount > 5 && !/country.?code/i.test(`${field.label} ${field.name} ${field.id}`)) {
           field.label = field.label ? `${field.label} (phone country code)` : 'phone country code';
+          field.fieldKind = 'phone_country';
+          field.atsHint = 'phone_country';
         }
+      }
+
+      // Greenhouse React phone widget: custom control labeled only "Select country"
+      // sitting next to the phone input — classify by component ownership.
+      if (!field.fieldKind) {
+        try {
+          const el = resolveElement(field.selector);
+          if (el && (isPhoneCountryCodeField(el) || isSelectCountryInPhoneWidget(el))) {
+            field.fieldKind = 'phone_country';
+            field.atsHint = 'phone_country';
+            if (!/phone.?country|country.?code/i.test(field.label || '')) {
+              field.label = field.label
+                ? `${field.label} (phone country code)`
+                : 'phone country code';
+            }
+          }
+        } catch { /* skip */ }
       }
     }
     return fields;
@@ -528,6 +705,8 @@
       if ((el.type || '').toLowerCase() === 'tel') return true;
       const hints = getFieldHints(el);
       const combined = `${hints.label} ${hints.name} ${hints.id} ${hints.placeholder}`;
+      // SMS/opt-in checkboxes are not phone number fields (Workday phone-sms-opt-in).
+      if (/sms|opt[-_]?in|text\s*me|marketing|consent/i.test(combined)) return false;
       return /phone|tel|mobile|cell/i.test(combined);
     } catch {
       return false;
@@ -539,7 +718,11 @@
     try {
       const hints = getFieldHints(el);
       const combined = `${hints.label} ${hints.name} ${hints.id} ${hints.placeholder}`;
-      return /country.?(?:phone|code)|phone.?country|dial.?code|calling.?code|countryPhoneCode|country.?iso/i.test(combined);
+      if (/country.?(?:phone|code)|phone.?country|dial.?code|calling.?code|countryPhoneCode|country.?iso/i.test(combined)) {
+        return true;
+      }
+      // Custom Greenhouse control: "Select country" owned by the phone widget.
+      return isSelectCountryInPhoneWidget(el);
     } catch {
       return false;
     }
@@ -562,9 +745,73 @@
 
   // ─── Dropdown / listbox detection ──────────────────────────
 
+  function extractDialCode(value) {
+    if (value == null) return null;
+    const s = String(value);
+    const paren = s.match(/\(\s*\+(\d{1,4})\s*\)/);
+    if (paren) return paren[1];
+    const bare = s.trim().match(/^\+?(\d{1,4})$/);
+    return bare ? bare[1] : null;
+  }
+
+  function hintsLookLikePhoneCountry(fieldHints) {
+    const hints = fieldHints || {};
+    const combined = `${hints.label || ''} ${hints.name || ''} ${hints.id || ''} ${hints.placeholder || ''}`;
+    return /phone.?country|country.?phone|country.?code|dial.?code|calling.?code|countryPhoneCode/i.test(combined);
+  }
+
+  /**
+   * Score phone-country / dial-code options. Prevents "+1" from matching
+   * Albania (+355) or Algeria (+213) via naive digit substring checks.
+   */
+  function matchPhoneCountryCodeOption(options, targetValue) {
+    if (!options?.length || targetValue == null) return -1;
+    const target = String(targetValue).toLowerCase().trim();
+    const dial = extractDialCode(targetValue);
+    const countryName = target.replace(/\s*\(\s*\+\d{1,4}\s*\)\s*/g, ' ').replace(/\s+/g, ' ').trim();
+
+    let bestIdx = -1;
+    let bestScore = -1;
+    for (let i = 0; i < options.length; i++) {
+      const text = String(options[i].text || '').toLowerCase().trim();
+      const value = String(options[i].value || '').toLowerCase().trim();
+      if (!text && !value) continue;
+      let score = 0;
+      if (text === target || value === target) score = 100;
+      else if (countryName && (text === countryName || text.startsWith(`${countryName} `) || text.includes(countryName))) score = 85;
+      if (dial) {
+        const dialRe = new RegExp(`\\(\\s*\\+${dial}\\s*\\)`);
+        const exactDial = new RegExp(`^\\+?${dial}$`);
+        if (dialRe.test(text) || exactDial.test(text) || exactDial.test(value)) {
+          score = Math.max(score, 60);
+          if (countryName && countryName.split(/\s+/).some(p => p.length > 2 && text.includes(p))) {
+            score = Math.max(score, 92);
+          }
+        }
+        if (dial === '1' && /\bunited states\b|\busa\b|\bu\.s\.a?\b/.test(text)) {
+          score = Math.max(score, 96);
+        }
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+    return bestScore >= 60 ? bestIdx : -1;
+  }
+
   function fuzzyMatchOption(options, targetValue, fieldHints) {
     if (!options || !options.length) return -1;
     const target = targetValue.toLowerCase().trim();
+
+    if (hintsLookLikePhoneCountry(fieldHints) || extractDialCode(targetValue)) {
+      const phoneIdx = matchPhoneCountryCodeOption(options, targetValue);
+      if (phoneIdx >= 0) return phoneIdx;
+      // For dial-code targets, do not fall through to naive "1" ⊆ "213" matching.
+      if (/^\+?\d{1,4}$/.test(String(targetValue).trim()) || hintsLookLikePhoneCountry(fieldHints)) {
+        return -1;
+      }
+    }
 
     // Pass 1: exact match on value
     for (let i = 0; i < options.length; i++) {
@@ -576,9 +823,9 @@
     }
 
     // Pass 3: normalization via lookup tables
-    if (window.__cpNormalize) {
+    if (window.__jaNormalize) {
       try {
-        const norm = window.__cpNormalize;
+        const norm = window.__jaNormalize;
         const hints = fieldHints || {};
         const hintValues = [hints.label, hints.name, hints.id, hints.placeholder].filter(Boolean);
         const tables = norm.detectFieldCategory(hintValues);
@@ -601,10 +848,14 @@
       } catch { /* normalization unavailable, continue */ }
     }
 
-    // Pass 4: contains / substring match
-    for (let i = 0; i < options.length; i++) {
-      if (options[i].value.toLowerCase().includes(target) || options[i].text.toLowerCase().includes(target)) return i;
-      if (target.includes(options[i].value.toLowerCase()) || target.includes(options[i].text.toLowerCase().trim())) return i;
+    // Pass 4: contains / substring match (reject tiny tokens like "1"/"us")
+    if (target.length >= 3) {
+      for (let i = 0; i < options.length; i++) {
+        const optVal = options[i].value.toLowerCase();
+        const optText = options[i].text.toLowerCase().trim();
+        if (optVal.length >= 3 && (optVal.includes(target) || target.includes(optVal))) return i;
+        if (optText.length >= 3 && (optText.includes(target) || target.includes(optText))) return i;
+      }
     }
     return -1;
   }
@@ -656,7 +907,7 @@
     }
   }
 
-  function findTypeaheadDropdown(el) {
+  function findTypeaheadDropdown(el, options = {}) {
     const searchSelectors = [
       '[role="listbox"]',
       '[role="option"]',
@@ -700,23 +951,26 @@
       container = container.parentElement;
     }
 
-    // Document-wide search for visible listboxes/dropdowns
-    for (const sel of searchSelectors) {
+    // Document-wide search helps Workday portals, but is unsafe for phone-country
+    // widgets (virtualized lists often show Albania first). Callers can pass
+    // { allowDocumentWide: false } to disable.
+    if (options.allowDocumentWide !== false) {
+      for (const sel of searchSelectors) {
+        try {
+          const all = document.querySelectorAll(sel);
+          for (const node of all) {
+            if (isElementVisible(node) && node !== el) return node;
+          }
+        } catch { /* skip */ }
+      }
+
       try {
-        const all = document.querySelectorAll(sel);
-        for (const node of all) {
-          if (isElementVisible(node) && node !== el) return node;
+        const shadowDropdowns = deepQuerySelectorAll(document, '[role="listbox"], [role="option"]');
+        for (const node of shadowDropdowns) {
+          if (isElementVisible(node)) return node;
         }
       } catch { /* skip */ }
     }
-
-    // Shadow DOM search
-    try {
-      const shadowDropdowns = deepQuerySelectorAll(document, '[role="listbox"], [role="option"]');
-      for (const node of shadowDropdowns) {
-        if (isElementVisible(node)) return node;
-      }
-    } catch { /* skip */ }
 
     return null;
   }
@@ -756,6 +1010,15 @@
     if (!options.length) return null;
     const target = targetValue.toLowerCase().trim();
 
+    if (hintsLookLikePhoneCountry(fieldHints) || extractDialCode(targetValue)) {
+      const mapped = options.map(o => ({ text: o.textContent.trim(), value: o.getAttribute?.('data-value') || o.value || '' }));
+      const phoneIdx = matchPhoneCountryCodeOption(mapped, targetValue);
+      if (phoneIdx >= 0) return options[phoneIdx];
+      if (/^\+?\d{1,4}$/.test(String(targetValue).trim()) || hintsLookLikePhoneCountry(fieldHints)) {
+        return null;
+      }
+    }
+
     // Pass 1: Exact text match
     for (const opt of options) {
       if (opt.textContent.trim().toLowerCase() === target) return opt;
@@ -766,16 +1029,17 @@
       if (opt.textContent.trim().toLowerCase().startsWith(target)) return opt;
     }
 
-    // Pass 2b: Target starts with option text
+    // Pass 2b: Target starts with option text (ignore tiny tokens like "a"/"1")
     for (const opt of options) {
       const text = opt.textContent.trim().toLowerCase();
+      if (text.length < 3 || target.length < 3) continue;
       if (text.startsWith(target) || target.startsWith(text)) return opt;
     }
 
     // Pass 3: Normalization via lookup tables
-    if (window.__cpNormalize) {
+    if (window.__jaNormalize) {
       try {
-        const norm = window.__cpNormalize;
+        const norm = window.__jaNormalize;
         const hints = fieldHints || {};
         const hintValues = [hints.label, hints.name, hints.id, hints.placeholder].filter(Boolean);
         const tables = norm.detectFieldCategory(hintValues);
@@ -790,19 +1054,22 @@
       } catch { /* normalization unavailable, continue */ }
     }
 
-    // Pass 4: Contains match
-    for (const opt of options) {
-      const text = opt.textContent.trim().toLowerCase();
-      if (text.includes(target) || target.includes(text)) return opt;
+    // Pass 4: Contains match (reject tiny tokens)
+    if (target.length >= 3) {
+      for (const opt of options) {
+        const text = opt.textContent.trim().toLowerCase();
+        if (text.length < 3) continue;
+        if (text.includes(target) || target.includes(text)) return opt;
+      }
     }
 
     // Pass 5: Word-level overlap (for "Animas, Hidalgo, NM" matching "Animas")
-    const targetWords = target.split(/[\s,]+/).filter(Boolean);
+    const targetWords = target.split(/[\s,]+/).filter(w => w.length >= 3);
     let bestMatch = null;
     let bestScore = 0;
     for (const opt of options) {
       const text = opt.textContent.trim().toLowerCase();
-      const words = text.split(/[\s,]+/).filter(Boolean);
+      const words = text.split(/[\s,]+/).filter(w => w.length >= 3);
       let score = 0;
       for (const tw of targetWords) {
         if (words.some(w => w.startsWith(tw) || tw.startsWith(w))) score++;
@@ -814,8 +1081,11 @@
     }
     if (bestMatch && bestScore > 0) return bestMatch;
 
-    // If only one option visible, select it
-    if (options.length === 1) return options[0];
+    // Selecting the only currently visible option is unsafe for virtualized
+    // phone-country lists (Albania may be the sole rendered row).
+    if (options.length === 1 && !hintsLookLikePhoneCountry(fieldHints)) {
+      return options[0];
+    }
 
     return null;
   }
@@ -828,10 +1098,14 @@
     if (role === 'combobox' || role === 'listbox') return true;
 
     const ariaHaspopup = el.getAttribute('aria-haspopup');
-    if (ariaHaspopup === 'listbox' || ariaHaspopup === 'true') return true;
+    if (ariaHaspopup === 'listbox' || ariaHaspopup === 'true' || ariaHaspopup === 'menu') return true;
 
     const ariaExpanded = el.getAttribute('aria-expanded');
     if (ariaExpanded !== null) return true;
+
+    // Workday prompt buttons often expose only data-automation-id (no role/haspopup).
+    const autoId = (el.getAttribute?.('data-automation-id') || '').toLowerCase();
+    if (/stateprovince|countryregion|dropdown|multiselect|prompt/.test(autoId)) return true;
 
     // Check for common custom dropdown class patterns
     const className = (el.className || '').toString().toLowerCase();
@@ -840,17 +1114,72 @@
     return false;
   }
 
+  function findWorkdayDropdownTrigger(el) {
+    if (!el) return el;
+    if (el.matches?.('button, [role="button"], [role="combobox"], [aria-haspopup]')) return el;
+    try {
+      const nested = el.querySelector?.(
+        'button[aria-haspopup], button[aria-expanded], [role="combobox"], button[data-automation-id], [data-automation-id][aria-haspopup]',
+      );
+      if (nested) return nested;
+    } catch { /* skip */ }
+    return el;
+  }
+
+  function controlDisplaysValue(el, value) {
+    if (!el || value == null) return false;
+    const target = String(value).toLowerCase().trim();
+    if (!target || /^(select|select one|choose|choose one|--)$/i.test(target)) return false;
+    const hay = `${el.textContent || ''} ${el.value || ''} ${el.getAttribute?.('aria-label') || ''} ${el.getAttribute?.('aria-valuetext') || ''}`.toLowerCase();
+    if (hay.includes(target)) return true;
+    // "MI" ↔ "Michigan" via normalize tables when available
+    if (window.__jaNormalize) {
+      try {
+        const idx = window.__jaNormalize.normalizedMatch(
+          [hay],
+          value,
+          [window.__jaNormalize.US_STATES, window.__jaNormalize.CA_PROVINCES],
+        );
+        if (idx >= 0) return true;
+      } catch { /* skip */ }
+    }
+    return false;
+  }
+
+  function collectPromptOptions(excludeVisibleSet) {
+    const found = [];
+    try {
+      for (const opt of document.querySelectorAll('[role="option"], [data-automation-id="promptOption"]')) {
+        if (excludeVisibleSet?.has(opt)) continue;
+        if (isElementVisible(opt) || opt.offsetHeight > 0) found.push(opt);
+      }
+    } catch { /* skip */ }
+    return found;
+  }
+
   async function handleCustomDropdown(el, value, fieldHints) {
     // Pre-normalize the target value via the lookup tables (e.g., "CA" → "California").
     // Workday state dropdowns ship a `searchBox` that filters option text — typing the
     // canonical full name yields the correct single match; typing "CA" matches
     // California, North Carolina, and South Carolina.
+    const trigger = findWorkdayDropdownTrigger(el);
     let effectiveValue = value;
-    if (window.__cpNormalize && fieldHints) {
+    const autoId = (
+      trigger.getAttribute?.('data-automation-id')
+      || el.getAttribute?.('data-automation-id')
+      || ''
+    ).toLowerCase();
+    if (window.__jaNormalize && fieldHints) {
       try {
-        const norm = window.__cpNormalize;
-        const hintValues = [fieldHints.label, fieldHints.name, fieldHints.id, fieldHints.placeholder].filter(Boolean);
+        const norm = window.__jaNormalize;
+        const hintValues = [
+          fieldHints.label, fieldHints.name, fieldHints.id, fieldHints.placeholder, autoId,
+        ].filter(Boolean);
         const tables = norm.detectFieldCategory(hintValues);
+        // Workday stateProvince controls often lack a "state" label — force US_STATES.
+        if (/state|province|region/.test(autoId) && !tables.includes?.(norm.US_STATES)) {
+          tables.push(norm.US_STATES);
+        }
         for (const t of tables) {
           const canonical = norm.normalizeValue(value, t);
           if (canonical) {
@@ -858,8 +1187,18 @@
             break;
           }
         }
+        // Title-case full state names when normalizeValue missed (already "Michigan").
+        if (effectiveValue === value && /state|province/i.test(`${hintValues.join(' ')} ${autoId}`)) {
+          const asCanon = norm.normalizeValue(value, norm.US_STATES);
+          if (asCanon) effectiveValue = asCanon.replace(/\b\w/g, c => c.toUpperCase());
+        }
       } catch { /* skip */ }
     }
+
+    const stateHints = {
+      ...fieldHints,
+      label: `${fieldHints?.label || ''} state`.trim(),
+    };
 
     // Snapshot existing *visible* option elements BEFORE clicking, so any
     // newly-appeared (or previously-hidden) options can be treated as part of
@@ -873,98 +1212,193 @@
       }
     } catch { /* skip */ }
 
-    // Click to open the dropdown. Some Workday builds only respond to a full
-    // pointer sequence (mousedown → mouseup → click), so dispatch them too.
-    try {
-      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-    } catch { /* skip */ }
-    el.click();
-    dispatchEvents(el, ['click', 'focus']);
+    const isWorkday = /myworkdayjobs\.com/i.test(location.href)
+      || !!autoId
+      || !!el.closest?.('[data-automation-id]')
+      || !!trigger.closest?.('[data-automation-id]');
+
+    async function openDropdown() {
+      try {
+        trigger.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        trigger.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+      } catch { /* skip */ }
+      trigger.click();
+      dispatchEvents(trigger, ['click', 'focus']);
+    }
+
+    await openDropdown();
 
     // Wait for new options / dropdown to appear (retry with increasing delays)
     let dd = null;
-    for (let attempt = 0; attempt < 6; attempt++) {
-      await sleep(attempt < 2 ? 200 : 300);
+    let openedOptions = [];
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await sleep(attempt < 2 ? 250 : isWorkday ? 400 : 300);
 
-      // Look for newly-appeared option elements (Workday uses
-      // [data-automation-id="promptOption"]; others use [role="option"])
+      openedOptions = collectPromptOptions(preExistingOptions);
+      // Accept a single newly visible option (filtered lists / slow portals).
+      if (openedOptions.length >= 1) {
+        dd = openedOptions[0].closest('[role="listbox"], [role="menu"], [data-automation-widget*="popup"], [data-automation-widget*="prompt"]')
+          || openedOptions[0].parentElement;
+        if (dd) break;
+      }
+
+      // Workday often leaves the active popup marked with automation widget attrs.
       try {
-        const newOptions = [];
-        for (const opt of document.querySelectorAll('[role="option"], [data-automation-id="promptOption"]')) {
-          if (preExistingOptions.has(opt)) continue;
-          if (isElementVisible(opt) || opt.offsetHeight > 0) newOptions.push(opt);
-        }
-        if (newOptions.length > 1) {
-          // Find the container: nearest listbox/menu/popup ancestor,
-          // else the shared parent of the options.
-          dd = newOptions[0].closest('[role="listbox"], [role="menu"], [data-automation-widget*="popup"], [data-automation-widget*="prompt"]')
-            || newOptions[0].parentElement;
-          if (dd) break;
+        const popup = document.querySelector('[data-automation-widget*="popup"]:not([aria-hidden="true"]), [data-automation-widget*="prompt"]:not([aria-hidden="true"])');
+        if (popup) {
+          const opts = getDropdownOptions(popup);
+          if (opts.length >= 1) { dd = popup; openedOptions = opts; break; }
         }
       } catch { /* skip */ }
 
-      // Fallback: use findTypeaheadDropdown but prefer listboxes with multiple options
-      const candidate = findTypeaheadDropdown(el);
+      // Fallback: use findTypeaheadDropdown but prefer listboxes with multiple options.
+      // Phone-country / Workday: never grab an unrelated document-wide listbox.
+      const candidate = findTypeaheadDropdown(trigger, {
+        allowDocumentWide: !hintsLookLikePhoneCountry(fieldHints) && !isWorkday,
+      });
       if (candidate) {
         const opts = getDropdownOptions(candidate);
-        if (opts.length > 1) { dd = candidate; break; }
+        if (opts.length >= 1) { dd = candidate; openedOptions = opts; break; }
       }
 
-      // On first failure, try clicking a child trigger
-      if (attempt === 1) {
-        const trigger = el.querySelector('button, [class*="arrow"], [class*="indicator"], [class*="toggle"]');
-        if (trigger && trigger !== el) {
-          trigger.click();
-        }
+      // Retry opening via nested/child trigger
+      if (attempt === 1 || attempt === 3) {
+        const nested = el.querySelector?.(
+          'button, [class*="arrow"], [class*="indicator"], [class*="toggle"], [data-automation-id*="button"]',
+        );
+        if (nested && nested !== trigger) nested.click();
+        else await openDropdown();
       }
     }
 
     if (!dd) {
-      closeOpenDropdowns();
+      closeOpenDropdowns({ gentle: isWorkday });
       return { success: false, reason: 'no dropdown appeared' };
     }
 
-    const options = getDropdownOptions(dd);
+    let options = openedOptions.length ? openedOptions : getDropdownOptions(dd);
     if (!options.length) {
-      closeOpenDropdowns();
+      closeOpenDropdowns({ gentle: isWorkday });
       return { success: false, reason: 'no options in dropdown' };
     }
 
-    // Try typing to filter first (for searchable dropdowns)
-    // Workday uses [data-automation-id="searchBox"] for dropdown search inputs
-    const searchInput = dd.querySelector('[data-automation-id="searchBox"]') || dd.querySelector('input');
+    function findSearchInput() {
+      // Prefer the search box inside the active popup — never a stale document-wide one.
+      const inPopup = dd.querySelector('[data-automation-id="searchBox"], input:not([type="hidden"])');
+      if (inPopup && (isElementVisible(inPopup) || inPopup.offsetHeight > 0)) return inPopup;
+      try {
+        const popup = dd.closest?.('[data-automation-widget]') || dd;
+        const scoped = popup.querySelector?.('[data-automation-id="searchBox"]');
+        if (scoped && (isElementVisible(scoped) || scoped.offsetHeight > 0)) return scoped;
+      } catch { /* skip */ }
+      return null;
+    }
+
+    async function commitOption(match) {
+      const selectedText = match.textContent.trim();
+      clickOption(match);
+      // Workday prompts often confirm on Enter after highlight/click.
+      try {
+        match.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
+        }));
+      } catch { /* skip */ }
+
+      const stuck = await waitForControlValue(
+        trigger,
+        [effectiveValue, selectedText, value],
+        isWorkday ? 10 : 4,
+        isWorkday ? 150 : 80,
+      );
+
+      // Only dismiss if the popup is still open. Aggressive Tab/outside-click
+      // clears Workday state selections before they commit.
+      if (promptStillOpen()) {
+        closeOpenDropdowns({ gentle: isWorkday });
+        if (isWorkday) {
+          await waitForControlValue(trigger, [effectiveValue, selectedText, value], 4, 100);
+        }
+      }
+
+      if (isWorkday && !controlDisplaysValue(trigger, effectiveValue)
+          && !controlDisplaysValue(trigger, selectedText)
+          && !controlDisplaysValue(el, effectiveValue)
+          && !controlDisplaysValue(el, selectedText)) {
+        return { success: false, reason: `selection did not stick for "${effectiveValue}"` };
+      }
+      if (!stuck && isWorkday) {
+        // Value may still have landed on a child label after dismiss.
+        if (!controlDisplaysValue(trigger, selectedText) && !controlDisplaysValue(el, selectedText)) {
+          return { success: false, reason: `selection did not stick for "${effectiveValue}"` };
+        }
+      }
+      return { success: true, selectedText };
+    }
+
+    // Try typing to filter first (for searchable dropdowns).
+    const searchInput = findSearchInput();
     if (searchInput) {
       searchInput.focus();
-      setNativeValue(searchInput, effectiveValue);
-      dispatchEvents(searchInput, ['input']);
-      await sleep(300);
+      try {
+        simulateTyping(searchInput, effectiveValue);
+      } catch {
+        setNativeValue(searchInput, effectiveValue);
+        dispatchEvents(searchInput, ['input']);
+      }
+      await sleep(isWorkday ? 600 : 350);
 
-      // Re-fetch filtered options
-      const filteredOptions = getDropdownOptions(dd);
-      const match = fuzzyMatchDropdownOption(filteredOptions.length ? filteredOptions : options, effectiveValue, fieldHints);
+      const filtered = collectPromptOptions(null).filter(o => isElementVisible(o) || o.offsetHeight > 0);
+      const filteredOptions = filtered.length ? filtered : getDropdownOptions(dd);
+      const match = fuzzyMatchDropdownOption(
+        filteredOptions.length ? filteredOptions : options,
+        effectiveValue,
+        stateHints,
+      );
       if (match) {
-        clickOption(match);
-        await sleep(200);
-        closeOpenDropdowns();
-        return { success: true, selectedText: match.textContent.trim() };
+        const result = await commitOption(match);
+        if (result.success) return result;
+      } else {
+        // Clear filter so the full option list is available for the fallback pass.
+        try {
+          simulateTyping(searchInput, '');
+        } catch {
+          setNativeValue(searchInput, '');
+          dispatchEvents(searchInput, ['input']);
+        }
+        await sleep(isWorkday ? 400 : 200);
       }
     }
 
     // Direct option match without filtering
-    const match = fuzzyMatchDropdownOption(options, effectiveValue, fieldHints);
+    options = collectPromptOptions(null).filter(o => isElementVisible(o) || o.offsetHeight > 0);
+    if (!options.length) options = getDropdownOptions(dd);
+    const match = fuzzyMatchDropdownOption(options, effectiveValue, stateHints);
     if (match) {
-      clickOption(match);
-      await sleep(200);
-      closeOpenDropdowns();
-      return { success: true, selectedText: match.textContent.trim() };
+      const result = await commitOption(match);
+      if (result.success) return result;
+      // One reopen + retry helps when the first click raced Workday's portal.
+      if (isWorkday) {
+        await openDropdown();
+        await sleep(500);
+        const retryOpts = collectPromptOptions(null).filter(o => isElementVisible(o) || o.offsetHeight > 0);
+        const retryMatch = fuzzyMatchDropdownOption(retryOpts.length ? retryOpts : getDropdownOptions(dd), effectiveValue, stateHints);
+        if (retryMatch) {
+          const retryResult = await commitOption(retryMatch);
+          if (retryResult.success) return retryResult;
+        }
+      }
+      return result;
     }
 
-    closeOpenDropdowns();
+    closeOpenDropdowns({ gentle: isWorkday });
     return { success: false, reason: `no matching option for "${value}"` };
   }
 
   function clickOption(optionEl) {
+    if (isSubmitControl(optionEl)) {
+      console.warn('[JobApply] Refusing to click submit control');
+      return;
+    }
     optionEl.scrollIntoView?.({ block: 'nearest' });
     optionEl.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
     optionEl.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
@@ -973,10 +1407,32 @@
     optionEl.click();
   }
 
-  function closeOpenDropdowns() {
+  function closeOpenDropdowns(opts = {}) {
+    const gentle = !!opts.gentle;
     try {
       const active = document.activeElement;
-      if (!active || active === document.body) return;
+      if (!active || active === document.body) {
+        if (gentle) {
+          try {
+            document.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true,
+            }));
+          } catch { /* skip */ }
+        }
+        return;
+      }
+
+      if (gentle) {
+        // Workday: Tab / outside-click after option select can clear the value
+        // before the prompt commits. Escape only dismisses the open popup.
+        active.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true,
+        }));
+        active.dispatchEvent(new KeyboardEvent('keyup', {
+          key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true,
+        }));
+        return;
+      }
 
       // Strategy 1: Tab away — this is what real users do to dismiss dropdowns.
       // Frameworks (React, Angular, Workday) handle Tab to close dropdowns and move focus.
@@ -999,6 +1455,27 @@
       // Strategy 3: Blur active element
       active.blur();
     } catch { /* ignore errors in test/headless environments */ }
+  }
+
+  function promptStillOpen() {
+    try {
+      const opts = collectPromptOptions(null).filter(o => isElementVisible(o));
+      if (opts.length >= 1) return true;
+      return !!document.querySelector(
+        '[data-automation-widget*="popup"]:not([aria-hidden="true"]), [data-automation-widget*="prompt"]:not([aria-hidden="true"])',
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  async function waitForControlValue(el, values, attempts = 8, delayMs = 120) {
+    const targets = (Array.isArray(values) ? values : [values]).filter(Boolean);
+    for (let i = 0; i < attempts; i++) {
+      if (targets.some(v => controlDisplaysValue(el, v))) return true;
+      await sleep(delayMs);
+    }
+    return targets.some(v => controlDisplaysValue(el, v));
   }
 
   // ─── Typeahead handling ────────────────────────────────────
@@ -1052,7 +1529,8 @@
       }
 
       // Last resort: select first option if it seems reasonable
-      if (wait >= 4 && options.length <= 3) {
+      // Never for phone-country — virtualized lists often show Albania first.
+      if (wait >= 4 && options.length <= 3 && !hintsLookLikePhoneCountry(fieldHints)) {
         clickOption(options[0]);
         await sleep(200);
         closeOpenDropdowns();
@@ -1060,18 +1538,19 @@
       }
     }
 
-    // Try keyboard navigation as last resort (ArrowDown + Enter)
-    try {
-      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', bubbles: true }));
-      await sleep(100);
-      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
-      await sleep(100);
-      closeOpenDropdowns();
-      // Check if value changed (something was selected)
-      if (el.value !== value && el.value !== '') {
-        return { success: true, selectedText: el.value, keyboard: true };
-      }
-    } catch { /* skip */ }
+    // Keyboard fallback is unsafe for phone-country widgets.
+    if (!hintsLookLikePhoneCountry(fieldHints)) {
+      try {
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', bubbles: true }));
+        await sleep(100);
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+        await sleep(100);
+        closeOpenDropdowns();
+        if (el.value !== value && el.value !== '') {
+          return { success: true, selectedText: el.value, keyboard: true };
+        }
+      } catch { /* skip */ }
+    }
 
     closeOpenDropdowns();
     return { success: false };
@@ -1139,7 +1618,7 @@
 
       return true;
     } catch (err) {
-      console.warn('[CareerPulse] fillRichText failed:', err.message);
+      console.warn('[JobApply] fillRichText failed:', err.message);
       return false;
     }
   }
@@ -1248,8 +1727,32 @@
         return { selector, success: false, reason: 'element not found' };
       }
 
+      if (isSubmitControl(el)) {
+        return { selector, success: true, skipped: true, reason: 'refusing to interact with submit control' };
+      }
+
       // Compute field hints once for normalization throughout this fill
       const fieldHints = getFieldHints(el);
+      const phoneCountryControl = isPhoneCountryCodeField(el) || isSelectCountryInPhoneWidget(el);
+      if (phoneCountryControl) {
+        fieldHints.label = `${fieldHints.label || ''} phone country code`.trim();
+        fieldHints.fieldKind = 'phone_country';
+      }
+
+      // Stage 1 fail-safe: never autofill phone-country / dial-code controls.
+      // Wrong Albania (+355) is worse than leaving +1 for the user.
+      if (phoneCountryControl || action === 'select_dropdown_safe') {
+        // select_dropdown_safe was historically phone-country-only; still refuse.
+        if (phoneCountryControl || /phone.?country|country.?code|dial.?code/i.test(`${label || ''} ${fieldHints.label}`)) {
+          return {
+            selector,
+            success: true,
+            skipped: true,
+            reason: 'phone_country_manual_review',
+            action: 'skip',
+          };
+        }
+      }
 
       // Guard: skip phone extension fields when AI sends a phone number
       if (isPhoneExtensionField(el)) {
@@ -1260,12 +1763,23 @@
       }
 
       // Guard: skip phone-number-like values for fields not identified as phone
-      if (!isPhoneField(el) && !isPhoneCountryCodeField(el) && looksLikePhoneNumber(value)) {
+      if (!isPhoneField(el) && !phoneCountryControl && looksLikePhoneNumber(value)) {
         return { selector, success: true, skipped: true, reason: 'value looks like phone number for non-phone field' };
       }
 
       // Capture original value before filling (for undo support)
-      const origVal = el.value || el.textContent?.trim() || '';
+      const origVal = getCurrentFieldValue(el);
+
+      // Stage 1: never overwrite nonempty fields unless explicitly enabled
+      if (!overwriteExistingFields && action !== 'skip' && !isEffectivelyEmpty(origVal)) {
+        return {
+          selector,
+          success: true,
+          skipped: true,
+          reason: 'nonempty field protected',
+          alreadyCompleted: true,
+        };
+      }
       const fieldLabel = label || findLabel(el) || el.name || el.id || selector;
       originalValues.set(selector, {
         originalValue: origVal,
@@ -1305,15 +1819,15 @@
 
           // 3. Phone formatting — normalize and format before text fill
           let fillValue = value;
-          if (isPhoneField(el) && window.__cpNormalize) {
+          if (isPhoneField(el) && window.__jaNormalize) {
             try {
-              let digits = window.__cpNormalize.normalizePhone(value);
+              let digits = window.__jaNormalize.normalizePhone(value);
               // Strip leading country code if a separate country code dropdown exists nearby
               if (digits && digits.length === 11 && digits[0] === '1' && hasNearbyPhoneCountryCode(el)) {
                 digits = digits.slice(1);
               }
               if (digits) {
-                fillValue = window.__cpNormalize.formatPhoneLike(digits, fieldHints.placeholder);
+                fillValue = window.__jaNormalize.formatPhoneLike(digits, fieldHints.placeholder);
               }
             } catch { /* skip, use original value */ }
           }
@@ -1407,7 +1921,10 @@
           // Handle native <select>
           if (el.tagName === 'SELECT') {
             const options = Array.from(el.options || []).map(o => ({ value: o.value, text: o.textContent }));
-            const idx = fuzzyMatchOption(options, value, fieldHints);
+            const selectHints = isPhoneCountryCodeField(el)
+              ? { ...fieldHints, label: `${fieldHints.label || ''} phone country code`.trim() }
+              : fieldHints;
+            const idx = fuzzyMatchOption(options, value, selectHints);
             if (idx >= 0) {
               el.selectedIndex = idx;
               dispatchEvents(el, ['change', 'blur']);
@@ -1417,7 +1934,10 @@
           }
 
           // Handle custom dropdown (div-based)
-          const customResult = await handleCustomDropdown(el, value, fieldHints);
+          const dropdownHints = isPhoneCountryCodeField(el)
+            ? { ...fieldHints, label: `${fieldHints.label || ''} phone country code`.trim() }
+            : fieldHints;
+          const customResult = await handleCustomDropdown(el, value, dropdownHints);
           if (customResult.success) {
             return { selector, success: true, action, selectedText: customResult.selectedText };
           }
@@ -1452,14 +1972,18 @@
             }
 
             // Pass 3: normalization via lookup tables (handles synonyms like Caucasian→White)
-            if (window.__cpNormalize) {
+            if (window.__jaNormalize) {
               try {
-                const norm = window.__cpNormalize;
+                const norm = window.__jaNormalize;
                 const hints = fieldHints || {};
                 const hintValues = [hints.label, hints.name, hints.id, hints.placeholder].filter(Boolean);
                 const tables = norm.detectFieldCategory(hintValues);
+                // Avoid country/misc tables mistaking "no" for Norway on yes/no radios.
                 const radioLabels = Array.from(radios).map(r => findLabel(r).trim());
-                const normIdx = norm.normalizedMatch(radioLabels, value, tables.length ? tables : undefined);
+                const simpleYesNo = radioLabels.every(l => /^(yes|no)$/i.test(l.trim()));
+                const normIdx = simpleYesNo
+                  ? -1
+                  : norm.normalizedMatch(radioLabels, value, tables.length ? tables : undefined);
                 if (normIdx >= 0) {
                   radios[normIdx].click();
                   return { selector, success: true, action, selectedValue: radios[normIdx].value };
@@ -1467,8 +1991,8 @@
               } catch { /* normalization unavailable */ }
             }
           }
-          el.click();
-          return { selector, success: true, action };
+          // Do not click the unresolved element — that often selects the wrong radio.
+          return { selector, success: false, reason: `no matching radio for "${value}"` };
         }
 
         case 'check_checkbox': {
@@ -1555,7 +2079,7 @@
 
     const text = document.createElement('span');
     text.className = `${PREFIX}-upload-helper-text`;
-    text.textContent = `${label} ready -- download from CareerPulse, then upload here`;
+    text.textContent = `${label} ready -- download from JobApply, then upload here`;
 
     const btn = document.createElement('button');
     btn.className = `${PREFIX}-upload-helper-btn`;
@@ -1567,7 +2091,7 @@
       e.stopPropagation();
 
       if (!currentJobId) {
-        text.textContent = 'No job ID available. Open this page from CareerPulse first.';
+        text.textContent = 'No job ID available. Open this page from JobApply first.';
         return;
       }
 
@@ -1621,19 +2145,33 @@
     const totalMappable = mappings.filter(m => m.action !== 'skip').length;
     const failedSelectors = new Set();
     const atsFormRoot = atsAdapter?.getFormRoot?.(document) || null;
+    const mappingBySelector = Object.fromEntries(
+      mappings.filter(m => m.selector).map(m => [m.selector, m])
+    );
 
     for (let iteration = 0; iteration < 2; iteration++) {
       const currentMappings = iteration === 0 ? mappings : await getNewMappings();
       if (!currentMappings || !currentMappings.length) break;
 
       for (const mapping of currentMappings) {
-        if (mapping.action === 'skip') continue;
         if (failedSelectors.has(mapping.selector) && iteration > 0) continue;
+
+        if (mapping.action === 'skip') {
+          results.push({
+            selector: mapping.selector,
+            success: true,
+            skipped: true,
+            reason: mapping.reason || 'skipped',
+            action: 'skip',
+            mapping,
+          });
+          continue;
+        }
 
         let result;
         try {
           result = await withTimeout(
-            fillField(mapping.selector, mapping.value, mapping.action, mapping.confidence, mapping.label),
+            fillField(mapping.selector, mapping.value, mapping.action, mapping.confidence, mapping.label || mapping.field_label),
             FIELD_TIMEOUT_MS,
             `filling ${mapping.selector}`
           );
@@ -1641,6 +2179,7 @@
           result = { selector: mapping.selector, success: false, reason: err.message };
         }
 
+        result.mapping = mapping;
         results.push(result);
 
         // Close any dropdowns left open by the previous fill
@@ -1677,7 +2216,11 @@
     // After filling, detect file upload fields that need user help
     detectFileUploadFields();
 
-    return { results, filledCount, total: totalMappable };
+    const fillReport = window.__jaAtsAdapters?.buildFillReport
+      ? window.__jaAtsAdapters.buildFillReport(results, mappingBySelector)
+      : null;
+
+    return { results, filledCount, total: totalMappable, fillReport, mappingBySelector };
   }
 
   async function getNewMappings() {
@@ -1692,7 +2235,7 @@
         return response.data.mappings;
       }
     } catch (err) {
-      console.warn('[CareerPulse] Re-analysis failed:', err?.message || err);
+      console.warn('[JobApply] Re-analysis failed:', err?.message || err);
     }
     return null;
   }
@@ -1709,10 +2252,10 @@
     overlayEl.id = `${PREFIX}-overlay`;
     overlayEl.innerHTML = `
       <div class="${PREFIX}-overlay-header">
-        <span class="${PREFIX}-overlay-title">CareerPulse</span>
+        <span class="${PREFIX}-overlay-title">JobApply – Application Copilot</span>
         <div class="${PREFIX}-overlay-actions">
-          <button class="${PREFIX}-overlay-minimize" title="Minimize">&#x2013;</button>
-          <button class="${PREFIX}-overlay-close" title="Close">&#x2715;</button>
+          <button type="button" class="${PREFIX}-overlay-minimize" title="Minimize" aria-label="Minimize">&#x2013;</button>
+          <button type="button" class="${PREFIX}-overlay-close" title="Close" aria-label="Close">&#x2715;</button>
         </div>
       </div>
       <div class="${PREFIX}-overlay-body">
@@ -1726,9 +2269,23 @@
       removeOverlay();
     });
 
-    overlayEl.querySelector(`.${PREFIX}-overlay-minimize`).addEventListener('click', () => {
+    const minBtn = overlayEl.querySelector(`.${PREFIX}-overlay-minimize`);
+    minBtn.addEventListener('click', () => {
       const body = overlayEl.querySelector(`.${PREFIX}-overlay-body`);
-      body.style.display = body.style.display === 'none' ? 'block' : 'none';
+      const collapsed = body.style.display === 'none';
+      if (collapsed) {
+        body.style.display = '';
+        minBtn.innerHTML = '&#x2013;';
+        minBtn.title = 'Minimize';
+        minBtn.setAttribute('aria-label', 'Minimize');
+        overlayEl.classList.remove(`${PREFIX}-overlay-collapsed`);
+      } else {
+        body.style.display = 'none';
+        minBtn.innerHTML = '&#x25BC;'; // chevron: expand again
+        minBtn.title = 'Expand';
+        minBtn.setAttribute('aria-label', 'Expand');
+        overlayEl.classList.add(`${PREFIX}-overlay-collapsed`);
+      }
     });
 
     // Drag support on header
@@ -1988,7 +2545,7 @@
     promptEl.innerHTML = `
       <div class="${PREFIX}-learn-modal">
         <div class="${PREFIX}-learn-header">
-          <h3 class="${PREFIX}-learn-title">Save ${newData.length} new answer${newData.length > 1 ? 's' : ''} to CareerPulse?</h3>
+          <h3 class="${PREFIX}-learn-title">Save ${newData.length} new answer${newData.length > 1 ? 's' : ''} to JobApply?</h3>
           <button class="${PREFIX}-learn-close" aria-label="Close">\u00d7</button>
         </div>
         <div class="${PREFIX}-learn-list">
@@ -2095,10 +2652,10 @@
       const pageUrl = location.href;
       const result = await chrome.runtime.sendMessage({ type: 'markAppliedByUrl', url: pageUrl });
       if (result && result.ok) {
-        showToast('Job marked as applied in CareerPulse', 'success');
+        showToast('Job marked as applied in JobApply', 'success');
       }
     } catch (err) {
-      console.warn('[CareerPulse] autoTrackApplied failed:', err.message);
+      console.warn('[JobApply] autoTrackApplied failed:', err.message);
     }
   }
 
@@ -2180,7 +2737,7 @@
       // Auto-track this job as applied
       autoTrackApplied();
     } catch (err) {
-      console.warn('[CareerPulse] handleSubmission failed:', err.message);
+      console.warn('[JobApply] handleSubmission failed:', err.message);
     }
   }
 
@@ -2232,7 +2789,7 @@
       if (!qaResult || !qaResult.ok || !Array.isArray(qaResult.data)) return mappings;
       qaEntries = qaResult.data;
     } catch (err) {
-      console.warn('[CareerPulse] applyCustomQA failed:', err.message);
+      console.warn('[JobApply] applyCustomQA failed:', err.message);
       return mappings;
     }
 
@@ -2250,18 +2807,179 @@
     });
   }
 
+  // ─── Review-before-fill ──────────────────────────────────────
+
+  function fieldLooksLikePhone(mapping) {
+    const text = `${mapping.field_label || ''} ${mapping.label || ''} ${mapping.selector || ''}`.toLowerCase();
+    return /\bphone\b|\bmobile\b|\bcell\b|\btelephone\b|\btel\b/.test(text)
+      || /\[type=["']?tel["']?\]/.test(mapping.selector || '');
+  }
+
+  function valueLooksLikePhone(value) {
+    const digits = String(value ?? '').replace(/\D/g, '');
+    return digits.length >= 10 && digits.length <= 15;
+  }
+
+  /** Bucket duplicate DOM controls into one logical proposal (City, Phone, …). */
+  function mappingLogicalKey(m) {
+    if (!m || m.action === 'skip') return null;
+    const text = `${m.field_label || ''} ${m.label || ''} ${m.selector || ''}`.toLowerCase();
+    // Keep SMS / opt-in / country-code / device-type out of the phone-number bucket.
+    if (/\bphone[-_]?sms|sms[-_]?opt|opt[-_]?in|text[-_]?me\b/.test(text)) return 'phone_sms_opt_in';
+    if (/\b(phone.?country|country.?phone|country.?code|dial.?code|phone.?code)\b/.test(text)) {
+      return 'phone_country';
+    }
+    if (/\b(phone.?device|device.?type)\b/.test(text)) return 'phone_device';
+    if (/\b(phone|mobile|cell|telephone)\b/.test(text) || /\[type=["']?tel["']?\]/.test(m.selector || '')) {
+      return 'phone';
+    }
+    if (/\bcity\b/.test(text)) return 'city';
+    // Prefer label/name only for contact-email checkbox — selectors like
+    // input[name="contact_pref"][value="email"] must not share this bucket.
+    const labelName = `${m.field_label || ''} ${m.label || ''}`.toLowerCase();
+    if (
+      /contact_by_email/.test(text)
+      || /\bcontact\s*me\s*by\s*email\b/.test(labelName)
+      || /\bemail\s*me\s*about\b/.test(labelName)
+    ) {
+      return 'contact_by_email';
+    }
+    if (/\b(e-?mail|email)\b/.test(labelName) || /\[type=["']?email["']?\]/.test(m.selector || '')) {
+      return 'email';
+    }
+    if (/\bfirst\s*name\b/.test(text)) return 'first_name';
+    if (/\bmiddle\s*name\b/.test(text)) return 'middle_name';
+    if (/\blast\s*name\b/.test(text)) return 'last_name';
+    if (/\b(state|province)\b/.test(text) || /stateprovince/.test(text)) return 'state';
+    if (/\b(postal|zip)\b/.test(text)) return 'postal_code';
+    return null;
+  }
+
+  /** Drop phone numbers mapped onto GPA / essay / address / etc.; collapse duplicate proposals. */
+  function sanitizeMappings(mappings) {
+    if (!Array.isArray(mappings)) return [];
+    const filtered = mappings.filter((m) => {
+      if (!m || m.action === 'skip') return true;
+      if (valueLooksLikePhone(m.value) && !fieldLooksLikePhone(m)) {
+        debugLog('Dropped phone-like value on non-phone field', m.selector, m.field_label);
+        return false;
+      }
+      return true;
+    });
+
+    const prefer = (a, b) => {
+      const ca = a.confidence == null ? 1 : a.confidence;
+      const cb = b.confidence == null ? 1 : b.confidence;
+      if (ca !== cb) return ca >= cb ? a : b;
+      return (a.selector || '').length <= (b.selector || '').length ? a : b;
+    };
+
+    const skips = [];
+    const winners = new Map(); // dedupe key → mapping
+    const order = [];
+
+    for (const m of filtered) {
+      if (!m) continue;
+      if (m.action === 'skip') {
+        skips.push(m);
+        continue;
+      }
+      const logical = mappingLogicalKey(m);
+      const key = logical
+        || (m.selector ? `sel:${m.selector}` : `row:${order.length}:${m.field_label || ''}:${m.value || ''}`);
+      if (winners.has(key)) {
+        const prev = winners.get(key);
+        winners.set(key, prefer(prev, m));
+        debugLog('Deduped duplicate mapping', key, prev.selector, 'vs', m.selector);
+      } else {
+        winners.set(key, m);
+        order.push(key);
+      }
+    }
+
+    return [...skips, ...order.map((k) => winners.get(k))];
+  }
+
+  function reviewMappingsBeforeFill(mappings) {
+    if (window.__jaSkipReview || window.__jaAutofillTest) {
+      return Promise.resolve(mappings);
+    }
+
+    return new Promise((resolve) => {
+      currentState = 'review';
+      createOverlay();
+      overlayEl.classList.add(`${PREFIX}-overlay-review`);
+      const body = overlayEl.querySelector(`.${PREFIX}-overlay-body`);
+      const fillable = mappings.filter(m => m.action && m.action !== 'skip');
+      const reviewCount = fillable.filter(m => (m.confidence || 1) < 0.8).length;
+      const shown = fillable.slice(0, 25);
+      const extra = fillable.length - shown.length;
+      // Actions sit outside the scrollable list so Fill/Cancel stay visible.
+      body.innerHTML = `
+        <div class="${PREFIX}-review-panel">
+          <p><strong>Review ${fillable.length} proposed fill${fillable.length === 1 ? '' : 's'}</strong></p>
+          <p class="${PREFIX}-review-meta">${reviewCount} need review (confidence &lt; 0.8). Nonempty fields stay protected.</p>
+          <label class="${PREFIX}-review-overwrite">
+            <input type="checkbox" class="${PREFIX}-overwrite-toggle" ${overwriteExistingFields ? 'checked' : ''}/>
+            Overwrite existing field values
+          </label>
+          <ul class="${PREFIX}-review-list">
+            ${shown.map(m => {
+              const conf = m.confidence == null ? 1 : m.confidence;
+              const cls = conf < 0.8 ? 'yellow' : 'green';
+              const label = (m.field_label || m.label || m.selector || '').toString().slice(0, 60);
+              const val = String(m.value ?? '').slice(0, 80);
+              return `<li class="${PREFIX}-review-item ${cls}"><span class="${PREFIX}-dot ${cls}"></span><strong>${escapeHtml(label)}</strong>: ${escapeHtml(val)} <em>(${conf.toFixed(2)})</em></li>`;
+            }).join('')}
+          </ul>
+          ${extra > 0 ? `<p class="${PREFIX}-review-meta">+${extra} more not shown</p>` : ''}
+        </div>
+        <div class="${PREFIX}-review-actions">
+          <button type="button" class="${PREFIX}-cancel-btn">Cancel — don't fill</button>
+          <button type="button" class="${PREFIX}-approve-btn">Fill approved fields</button>
+        </div>
+      `;
+
+      const overwriteToggle = body.querySelector(`.${PREFIX}-overwrite-toggle`);
+      overwriteToggle?.addEventListener('change', (e) => {
+        overwriteExistingFields = !!e.target.checked;
+        try { chrome.storage.local.set({ overwriteExistingFields }); } catch { /* ignore */ }
+      });
+
+      const finish = (result) => {
+        overlayEl?.classList.remove(`${PREFIX}-overlay-review`);
+        resolve(result);
+      };
+      body.querySelector(`.${PREFIX}-approve-btn`).addEventListener('click', () => {
+        finish(mappings);
+      });
+      body.querySelector(`.${PREFIX}-cancel-btn`).addEventListener('click', () => {
+        finish(null);
+      });
+    });
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
   // ─── Main fill flow ──────────────────────────────────────────
 
   const OVERALL_TIMEOUT_MS = 90000; // Max time for entire fill flow
 
   async function startFillFlow() {
+    await loadSafetySettings();
     try {
       // Remove the auto-detection badge if present
       removeBadge();
 
-      // If we're in the top frame and there are ATS embed/iframe signals, bail
-      // silently — the iframe's content script handles filling.
-      if (!isInIframe() && (hasAtsIframe() || hasAtsEmbedContainer() || hasAtsUrlParam())) {
+      // Real ATS iframe owns the form and this frame has no fields — no-op here.
+      // Popup/badge/shortcut already broadcast startFill to all frames.
+      if (shouldDeferToAtsIframe()) {
         return;
       }
 
@@ -2281,8 +2999,8 @@
       }
 
       // Detect ATS-specific adapter
-      const atsAdapter = window.__cpAtsAdapters
-        ? window.__cpAtsAdapters.detectATS(location.href, document)
+      const atsAdapter = window.__jaAtsAdapters
+        ? window.__jaAtsAdapters.detectATS(location.href, document)
         : null;
 
       if (atsAdapter) {
@@ -2290,6 +3008,11 @@
       } else {
         showOverlay('Analyzing form...');
       }
+
+      // Analyze under timeout. Review waits outside the timeout so a long review
+      // panel does not abort the fill.
+      let mappings = null;
+      let analyzeAborted = false;
 
       await withTimeout((async () => {
         preSubmitValues = captureFormValues();
@@ -2305,7 +3028,7 @@
           try {
             adapterFields = atsAdapter.getExtraFields(document);
           } catch (err) {
-            console.warn('[CareerPulse] ATS getExtraFields failed:', err.message);
+            console.warn('[JobApply] ATS getExtraFields failed:', err.message);
           }
         }
 
@@ -2316,6 +3039,16 @@
         // confusing overlays in tracking/footer/privacy iframes
         if (isInIframe() && !structuredFields.length) {
           removeOverlay();
+          analyzeAborted = true;
+          return;
+        }
+
+        if (!structuredFields.length && !adapterFields.length) {
+          updateOverlay(
+            'done',
+            'No form fields detected on this page. Open the application form, then try Fill again.'
+          );
+          analyzeAborted = true;
           return;
         }
 
@@ -2323,7 +3056,7 @@
         try {
           structuredFields = enrichFieldHints(structuredFields);
         } catch (err) {
-          console.warn('[CareerPulse] enrichFieldHints failed:', err.message);
+          console.warn('[JobApply] enrichFieldHints failed:', err.message);
         }
 
         // Apply ATS-specific field enhancement if adapter provides it
@@ -2331,15 +3064,16 @@
           try {
             structuredFields = atsAdapter.enhanceExtraction(structuredFields);
           } catch (err) {
-            console.warn('[CareerPulse] ATS enhanceExtraction failed:', err.message);
+            console.warn('[JobApply] ATS enhanceExtraction failed:', err.message);
           }
         }
 
-        // Debug: log extracted fields so we can diagnose fill issues
-        console.log('[CareerPulse] Extracted fields:', structuredFields.map(f => ({
-          selector: f.selector, tag: f.tag, type: f.type, label: f.label,
-          name: f.name, role: f.role, currentValue: f.currentValue,
-          hasOptions: !!(f.options && f.options.length),
+        // Debug only (redacted): never log raw profile/answer values by default
+        debugLog('Extracted fields:', structuredFields.map(f => ({
+          selector: f.selector, tag: f.tag, type: f.type,
+          label: f.label ? String(f.label).slice(0, 40) : '',
+          name: f.name, role: f.role,
+          currentValue: f.currentValue ? '[set]' : '[empty]',
           optionCount: f.options?.length || 0,
         })));
 
@@ -2362,36 +3096,93 @@
           );
         } catch (err) {
           updateOverlay('error', `Timed out analyzing form. Is the server running?`);
+          analyzeAborted = true;
           return;
         }
 
-        console.log('[CareerPulse] Analyze response:', JSON.stringify(response?.data?.mappings || [], null, 2));
+        debugLog('Analyze mapping count:', (response?.data?.mappings || []).length,
+          (response?.data?.mappings || []).map(m => ({
+            selector: m.selector,
+            action: m.action,
+            confidence: m.confidence,
+            value: redactValue(m.value),
+          })));
 
         if (!response || !response.ok) {
           updateOverlay('error', `Error: ${response?.error || 'Analysis failed'}`);
+          analyzeAborted = true;
           return;
         }
 
-        let mappings = response.data?.mappings || [];
+        mappings = response.data?.mappings || [];
+        const analyzeError = response.data?.error || '';
+
         if (!mappings.length) {
-          updateOverlay('done', 'No fillable fields found');
+          updateOverlay(
+            'done',
+            analyzeError
+              ? `${analyzeError}. No profile fields could be matched — check Settings → Profile and that Ollama is running.`
+              : 'No fillable fields found'
+          );
+          analyzeAborted = true;
           return;
+        }
+
+        if (analyzeError) {
+          showOverlay(`${analyzeError} — prepared ${mappings.length} matched profile field(s) for review...`);
         }
 
         // Post-process: fill skipped fields that match custom Q&A
-        mappings = await applyCustomQA(mappings);
+        mappings = sanitizeMappings(await applyCustomQA(mappings));
+        if (!mappings.length) {
+          updateOverlay('done', 'No reliable field matches after filtering. Fill remaining fields manually.');
+          analyzeAborted = true;
+        }
+      })(), OVERALL_TIMEOUT_MS, 'Autofill analysis');
 
+      if (analyzeAborted || !mappings?.length) {
+        return;
+      }
+
+      // Stage 1: review-before-fill (tests may set __jaSkipReview) — not timed
+      const approved = await reviewMappingsBeforeFill(mappings);
+      if (!approved) {
+        updateOverlay('done', 'Fill cancelled — no fields were changed.');
+        currentState = 'idle';
+        return;
+      }
+      mappings = approved;
+
+      await withTimeout((async () => {
         currentState = 'filling';
         const result = await fillForm(mappings, atsAdapter);
 
         const failedCount = result.results.filter(r => !r.success).length;
         let statusMsg = `Filled ${result.filledCount}/${result.total} fields.`;
-        if (failedCount > 0) {
+        if (result.fillReport && window.__jaAtsAdapters?.formatFillReport) {
+          statusMsg = window.__jaAtsAdapters.formatFillReport(result.fillReport);
+        } else if (failedCount > 0) {
           statusMsg += ` ${failedCount} field${failedCount > 1 ? 's' : ''} need manual review.`;
         } else {
           statusMsg += ' Review highlighted fields.';
         }
         updateOverlay('done', statusMsg);
+        // Expose structured report on the overlay for acceptance tests (no PII values).
+        try {
+          if (overlayEl && result.fillReport) {
+            const safeResults = (result.results || []).map(r => ({
+              selector: r.selector,
+              success: !!r.success,
+              skipped: !!r.skipped,
+              alreadyCompleted: !!r.alreadyCompleted,
+              reason: r.reason || '',
+              action: r.action || r.mapping?.action || '',
+              field_label: r.mapping?.field_label || r.mapping?.label || '',
+            }));
+            overlayEl.dataset.fillReport = JSON.stringify(result.fillReport);
+            overlayEl.dataset.fillResults = JSON.stringify(safeResults);
+          }
+        } catch { /* ignore */ }
 
         preSubmitValues = captureFormValues();
         detectSubmission();
@@ -2402,7 +3193,7 @@
         } else {
           startMultiPageTracking(result.filledCount);
         }
-      })(), OVERALL_TIMEOUT_MS, 'Autofill operation');
+      })(), OVERALL_TIMEOUT_MS, 'Autofill fill');
     } catch (err) {
       if (err.message && err.message.includes('timed out')) {
         updateOverlay('error', 'Autofill timed out. The operation took too long — please try again or fill remaining fields manually.');
@@ -2451,6 +3242,22 @@
 
   function isInIframe() {
     try { return window.self !== window.top; } catch { return true; }
+  }
+
+  /**
+   * Only defer to a child ATS iframe when a real iframe exists and this
+   * document has no local fillable fields. Do NOT defer merely because
+   * #grnhse_app / gh_jid is present — Greenhouse often mounts the form in
+   * the same document inside #grnhse_app.
+   */
+  function shouldDeferToAtsIframe() {
+    if (isInIframe()) return false;
+    if (!hasAtsIframe()) return false;
+    try {
+      const localFields = extractFormData(document);
+      if (localFields && localFields.length > 0) return false;
+    } catch { /* defer if extraction fails */ }
+    return true;
   }
 
   // ─── Application form auto-detection ────────────────────────
@@ -2563,37 +3370,35 @@
     if (badgeEl) return;
 
     badgeEl = document.createElement('div');
-    badgeEl.className = 'cp-auto-badge' + (confidence === 'medium' ? ' cp-badge-medium' : '');
+    badgeEl.className = 'ja-auto-badge' + (confidence === 'medium' ? ' ja-badge-medium' : '');
     badgeEl.innerHTML = `
-      <span class="cp-auto-badge-main">
-        <svg class="cp-auto-badge-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <span class="ja-auto-badge-main">
+        <svg class="ja-auto-badge-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
           <polyline points="14 2 14 8 20 8"/>
           <line x1="16" y1="13" x2="8" y2="13"/>
           <line x1="16" y1="17" x2="8" y2="17"/>
           <polyline points="10 9 9 9 8 9"/>
         </svg>
-        Fill with CareerPulse
+        Fill with JobApply
       </span>
-      <button class="cp-auto-badge-dismiss" title="Dismiss">\u00d7</button>
+      <button class="ja-auto-badge-dismiss" title="Dismiss">\u00d7</button>
     `;
 
     document.body.appendChild(badgeEl);
 
     // Click main area to start fill
-    badgeEl.querySelector('.cp-auto-badge-main').addEventListener('click', () => {
+    badgeEl.querySelector('.ja-auto-badge-main').addEventListener('click', () => {
       removeBadge();
-      // If we're on a parent page with an ATS iframe, broadcast startFill via
-      // the background script so the iframe's content script picks it up.
-      if (!isInIframe() && (hasAtsIframe() || hasAtsEmbedContainer() || hasAtsUrlParam())) {
-        chrome.runtime.sendMessage({ type: 'broadcastStartFill' });
+      if (shouldDeferToAtsIframe()) {
+        chrome.runtime.sendMessage({ type: 'broadcastStartFill' }).catch(() => {});
       } else {
         startFillFlow();
       }
     });
 
     // Dismiss button: suppress for this hostname
-    badgeEl.querySelector('.cp-auto-badge-dismiss').addEventListener('click', async (e) => {
+    badgeEl.querySelector('.ja-auto-badge-dismiss').addEventListener('click', async (e) => {
       e.stopPropagation();
       const host = window.location.hostname;
       try {
@@ -2606,7 +3411,7 @@
           await chrome.storage.local.set({ dismissedHosts: hosts });
         }
       } catch (err) {
-        console.warn('[CareerPulse] Failed to save dismissed host:', err.message);
+        console.warn('[JobApply] Failed to save dismissed host:', err.message);
       }
       removeBadge();
     });
@@ -2622,7 +3427,7 @@
       if (result.dismissedHosts.includes(host)) return;
       showBadge(confidence);
     } catch (err) {
-      console.warn('[CareerPulse] Failed to check dismissed hosts:', err.message);
+      console.warn('[JobApply] Failed to check dismissed hosts:', err.message);
     }
   }
 
@@ -2826,8 +3631,13 @@
   }
 
   async function startQueueFill(message) {
-    // If we're the parent frame with an ATS embed, skip — the iframe handles filling
-    if (!isInIframe() && (hasAtsIframe() || hasAtsEmbedContainer() || hasAtsUrlParam())) {
+    await loadSafetySettings();
+    if (!enableQueueFill && !window.__jaAutofillTest) {
+      console.info('[JobApply] Queue fill disabled by default (enableQueueFill=false)');
+      return;
+    }
+
+    if (shouldDeferToAtsIframe()) {
       return;
     }
 
@@ -3028,8 +3838,8 @@
 
     const btn = document.createElement('button');
     btn.className = `${OVERLAY_PREFIX}-save-btn`;
-    btn.textContent = 'Save to CareerPulse';
-    btn.title = 'Save this job to CareerPulse';
+    btn.textContent = 'Save to JobApply';
+    btn.title = 'Save this job to JobApply';
 
     btn.addEventListener('click', async (e) => {
       e.preventDefault();
@@ -3088,7 +3898,7 @@
 
     const numScore = Math.round(Number(score));
     badge.textContent = `${numScore}%`;
-    badge.title = `CareerPulse match score: ${numScore}%`;
+    badge.title = `JobApply match score: ${numScore}%`;
 
     badge.classList.remove(
       `${OVERLAY_PREFIX}-score-high`,
@@ -3157,17 +3967,22 @@
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  // Run job board overlay detection (separate from the auto-fill badge)
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initJobBoardOverlay);
-  } else {
-    setTimeout(initJobBoardOverlay, 300);
+  // Job board overlay is off by default in JobApply Stage 1 (review-first product).
+  async function maybeInitJobBoardOverlay() {
+    await loadSafetySettings();
+    if (!enableJobBoardOverlay) return;
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initJobBoardOverlay);
+    } else {
+      setTimeout(initJobBoardOverlay, 300);
+    }
   }
+  maybeInitJobBoardOverlay();
 
   // ─── Export for testing ────────────────────────────────────────
 
-  if (typeof window !== 'undefined' && window.__cpAutofillTest) {
-    window.__cpAutofillTestAPI = {
+  if (typeof window !== 'undefined' && window.__jaAutofillTest) {
+    window.__jaAutofillTestAPI = {
       extractFormData,
       resolveElement,
       fillField,
@@ -3232,6 +4047,8 @@
       processJobCards,
       initJobBoardOverlay,
       JOB_BOARD_CONFIGS,
+      get enableJobBoardOverlay() { return enableJobBoardOverlay; },
+      set enableJobBoardOverlay(v) { enableJobBoardOverlay = !!v; },
 
       // Queue fill API
       showQueueBanner,
@@ -3240,6 +4057,21 @@
       startQueueFill,
       get queueContext() { return queueContext; },
       set queueContext(v) { queueContext = v; },
+      get enableQueueFill() { return enableQueueFill; },
+      set enableQueueFill(v) { enableQueueFill = !!v; },
+
+      // Safety flags
+      get overwriteExistingFields() { return overwriteExistingFields; },
+      set overwriteExistingFields(v) { overwriteExistingFields = !!v; },
+      isEffectivelyEmpty,
+      isSubmitControl,
+      reviewMappingsBeforeFill,
+      sanitizeMappings,
+      getNearbyHeading,
+      matchPhoneCountryCodeOption,
+      extractDialCode,
+      isSelectCountryInPhoneWidget,
+      findSharedPhoneComponent,
 
       // Timeout / flow internals for testing
       get API_TIMEOUT_MS() { return API_TIMEOUT_MS; },

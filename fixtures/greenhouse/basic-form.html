@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Greenhouse Application</title></head>
+<body>
+  <form id="app_form">
+    <label for="first_name">First Name</label>
+    <input id="first_name" name="first_name" type="text" />
+    <label for="last_name">Last Name</label>
+    <input id="last_name" name="last_name" type="text" />
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" value="existing@example.com" />
+    <label for="phone">Phone</label>
+    <input id="phone" name="phone" type="tel" />
+
+    <fieldset>
+      <legend>Preferred contact</legend>
+      <label><input type="radio" name="contact_pref" value="email" checked /> Email</label>
+      <label><input type="radio" name="contact_pref" value="phone" /> Phone</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Requires sponsorship?</legend>
+      <label><input type="radio" name="sponsorship" value="yes" /> Yes</label>
+      <label><input type="radio" name="sponsorship" value="no" /> No</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Shirt size</legend>
+      <label><input type="radio" name="shirt_size" value="s" /> S</label>
+      <label><input type="radio" name="shirt_size" value="m" /> M</label>
+    </fieldset>
+
+    <label><input type="checkbox" id="contact_by_email" name="contact_by_email" /> Contact me by email</label>
+    <label><input type="checkbox" id="newsletter" name="newsletter" checked /> Subscribe to updates</label>
+    <label><input type="checkbox" id="marketing_opt_in" name="marketing_opt_in" /> Send me marketing offers</label>
+    <label><input type="checkbox" id="gh-terms" name="terms" /> I agree to the terms of service</label>
+
+    <label for="race">Race / Ethnicity (EEO)</label>
+    <select id="race" name="race" aria-label="Race / Ethnicity">
+      <option value="">Decline to self-identify</option>
+      <option value="white">White</option>
+      <option value="asian">Asian</option>
+    </select>
+
+    <input type="submit" id="gh-submit" value="Submit Application" />
+  </form>
+  <script>
+    window.__submitEventCount = 0;
+    window.__submitButtonClickCount = 0;
+    window.__requestSubmitCount = 0;
+    const form = document.getElementById('app_form');
+    const submitButton = document.getElementById('gh-submit');
+    form.addEventListener('submit', (event) => {
+      window.__submitEventCount += 1;
+      event.preventDefault();
+    });
+    submitButton.addEventListener('click', () => {
+      window.__submitButtonClickCount += 1;
+    });
+    const nativeRequestSubmit = HTMLFormElement.prototype.requestSubmit;
+    form.requestSubmit = function (...args) {
+      window.__requestSubmitCount += 1;
+      return nativeRequestSubmit.apply(this, args);
+    };
+  </script>
+</body>
+</html>

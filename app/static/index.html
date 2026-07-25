@@ -3,42 +3,27 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CareerPulse</title>
+    <title>JobApply – Application Copilot</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/style.css">
-    <script defer data-domain="careerpulse.macneilmediagroup.com" src="https://plausible.macneilmediagroup.com/js/script.file-downloads.hash.outbound-links.pageview-props.revenue.tagged-events.js"></script>
-    <script>window.plausible = window.plausible || function() { (window.plausible.q = window.plausible.q || []).push(arguments) }</script>
 </head>
 <body>
     <nav class="navbar">
         <div class="nav-brand">
-            <a href="#/" style="display:flex;align-items:center;gap:10px;text-decoration:none">
-                <img src="/static/favicon.svg" alt="CareerPulse" width="28" height="28">
-                <h1>Career<span style="background:linear-gradient(135deg,#00f0ff,#22ff88);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">Pulse</span></h1>
+            <a href="#/settings" style="display:flex;align-items:center;gap:10px;text-decoration:none">
+                <img src="/static/favicon.svg" alt="JobApply" width="28" height="28">
+                <h1>Job<span style="background:linear-gradient(135deg,#00f0ff,#22ff88);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">Apply</span></h1>
             </a>
         </div>
         <div id="nav-links" class="nav-links">
-            <a href="#/" class="nav-link active" data-route="feed">Jobs</a>
-            <a href="#/stats" class="nav-link" data-route="stats">Dashboard</a>
-            <a href="#/pipeline" class="nav-link" data-route="pipeline">Pipeline</a>
-            <a href="#/calendar" class="nav-link" data-route="calendar">Calendar</a>
-            <a href="#/queue" class="nav-link" data-route="queue">Queue</a>
-            <a href="#/network" class="nav-link" data-route="network">Network</a>
-            <a href="#/calculator" class="nav-link" data-route="calculator">Calculator</a>
-            <a href="#/settings" class="nav-link" data-route="settings">Settings</a>
+            <a href="#/settings" class="nav-link active" data-route="settings">Settings</a>
         </div>
         <div class="nav-actions">
             <button id="nav-hamburger" class="btn btn-ghost btn-icon nav-hamburger" aria-label="Open menu" aria-expanded="false" aria-controls="nav-links">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
             </button>
-            <button id="notif-btn" class="btn btn-ghost btn-icon notif-btn" title="Notifications" aria-label="Notifications" aria-controls="notif-dropdown" aria-expanded="false">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-                <span id="notif-badge" class="notif-badge" aria-live="polite" role="status" style="display:none">0</span>
-            </button>
-            <div id="notif-dropdown" class="notif-dropdown" style="display:none"></div>
-            <button id="scrape-btn" class="btn btn-primary btn-sm" aria-label="Scrape job boards now">Scrape Now</button>
             <button id="theme-toggle" class="btn btn-ghost btn-sm" aria-label="Toggle theme">Toggle Theme</button>
         </div>
     </nav>
@@ -51,23 +36,11 @@
     <div id="toast-container" aria-live="polite"></div>
 
     <footer class="site-footer">
-        &copy; 2026 <a href="https://macneilmediagroup.com" target="_blank" rel="noopener">MacNeil Media Group, LLC</a>
+        JobApply — Application Copilot. Derived from <a href="https://github.com/tcpsyn/CareerPulse" target="_blank" rel="noopener">CareerPulse</a> (MIT). See <a href="/static/../">ATTRIBUTION</a> in the repository.
     </footer>
 
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4/dist/chart.umd.min.js"></script>
-    <script src="/static/js/tax-data.js"></script>
     <script src="/static/js/utils.js"></script>
     <script src="/static/js/api.js"></script>
-    <script src="/static/js/salary-calculator.js"></script>
-    <script src="/static/js/interview-panel.js"></script>
-    <script src="/static/js/views/feed.js"></script>
-    <script src="/static/js/views/detail.js"></script>
-    <script src="/static/js/views/pipeline.js"></script>
-    <script src="/static/js/views/calendar.js"></script>
-    <script src="/static/js/views/triage.js"></script>
-    <script src="/static/js/views/stats.js"></script>
-    <script src="/static/js/views/network.js"></script>
-    <script src="/static/js/views/queue.js"></script>
     <script src="/static/js/views/settings.js"></script>
     <script src="/static/js/onboarding.js"></script>
     <script src="/static/js/app.js"></script>

@@ -1,0 +1,33 @@
+name: Upstream Diagnostic (full inherited suite)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+jobs:
+  full-backend:
+    name: Full CareerPulse-inherited backend suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - run: uv sync --dev
+      - name: Run complete backend suite
+        env:
+          JOBAPPLY_SLIM_MODE: "false"
+        run: |
+          mkdir -p test-results
+          # Known baseline scraper/network failures are documented in docs/upstream-diagnostic-failures.md
+          # This job is diagnostic: do not treat as Stage 1 merge gate.
+          uv run pytest --tb=line -q --timeout=15 \
+            --junitxml=test-results/upstream-full.xml || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: upstream-diagnostic-results
+          path: test-results/

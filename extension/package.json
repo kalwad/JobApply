@@ -1,5 +1,5 @@
 {
-  "name": "careerpulse-extension",
+  "name": "jobapply-extension",
   "private": true,
   "scripts": {
     "test": "vitest run",

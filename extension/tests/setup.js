@@ -38,5 +38,5 @@ if (!CSS.escape) {
 }
 
 // Enable test exports from content.js
-window.__cpAutofillTest = true;
-window.__cpAutofillLoaded = false;
+window.__jaAutofillTest = true;
+window.__jaAutofillLoaded = false;

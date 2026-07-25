@@ -1,0 +1,98 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
+function loadCore() {
+  window.__jaAtsCore = undefined;
+  const code = readFileSync(join(__dirname, '..', 'ats-core.js'), 'utf-8');
+  eval(code);
+  return window.__jaAtsCore;
+}
+
+let core;
+
+beforeEach(() => {
+  core = loadCore();
+});
+
+describe('FieldDescriptor helpers', () => {
+  it('createFieldDescriptor fills defaults', () => {
+    const field = core.createFieldDescriptor({ selector: '#email', label: 'Email' });
+    expect(field.selector).toBe('#email');
+    expect(field.label).toBe('Email');
+    expect(field.required).toBe(false);
+    expect(field.currentValue).toBe('');
+  });
+
+  it('normalizeFieldDescriptor preserves options', () => {
+    const field = core.normalizeFieldDescriptor({
+      selector: '#country',
+      tag: 'select',
+      options: [{ value: 'us', text: 'United States' }],
+    });
+    expect(field.options).toHaveLength(1);
+  });
+});
+
+describe('buildFillReport', () => {
+  it('counts filled and failed results', () => {
+    const report = core.buildFillReport([
+      { selector: '#a', success: true },
+      { selector: '#b', success: false },
+    ]);
+    expect(report.filled).toBe(1);
+    expect(report.failed).toBe(1);
+  });
+
+  it('counts savedAnswers from custom Q&A mappings', () => {
+    const report = core.buildFillReport(
+      [{ selector: '#q', success: true }],
+      { '#q': { qa_matched: true, confidence: 1 } },
+    );
+    expect(report.savedAnswers).toBe(1);
+    expect(report.filled).toBe(1);
+  });
+
+  it('counts needsReview for low confidence AI drafts', () => {
+    const report = core.buildFillReport(
+      [{ selector: '#q', success: true }],
+      { '#q': { confidence: 0.5 } },
+    );
+    expect(report.needsReview).toBe(1);
+    expect(report.aiDrafts).toBe(1);
+  });
+
+  it('counts alreadyCompleted skips', () => {
+    const report = core.buildFillReport([
+      { selector: '#x', success: true, skipped: true, alreadyCompleted: true },
+    ]);
+    expect(report.alreadyCompleted).toBe(1);
+    expect(report.filled).toBe(0);
+  });
+
+  it('counts skippedSensitive for submit refusal', () => {
+    const report = core.buildFillReport([
+      { selector: '#submit', success: true, skipped: true, reason: 'refusing to interact with submit control' },
+    ]);
+    expect(report.skippedSensitive).toBe(1);
+  });
+
+  it('formatFillReport renders summary string', () => {
+    const text = core.formatFillReport({ filled: 3, needsReview: 1, failed: 0 });
+    expect(text).toContain('3 filled');
+    expect(text).toContain('1 review');
+  });
+});
+
+describe('adapter contract', () => {
+  it('wrapLegacyAdapter maps match to detect', () => {
+    const wrapped = core.wrapLegacyAdapter({
+      name: 'Test',
+      match: () => true,
+      getFormRoot: (doc) => doc,
+      getFieldMap: () => ({}),
+    });
+    expect(wrapped.detect('https://example.com', document)).toBe(true);
+    core.assertAdapterContract(wrapped);
+  });
+});

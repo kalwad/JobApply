@@ -644,7 +644,10 @@ class Database:
         profile_migrations = {
             "middle_name": "ALTER TABLE user_profile ADD COLUMN middle_name TEXT NOT NULL DEFAULT ''",
             "preferred_name": "ALTER TABLE user_profile ADD COLUMN preferred_name TEXT NOT NULL DEFAULT ''",
+            "first_name": "ALTER TABLE user_profile ADD COLUMN first_name TEXT NOT NULL DEFAULT ''",
+            "last_name": "ALTER TABLE user_profile ADD COLUMN last_name TEXT NOT NULL DEFAULT ''",
             "phone_country_code": "ALTER TABLE user_profile ADD COLUMN phone_country_code TEXT NOT NULL DEFAULT ''",
+            "phone_country_iso2": "ALTER TABLE user_profile ADD COLUMN phone_country_iso2 TEXT NOT NULL DEFAULT ''",
             "phone_type": "ALTER TABLE user_profile ADD COLUMN phone_type TEXT NOT NULL DEFAULT ''",
             "additional_phone": "ALTER TABLE user_profile ADD COLUMN additional_phone TEXT NOT NULL DEFAULT ''",
             "address_street1": "ALTER TABLE user_profile ADD COLUMN address_street1 TEXT NOT NULL DEFAULT ''",
@@ -682,6 +685,7 @@ class Database:
             "how_heard_default": "ALTER TABLE user_profile ADD COLUMN how_heard_default TEXT NOT NULL DEFAULT ''",
             "cover_letter_template": "ALTER TABLE user_profile ADD COLUMN cover_letter_template TEXT NOT NULL DEFAULT ''",
             "background_check_consent": "ALTER TABLE user_profile ADD COLUMN background_check_consent TEXT NOT NULL DEFAULT ''",
+            "contact_by_email": "ALTER TABLE user_profile ADD COLUMN contact_by_email TEXT NOT NULL DEFAULT ''",
         }
         if profile_columns:
             for col, sql in profile_migrations.items():

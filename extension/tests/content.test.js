@@ -9,17 +9,18 @@ import { join } from 'path';
 
 // Load dependency IIFEs (normalize.js, ats-adapters.js) then content.js
 function loadScript() {
-  window.__cpAutofillLoaded = false;
-  window.__cpAutofillTest = true;
-  window.__cpAutofillTestAPI = undefined;
-  window.__cpNormalize = undefined;
-  window.__cpAtsAdapters = undefined;
+  window.__jaAutofillLoaded = false;
+  window.__jaAutofillTest = true;
+  window.__jaAutofillTestAPI = undefined;
+  window.__jaNormalize = undefined;
+  window.__jaAtsAdapters = undefined;
 
   // Load normalize.js first
   const normCode = readFileSync(join(__dirname, '..', 'normalize.js'), 'utf-8');
   eval(normCode);
 
-  // Load ats-adapters.js
+  // Load ats-core.js + ats-adapters.js
+  eval(readFileSync(join(__dirname, '..', 'ats-core.js'), 'utf-8'));
   const atsCode = readFileSync(join(__dirname, '..', 'ats-adapters.js'), 'utf-8');
   eval(atsCode);
 
@@ -35,7 +36,7 @@ function loadScript() {
     '/* badgeObserver disabled in tests */'
   );
   eval(safeCode);
-  return window.__cpAutofillTestAPI;
+  return window.__jaAutofillTestAPI;
 }
 
 let api;
@@ -44,6 +45,9 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   cleanDOM();
   api = loadScript();
+  // Legacy CareerPulse tests assume fills may replace existing values.
+  // Nonempty protection is covered in a dedicated describe below.
+  api.overwriteExistingFields = true;
 });
 
 afterEach(() => {
@@ -744,6 +748,77 @@ describe('fillField — Workday state dropdown', () => {
     expect(result.success).toBe(true);
     expect(result.selectedText).toBe('California');
     expect(selected.text).toBe('California');
+  });
+
+  it('selects Michigan via Workday searchBox without clearing the selection', async () => {
+    const { button, popup, selected } = createWorkdayStateField([
+      'Maine', 'Massachusetts', 'Michigan', 'Minnesota', 'Mississippi', 'Missouri',
+    ]);
+
+    // Real Workday prompts include a filter input; typing must not leave State as "Select One".
+    const search = document.createElement('input');
+    search.setAttribute('data-automation-id', 'searchBox');
+    search.type = 'text';
+    popup.insertBefore(search, popup.firstChild);
+
+    // Simulate the old failure mode: aggressive outside-click clears an uncommitted value.
+    button.addEventListener('blur', () => {
+      if (selected.text && document.activeElement !== button) {
+        // Keep selection — Workday commits on option click; blur alone must not reset.
+      }
+    });
+
+    const result = await api.fillField('#stateBtn', 'Michigan', 'select_dropdown');
+    expect(result.success).toBe(true);
+    expect(result.selectedText).toBe('Michigan');
+    expect(selected.text).toBe('Michigan');
+    expect(button.textContent).toBe('Michigan');
+  });
+
+  it('fills state when the mapped node is a Workday container wrapping the button', async () => {
+    const wrap = document.createElement('div');
+    wrap.id = 'stateWrap';
+    wrap.setAttribute('data-automation-id', 'addressSection_stateProvince');
+    document.body.appendChild(wrap);
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.setAttribute('aria-haspopup', 'listbox');
+    button.textContent = 'Select One';
+    wrap.appendChild(button);
+
+    const popup = document.createElement('div');
+    popup.setAttribute('data-automation-widget', 'wd-popup');
+    popup.style.display = 'none';
+    for (const s of ['Michigan', 'Ohio', 'Illinois']) {
+      const opt = document.createElement('div');
+      opt.setAttribute('role', 'option');
+      opt.setAttribute('data-automation-id', 'promptOption');
+      opt.textContent = s;
+      opt.style.height = '30px';
+      Object.defineProperty(opt, 'offsetHeight', { value: 30, configurable: true });
+      Object.defineProperty(opt, 'offsetWidth', { value: 200, configurable: true });
+      popup.appendChild(opt);
+    }
+    document.body.appendChild(popup);
+
+    button.addEventListener('click', () => {
+      popup.style.display = 'block';
+      Object.defineProperty(popup, 'offsetParent', { value: document.body, configurable: true });
+      Object.defineProperty(popup, 'offsetHeight', { value: 200, configurable: true });
+      for (const opt of popup.querySelectorAll('[role="option"]')) {
+        Object.defineProperty(opt, 'offsetParent', { value: popup, configurable: true });
+      }
+    });
+    for (const opt of popup.querySelectorAll('[role="option"]')) {
+      opt.addEventListener('click', () => {
+        button.textContent = opt.textContent;
+      });
+    }
+
+    const result = await api.fillField('#stateWrap', 'MI', 'select_dropdown');
+    expect(result.success).toBe(true);
+    expect(button.textContent).toBe('Michigan');
   });
 });
 
@@ -1629,54 +1704,84 @@ describe('originalValues tracking', () => {
   });
 });
 
+describe('nonempty field protection', () => {
+  it('skips nonempty text fields by default', async () => {
+    api.overwriteExistingFields = false;
+    const input = createInput({ id: 'protected', type: 'text', value: 'keep-me' });
+    const result = await api.fillField('#protected', 'overwrite', 'fill_text');
+    expect(result.skipped).toBe(true);
+    expect(result.alreadyCompleted).toBe(true);
+    expect(input.value).toBe('keep-me');
+  });
+
+  it('allows overwrite when enabled', async () => {
+    api.overwriteExistingFields = true;
+    const input = createInput({ id: 'overwrite-ok', type: 'text', value: 'old' });
+    const result = await api.fillField('#overwrite-ok', 'new', 'fill_text');
+    expect(result.skipped).toBeFalsy();
+    expect(input.value).toBe('new');
+  });
+
+  it('refuses submit controls', async () => {
+    const btn = document.createElement('button');
+    btn.id = 'submit-app';
+    btn.type = 'submit';
+    btn.textContent = 'Submit Application';
+    document.body.appendChild(btn);
+    expect(api.isSubmitControl(btn)).toBe(true);
+    const result = await api.fillField('#submit-app', 'x', 'fill_text');
+    expect(result.skipped).toBe(true);
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════
 // ATS adapter detection
 // ═══════════════════════════════════════════════════════════════
 
 describe('ATS adapter detection', () => {
   it('detects Workday URL', () => {
-    const adapters = window.__cpAtsAdapters;
+    const adapters = window.__jaAtsAdapters;
     const adapter = adapters.detectATS('https://company.myworkdayjobs.com/en-US/job/12345', document);
     expect(adapter).not.toBeNull();
     expect(adapter.name).toBe('Workday');
   });
 
   it('detects Greenhouse URL', () => {
-    const adapters = window.__cpAtsAdapters;
+    const adapters = window.__jaAtsAdapters;
     const adapter = adapters.detectATS('https://boards.greenhouse.io/company/jobs/12345', document);
     expect(adapter).not.toBeNull();
     expect(adapter.name).toBe('Greenhouse');
   });
 
   it('detects Lever URL', () => {
-    const adapters = window.__cpAtsAdapters;
+    const adapters = window.__jaAtsAdapters;
     const adapter = adapters.detectATS('https://jobs.lever.co/company/apply', document);
     expect(adapter).not.toBeNull();
     expect(adapter.name).toBe('Lever');
   });
 
   it('detects iCIMS URL', () => {
-    const adapters = window.__cpAtsAdapters;
+    const adapters = window.__jaAtsAdapters;
     const adapter = adapters.detectATS('https://careers.icims.com/company/job/12345', document);
     expect(adapter).not.toBeNull();
     expect(adapter.name).toBe('iCIMS');
   });
 
   it('detects Taleo URL', () => {
-    const adapters = window.__cpAtsAdapters;
+    const adapters = window.__jaAtsAdapters;
     const adapter = adapters.detectATS('https://company.taleo.net/apply/12345', document);
     expect(adapter).not.toBeNull();
     expect(adapter.name).toBe('Taleo');
   });
 
   it('returns null for unknown URL', () => {
-    const adapters = window.__cpAtsAdapters;
+    const adapters = window.__jaAtsAdapters;
     const adapter = adapters.detectATS('https://example.com/jobs', document);
     expect(adapter).toBeNull();
   });
 
   it('lists all adapter names', () => {
-    const names = window.__cpAtsAdapters.listAdapters();
+    const names = window.__jaAtsAdapters.listAdapters();
     expect(names).toContain('Workday');
     expect(names).toContain('Greenhouse');
     expect(names).toContain('Lever');
@@ -1742,29 +1847,29 @@ describe('getFieldHints', () => {
 describe('auto-detection badge', () => {
   it('showBadge adds badge element to DOM', () => {
     api.showBadge('high');
-    const badge = document.querySelector('.cp-auto-badge');
+    const badge = document.querySelector('.ja-auto-badge');
     expect(badge).not.toBeNull();
-    expect(badge.textContent).toContain('CareerPulse');
+    expect(badge.textContent).toContain('JobApply');
   });
 
   it('removeBadge cleans up badge', () => {
     api.showBadge('high');
-    expect(document.querySelector('.cp-auto-badge')).not.toBeNull();
+    expect(document.querySelector('.ja-auto-badge')).not.toBeNull();
 
     api.removeBadge();
-    expect(document.querySelector('.cp-auto-badge')).toBeNull();
+    expect(document.querySelector('.ja-auto-badge')).toBeNull();
   });
 
   it('showBadge with medium confidence adds medium class', () => {
     api.showBadge('medium');
-    const badge = document.querySelector('.cp-auto-badge');
-    expect(badge.classList.contains('cp-badge-medium')).toBe(true);
+    const badge = document.querySelector('.ja-auto-badge');
+    expect(badge.classList.contains('ja-badge-medium')).toBe(true);
   });
 
   it('showBadge does not add duplicate badges', () => {
     api.showBadge('high');
     api.showBadge('high');
-    const badges = document.querySelectorAll('.cp-auto-badge');
+    const badges = document.querySelectorAll('.ja-auto-badge');
     expect(badges.length).toBe(1);
   });
 });
@@ -1934,7 +2039,7 @@ describe('applyCustomQA', () => {
 describe('showToast', () => {
   it('creates a toast element in the DOM', () => {
     api.showToast('Test message');
-    const toast = document.getElementById('cp-autofill-toast');
+    const toast = document.getElementById('ja-autofill-toast');
     expect(toast).not.toBeNull();
     expect(toast.textContent).toBe('Test message');
   });
@@ -1942,7 +2047,7 @@ describe('showToast', () => {
   it('removes existing toast before creating new one', () => {
     api.showToast('First');
     api.showToast('Second');
-    const toasts = document.querySelectorAll('#cp-autofill-toast');
+    const toasts = document.querySelectorAll('#ja-autofill-toast');
     expect(toasts.length).toBe(1);
     expect(toasts[0].textContent).toBe('Second');
   });
@@ -1959,7 +2064,7 @@ describe('showToast', () => {
 
   it('has role="status" for accessibility', () => {
     api.showToast('Accessible');
-    const toast = document.getElementById('cp-autofill-toast');
+    const toast = document.getElementById('ja-autofill-toast');
     expect(toast.getAttribute('role')).toBe('status');
   });
 });
@@ -1984,7 +2089,7 @@ describe('autoTrackApplied', () => {
 
   it('shows success toast on successful track', async () => {
     await api.autoTrackApplied();
-    const toast = document.getElementById('cp-autofill-toast');
+    const toast = document.getElementById('ja-autofill-toast');
     expect(toast).not.toBeNull();
     expect(toast.textContent).toContain('marked as applied');
   });
@@ -1998,7 +2103,7 @@ describe('autoTrackApplied', () => {
   it('does not show toast on failure', async () => {
     globalThis.chrome.runtime.sendMessage = vi.fn().mockResolvedValue({ ok: false });
     await api.autoTrackApplied();
-    const toast = document.getElementById('cp-autofill-toast');
+    const toast = document.getElementById('ja-autofill-toast');
     expect(toast).toBeNull();
   });
 
@@ -2006,7 +2111,7 @@ describe('autoTrackApplied', () => {
     globalThis.chrome.runtime.sendMessage = vi.fn().mockRejectedValue(new Error('No connection'));
     await api.autoTrackApplied();
     // Should not throw, no toast shown
-    const toast = document.getElementById('cp-autofill-toast');
+    const toast = document.getElementById('ja-autofill-toast');
     expect(toast).toBeNull();
   });
 });
@@ -2071,19 +2176,168 @@ describe('startFillFlow overall timeout', () => {
     // Start the flow (don't await — it will hang without overall timeout)
     api.startFillFlow();
 
-    // Advance to 56s: analyzeForm resolves, fill begins
+    // Advance to 56s: analyzeForm resolves; review is skipped in tests
     await vi.advanceTimersByTimeAsync(56000);
     // Allow microtasks (fill, dynamic field detection) to settle
     await vi.advanceTimersByTimeAsync(2000);
-    // Advance to 91s total: overall timeout should fire
-    await vi.advanceTimersByTimeAsync(33000);
+    // Fill phase has its own 90s timeout (review wait is excluded)
+    await vi.advanceTimersByTimeAsync(90000);
 
-    // Check the overlay — at 91s, the overall timeout should have fired
-    const overlay = document.getElementById('cp-autofill-overlay');
+    // Check the overlay — fill-phase overall timeout should have fired
+    const overlay = document.getElementById('ja-autofill-overlay');
     expect(overlay).not.toBeNull();
-    const statusEl = overlay.querySelector('.cp-autofill-overlay-status');
+    const statusEl = overlay.querySelector('.ja-autofill-overlay-status');
     expect(statusEl.textContent).toMatch(/timed?\s*out|too long/i);
   }, 15000);
+});
+
+describe('Greenhouse phone-country widget classification', () => {
+  function loadPhoneWidgetFixture() {
+    const html = readFileSync(
+      join(__dirname, '..', '..', 'fixtures', 'greenhouse', 'phone-country-widget.html'),
+      'utf-8',
+    );
+    document.documentElement.innerHTML = html;
+  }
+
+  it('classifies Select country next to phone as phone_country, not address country', () => {
+    loadPhoneWidgetFixture();
+    const fields = api.enrichFieldHints(api.extractFormData());
+    const phoneCountry = fields.find(f => f.selector === '#phone_country_trigger' || f.id === 'phone_country_trigger');
+    const addressCountry = fields.find(f => f.selector === '#address_country' || f.id === 'address_country');
+    expect(phoneCountry).toBeTruthy();
+    expect(phoneCountry.fieldKind).toBe('phone_country');
+    expect(addressCountry?.fieldKind).not.toBe('phone_country');
+  });
+
+  it('refuses to autofill the phone-country control (manual review)', async () => {
+    loadPhoneWidgetFixture();
+    const result = await api.fillField(
+      '#phone_country_trigger',
+      'United States (+1)',
+      'select_dropdown',
+      1,
+      'Select country',
+    );
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe('phone_country_manual_review');
+    expect(document.getElementById('phone_country_iso').value).toBe('');
+    expect(document.getElementById('phone_country_trigger').textContent).toMatch(/Select country/i);
+  });
+
+  it('isSelectCountryInPhoneWidget is true only inside the phone widget', () => {
+    loadPhoneWidgetFixture();
+    const trigger = document.getElementById('phone_country_trigger');
+    const addr = document.getElementById('address_country');
+    expect(api.isSelectCountryInPhoneWidget(trigger)).toBe(true);
+    expect(api.isSelectCountryInPhoneWidget(addr)).toBe(false);
+  });
+});
+
+describe('matchPhoneCountryCodeOption', () => {
+  const options = [
+    { value: 'AF', text: 'Afghanistan (+93)' },
+    { value: 'AL', text: 'Albania (+355)' },
+    { value: 'DZ', text: 'Algeria (+213)' },
+    { value: 'AS', text: 'American Samoa (+1)' },
+    { value: 'US', text: 'United States (+1)' },
+    { value: 'CA', text: 'Canada (+1)' },
+  ];
+
+  it('prefers United States for +1 over Albania/Algeria/American Samoa', () => {
+    expect(options[api.matchPhoneCountryCodeOption(options, 'United States (+1)')].text)
+      .toBe('United States (+1)');
+    expect(options[api.matchPhoneCountryCodeOption(options, '+1')].text)
+      .toBe('United States (+1)');
+    expect(options[api.matchPhoneCountryCodeOption(options, '1')].text)
+      .toBe('United States (+1)');
+  });
+
+  it('does not let fuzzyMatchOption pick Albania for +1', () => {
+    const hints = { label: 'Phone Country Code', name: 'phone_country_code', id: 'phone_country_code' };
+    const idx = api.fuzzyMatchOption(options, 'United States (+1)', hints);
+    expect(options[idx].text).toBe('United States (+1)');
+    expect(api.fuzzyMatchOption(options, '1', hints)).toBe(idx);
+  });
+});
+
+describe('sanitizeMappings / getNearbyHeading', () => {
+  it('drops phone-like values on non-phone fields', () => {
+    const cleaned = api.sanitizeMappings([
+      { selector: '#phone', field_label: 'Phone', value: '5551234567', action: 'fill_text', confidence: 1 },
+      { selector: '#gpa', field_label: 'What is your current cumulative GPA?', value: '5551234567', action: 'fill_text', confidence: 0.9 },
+      { selector: '#why', field_label: 'Why are you interested?', value: '5551234567', action: 'fill_text', confidence: 0.9 },
+      { selector: '#linkedin', field_label: 'LinkedIn Profile', value: 'https://linkedin.com/in/x', action: 'fill_text', confidence: 1 },
+    ]);
+    expect(cleaned.map(m => m.selector)).toEqual(['#phone', '#linkedin']);
+  });
+
+  it('collapses duplicate City and Phone DOM proposals to one each', () => {
+    const cleaned = api.sanitizeMappings([
+      { selector: '[data-automation-id="city"]', field_label: 'City', value: 'Testville', action: 'fill_text', confidence: 1 },
+      { selector: '#city-dup', field_label: 'City *', value: 'Testville', action: 'fill_text', confidence: 0.85 },
+      { selector: '[data-automation-id="phone-number"]', field_label: 'Phone Number', value: '5551234567', action: 'fill_text', confidence: 1 },
+      { selector: '#phone-alt', field_label: 'Phone', value: '5551234567', action: 'fill_text', confidence: 0.7 },
+      { selector: '#phone-sms-opt-in', field_label: 'Phone SMS Opt In', value: 'true', action: 'check_checkbox', confidence: 0.9 },
+      { selector: '#email', field_label: 'Email', value: 'user@example.com', action: 'fill_text', confidence: 1 },
+      { selector: '#contact_by_email', field_label: 'Contact me by email', value: 'yes', action: 'check_checkbox', confidence: 0.95 },
+    ]);
+    const cities = cleaned.filter(m => /city/i.test(m.field_label || '') && m.action === 'fill_text');
+    const phones = cleaned.filter(m => mappingIsPhoneNumberProposal(m));
+    expect(cities).toHaveLength(1);
+    expect(cities[0].selector).toBe('[data-automation-id="city"]');
+    expect(phones).toHaveLength(1);
+    expect(phones[0].selector).toBe('[data-automation-id="phone-number"]');
+    expect(cleaned.some(m => m.selector === '#phone-sms-opt-in')).toBe(true);
+    expect(cleaned.some(m => m.selector === '#email')).toBe(true);
+    expect(cleaned.some(m => m.selector === '#contact_by_email')).toBe(true);
+  });
+
+  it('does not collapse contact_pref radio with email value into contact_by_email', () => {
+    const cleaned = api.sanitizeMappings([
+      { selector: '#email', field_label: 'Email', value: 'user@example.com', action: 'fill_text', confidence: 0.95 },
+      {
+        selector: 'input[name="contact_pref"][value="email"]',
+        field_label: 'Preferred contact',
+        value: 'phone',
+        action: 'click_radio',
+        confidence: 0.9,
+      },
+      {
+        selector: '#contact_by_email',
+        field_label: 'Contact me by email',
+        value: 'yes',
+        action: 'check_checkbox',
+        confidence: 0.95,
+      },
+    ]);
+    expect(cleaned.map(m => m.selector).sort()).toEqual([
+      '#contact_by_email',
+      '#email',
+      'input[name="contact_pref"][value="email"]',
+    ].sort());
+  });
+
+  function mappingIsPhoneNumberProposal(m) {
+    const text = `${m.field_label || ''} ${m.selector || ''}`.toLowerCase();
+    if (/sms|opt[-_]?in/.test(text)) return false;
+    if (/country|device/.test(text)) return false;
+    return /\bphone\b/.test(text);
+  }
+
+  it('uses the nearest preceding section heading, not the first heading in the form', () => {
+    const form = createForm();
+    const hPhone = document.createElement('h2');
+    hPhone.textContent = 'Phone';
+    form.appendChild(hPhone);
+    createInput({ id: 'phone', name: 'phone', type: 'tel' }, form);
+    const hEdu = document.createElement('h2');
+    hEdu.textContent = 'Education';
+    form.appendChild(hEdu);
+    const gpa = createInput({ id: 'gpa', name: 'gpa', type: 'text' }, form);
+    // Old parent.querySelector('h2') returned "Phone" for every field under the form.
+    expect(api.getNearbyHeading(gpa)).toMatch(/education/i);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -2091,28 +2345,40 @@ describe('startFillFlow overall timeout', () => {
 // ═══════════════════════════════════════════════════════════════
 
 describe('startFillFlow ATS iframe delegation', () => {
-  it('silently returns when in top frame with Greenhouse embed container', async () => {
-    // Simulate being in a top frame (window.self === window.top by default in jsdom)
-    const container = document.createElement('div');
-    container.id = 'grnhse_app';
-    document.body.appendChild(container);
-
-    await api.startFillFlow();
-
-    // Should NOT show an overlay or error since an ATS embed was detected
-    const overlay = document.getElementById('cp-autofill-overlay');
-    expect(overlay).toBeNull();
-  });
-
-  it('silently returns when in top frame with grnhse iframe', async () => {
+  it('defers when a real Greenhouse iframe exists and the page has no local fields', async () => {
     const iframe = document.createElement('iframe');
-    iframe.id = 'grnhse_iframe';
+    iframe.src = 'https://boards.greenhouse.io/acme/jobs/1';
     document.body.appendChild(iframe);
 
     await api.startFillFlow();
 
-    const overlay = document.getElementById('cp-autofill-overlay');
+    const overlay = document.getElementById('ja-autofill-overlay');
     expect(overlay).toBeNull();
+  });
+
+  it('does not defer for #grnhse_app alone when local form fields exist', async () => {
+    const container = document.createElement('div');
+    container.id = 'grnhse_app';
+    const form = document.createElement('form');
+    form.id = 'app_form';
+    const input = document.createElement('input');
+    input.id = 'first_name';
+    input.name = 'first_name';
+    input.type = 'text';
+    form.appendChild(input);
+    container.appendChild(form);
+    document.body.appendChild(container);
+
+    globalThis.chrome.runtime.sendMessage = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { mappings: [] },
+    });
+
+    await api.startFillFlow();
+
+    // Same-document Greenhouse forms should analyze (not silently no-op).
+    const overlay = document.getElementById('ja-autofill-overlay');
+    expect(overlay).not.toBeNull();
   });
 
   it('silently removes overlay in iframe with no form fields', async () => {
@@ -2123,15 +2389,14 @@ describe('startFillFlow ATS iframe delegation', () => {
     // startFillFlow should bail silently after extractFormData finds nothing
     await api.startFillFlow();
 
-    const overlay = document.getElementById('cp-autofill-overlay');
+    const overlay = document.getElementById('ja-autofill-overlay');
     expect(overlay).toBeNull();
 
     // Restore
     Object.defineProperty(window, 'self', { value: window, configurable: true });
   });
 
-  it('silently returns when in top frame with gh_jid URL param', async () => {
-    // Simulate Greenhouse URL param without any DOM elements yet
+  it('does not defer solely because gh_jid is present without an ATS iframe', async () => {
     const origLocation = window.location.href;
     Object.defineProperty(window, 'location', {
       value: new URL('https://careers.example.com/detail/123/?gh_jid=456'),
@@ -2139,12 +2404,17 @@ describe('startFillFlow ATS iframe delegation', () => {
       configurable: true,
     });
 
+    globalThis.chrome.runtime.sendMessage = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { mappings: [] },
+    });
+
     await api.startFillFlow();
 
-    const overlay = document.getElementById('cp-autofill-overlay');
-    expect(overlay).toBeNull();
+    // Parent career pages with only gh_jid used to no-op incorrectly; now they analyze.
+    const overlay = document.getElementById('ja-autofill-overlay');
+    expect(overlay).not.toBeNull();
 
-    // Restore
     Object.defineProperty(window, 'location', {
       value: new URL(origLocation),
       writable: true,
@@ -2227,4 +2497,140 @@ describe('fillForm iteration limit', () => {
     // With max 5 iterations, it would be called up to 4 times
     expect(reAnalyzeCount).toBeLessThanOrEqual(1);
   });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Review overlay UX + Workday state failure reporting
+// ═══════════════════════════════════════════════════════════════
+
+describe('review overlay Fill/Cancel and Expand', () => {
+  afterEach(() => {
+    window.__jaAutofillTest = true;
+    window.__jaSkipReview = true;
+    document.getElementById('ja-autofill-overlay')?.remove();
+  });
+
+  it('keeps Fill and Cancel visible for a long review list', async () => {
+    window.__jaAutofillTest = false;
+    window.__jaSkipReview = false;
+
+    const mappings = Array.from({ length: 40 }, (_, i) => ({
+      selector: `#f${i}`,
+      field_label: `Field ${i}`,
+      value: `Value ${i}`,
+      action: 'fill_text',
+      confidence: 0.95,
+    }));
+
+    const reviewPromise = api.reviewMappingsBeforeFill(mappings);
+    await vi.advanceTimersByTimeAsync(50);
+
+    const overlay = document.getElementById('ja-autofill-overlay');
+    expect(overlay).not.toBeNull();
+    expect(overlay.classList.contains('ja-autofill-overlay-review')).toBe(true);
+
+    const actions = overlay.querySelector('.ja-autofill-review-actions');
+    const approve = overlay.querySelector('.ja-autofill-approve-btn');
+    const cancel = overlay.querySelector('.ja-autofill-cancel-btn');
+    expect(actions).not.toBeNull();
+    expect(approve).not.toBeNull();
+    expect(cancel).not.toBeNull();
+    expect(approve.textContent).toMatch(/Fill approved/i);
+    expect(cancel.textContent).toMatch(/Cancel/i);
+
+    // Actions are siblings of the scrollable panel (not trapped inside the list).
+    const panel = overlay.querySelector('.ja-autofill-review-panel');
+    expect(panel.contains(actions)).toBe(false);
+    expect(overlay.querySelector('.ja-autofill-overlay-body').contains(actions)).toBe(true);
+
+    cancel.click();
+    await expect(reviewPromise).resolves.toBeNull();
+  });
+
+  it('shows a clearly labeled Expand control when the overlay is collapsed', async () => {
+    window.__jaAutofillTest = false;
+    window.__jaSkipReview = false;
+
+    const reviewPromise = api.reviewMappingsBeforeFill([
+      { selector: '#a', field_label: 'Name', value: 'Test', action: 'fill_text', confidence: 1 },
+    ]);
+    await vi.advanceTimersByTimeAsync(50);
+
+    const overlay = document.getElementById('ja-autofill-overlay');
+    const minBtn = overlay.querySelector('.ja-autofill-overlay-minimize');
+    expect(minBtn).not.toBeNull();
+
+    minBtn.click();
+    expect(overlay.classList.contains('ja-autofill-overlay-collapsed')).toBe(true);
+    expect(minBtn.getAttribute('aria-label')).toBe('Expand');
+    expect(minBtn.title).toBe('Expand');
+
+    minBtn.click();
+    expect(overlay.classList.contains('ja-autofill-overlay-collapsed')).toBe(false);
+    expect(minBtn.getAttribute('aria-label')).toBe('Minimize');
+
+    overlay.querySelector('.ja-autofill-cancel-btn').click();
+    await reviewPromise;
+  });
+});
+
+describe('phone-sms-opt-in is never a phone number field', () => {
+  it('isPhoneField is false for Workday phone-sms-opt-in', () => {
+    const form = createForm();
+    const cb = createInput({
+      id: 'phone-sms-opt-in',
+      name: 'phone-sms-opt-in',
+      type: 'checkbox',
+    }, form);
+    const label = document.createElement('label');
+    label.setAttribute('for', 'phone-sms-opt-in');
+    label.textContent = 'Phone SMS Opt In';
+    form.appendChild(label);
+    expect(api.isPhoneField(cb)).toBe(false);
+  });
+});
+
+describe('fillField — Workday state failure reporting', () => {
+  it('reports selection did not stick instead of success when State stays Select One', async () => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.id = 'stateFailBtn';
+    button.setAttribute('aria-haspopup', 'listbox');
+    button.setAttribute('data-automation-id', 'stateProvince');
+    button.setAttribute('aria-label', 'State');
+    button.textContent = 'Select One';
+    document.body.appendChild(button);
+
+    const popup = document.createElement('div');
+    popup.setAttribute('data-automation-widget', 'wd-popup');
+    popup.style.display = 'none';
+    const opt = document.createElement('div');
+    opt.setAttribute('role', 'option');
+    opt.setAttribute('data-automation-id', 'promptOption');
+    opt.textContent = 'Michigan';
+    opt.style.height = '30px';
+    Object.defineProperty(opt, 'offsetHeight', { value: 30, configurable: true });
+    Object.defineProperty(opt, 'offsetWidth', { value: 200, configurable: true });
+    popup.appendChild(opt);
+    document.body.appendChild(popup);
+
+    button.addEventListener('click', () => {
+      popup.style.display = 'block';
+      Object.defineProperty(popup, 'offsetParent', { value: document.body, configurable: true });
+      Object.defineProperty(popup, 'offsetHeight', { value: 200, configurable: true });
+      Object.defineProperty(opt, 'offsetParent', { value: popup, configurable: true });
+    });
+    // Option click intentionally does NOT update the button — simulates Workday race/clear.
+    opt.addEventListener('click', () => {});
+
+    const resultPromise = api.fillField('#stateFailBtn', 'Michigan', 'select_dropdown');
+    // Workday path polls + retries; advance fake timers past waitForControlValue loops.
+    for (let i = 0; i < 80; i++) {
+      await vi.advanceTimersByTimeAsync(200);
+    }
+    const result = await resultPromise;
+    expect(result.success).toBe(false);
+    expect(result.reason).toMatch(/selection did not stick|no matching option/i);
+    expect(button.textContent).toBe('Select One');
+  }, 20000);
 });

@@ -1,0 +1,105 @@
+{
+  "report": {
+    "filled": 4,
+    "savedAnswers": 0,
+    "aiDrafts": 4,
+    "needsReview": 1,
+    "skippedSensitive": 3,
+    "alreadyCompleted": 2,
+    "failed": 0,
+    "total": 10
+  },
+  "results": [
+    {
+      "selector": "#lever-privacy",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": false,
+      "reason": "manual review \u2014 legal attestation",
+      "action": "skip",
+      "field_label": "I accept the privacy policy"
+    },
+    {
+      "selector": "#lever-gender",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": false,
+      "reason": "EEO skipped unless explicitly enabled",
+      "action": "skip",
+      "field_label": "Gender identity (voluntary)"
+    },
+    {
+      "selector": "#lever-name",
+      "success": true,
+      "skipped": false,
+      "alreadyCompleted": false,
+      "reason": "",
+      "action": "fill_text",
+      "field_label": "Full Name"
+    },
+    {
+      "selector": "#lever-email",
+      "success": true,
+      "skipped": false,
+      "alreadyCompleted": false,
+      "reason": "",
+      "action": "fill_text",
+      "field_label": "Email"
+    },
+    {
+      "selector": "#lever-phone",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": true,
+      "reason": "nonempty field protected",
+      "action": "fill_text",
+      "field_label": "Phone"
+    },
+    {
+      "selector": "input[name=\"work_auth\"][value=\"yes\"]",
+      "success": true,
+      "skipped": false,
+      "alreadyCompleted": false,
+      "reason": "",
+      "action": "click_radio",
+      "field_label": "Authorized to work in the US?"
+    },
+    {
+      "selector": "#lever-contact-email",
+      "success": true,
+      "skipped": false,
+      "alreadyCompleted": false,
+      "reason": "",
+      "action": "check_checkbox",
+      "field_label": "Contact me by email"
+    },
+    {
+      "selector": "#lever-sms",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": true,
+      "reason": "nonempty field protected",
+      "action": "check_checkbox",
+      "field_label": "Text me SMS reminders"
+    },
+    {
+      "selector": "button[type='submit'], input[type='submit']",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": false,
+      "reason": "refusing to interact with submit control",
+      "action": "fill_text",
+      "field_label": "Submit Application"
+    },
+    {
+      "selector": "button[type='submit'], input[type='submit']",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": false,
+      "reason": "refusing to interact with submit control",
+      "action": "fill_text",
+      "field_label": "Submit Application"
+    }
+  ],
+  "text": "JOBAPPLY \u2013 APPLICATION COPILOT\n\u2013\n\u2715\n\u2713\n4 filled\n\u25bc"
+}

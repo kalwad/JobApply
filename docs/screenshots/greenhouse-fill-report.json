@@ -1,0 +1,123 @@
+{
+  "report": {
+    "filled": 5,
+    "savedAnswers": 0,
+    "aiDrafts": 5,
+    "needsReview": 1,
+    "skippedSensitive": 3,
+    "alreadyCompleted": 3,
+    "failed": 0,
+    "total": 12
+  },
+  "results": [
+    {
+      "selector": "#gh-terms",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": false,
+      "reason": "manual review \u2014 legal attestation",
+      "action": "skip",
+      "field_label": "I agree to the terms of service"
+    },
+    {
+      "selector": "#race",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": false,
+      "reason": "EEO skipped unless explicitly enabled",
+      "action": "skip",
+      "field_label": "Race / Ethnicity (EEO)"
+    },
+    {
+      "selector": "#first_name",
+      "success": true,
+      "skipped": false,
+      "alreadyCompleted": false,
+      "reason": "",
+      "action": "fill_text",
+      "field_label": "First Name"
+    },
+    {
+      "selector": "#last_name",
+      "success": true,
+      "skipped": false,
+      "alreadyCompleted": false,
+      "reason": "",
+      "action": "fill_text",
+      "field_label": "Last Name"
+    },
+    {
+      "selector": "#email",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": true,
+      "reason": "nonempty field protected",
+      "action": "fill_text",
+      "field_label": "Email"
+    },
+    {
+      "selector": "#phone",
+      "success": true,
+      "skipped": false,
+      "alreadyCompleted": false,
+      "reason": "",
+      "action": "fill_text",
+      "field_label": "Phone"
+    },
+    {
+      "selector": "input[name=\"contact_pref\"][value=\"email\"]",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": true,
+      "reason": "nonempty field protected",
+      "action": "click_radio",
+      "field_label": "Preferred contact"
+    },
+    {
+      "selector": "input[name=\"sponsorship\"][value=\"no\"]",
+      "success": true,
+      "skipped": false,
+      "alreadyCompleted": false,
+      "reason": "",
+      "action": "click_radio",
+      "field_label": "Requires sponsorship?"
+    },
+    {
+      "selector": "#contact_by_email",
+      "success": true,
+      "skipped": false,
+      "alreadyCompleted": false,
+      "reason": "",
+      "action": "check_checkbox",
+      "field_label": "Contact me by email"
+    },
+    {
+      "selector": "#newsletter",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": true,
+      "reason": "nonempty field protected",
+      "action": "check_checkbox",
+      "field_label": "Subscribe to updates"
+    },
+    {
+      "selector": "button[type='submit'], input[type='submit']",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": false,
+      "reason": "refusing to interact with submit control",
+      "action": "fill_text",
+      "field_label": "Submit Application"
+    },
+    {
+      "selector": "button[type='submit'], input[type='submit']",
+      "success": true,
+      "skipped": true,
+      "alreadyCompleted": false,
+      "reason": "refusing to interact with submit control",
+      "action": "fill_text",
+      "field_label": "Submit Application"
+    }
+  ],
+  "text": "JOBAPPLY \u2013 APPLICATION COPILOT\n\u2013\n\u2715\n\u2713\n5 filled\n\u25bc"
+}
