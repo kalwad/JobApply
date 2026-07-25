@@ -364,7 +364,15 @@ chrome.commands.onCommand.addListener(async (command) => {
   if (command === 'start-fill') {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab?.id) {
-      chrome.tabs.sendMessage(tab.id, { type: 'startFill' });
+      let frames = [{ frameId: 0 }];
+      try {
+        const all = await chrome.webNavigation.getAllFrames({ tabId: tab.id });
+        if (all?.length) frames = all;
+      } catch { /* top frame only */ }
+      await Promise.all(frames.map(f =>
+        chrome.tabs.sendMessage(tab.id, { type: 'startFill' }, { frameId: f.frameId })
+          .catch(() => null)
+      ));
     }
   }
 });
@@ -408,13 +416,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case 'reportFillStatus':
           return await reportFillStatus(message.queueItemId, message.status, message.details);
         case 'broadcastStartFill': {
-          // Broadcast startFill to all frames in the sender's tab
-          const tabId = sender.tab?.id;
-          if (tabId) {
-            chrome.tabs.sendMessage(tabId, { type: 'startFill' });
-            return { ok: true };
-          }
-          return { ok: false, error: 'No tab context' };
+          // Broadcast startFill to every frame (Greenhouse/Lever embeds are iframes).
+          // Default tabs.sendMessage only hits the top frame.
+          const tabId = sender.tab?.id || message.tabId;
+          if (!tabId) return { ok: false, error: 'No tab context' };
+          let frames = [{ frameId: 0 }];
+          try {
+            const all = await chrome.webNavigation.getAllFrames({ tabId });
+            if (all?.length) frames = all;
+          } catch { /* permission or API unavailable — top frame only */ }
+          await Promise.all(frames.map(f =>
+            chrome.tabs.sendMessage(tabId, { type: 'startFill' }, { frameId: f.frameId })
+              .catch(() => null)
+          ));
+          return { ok: true, frames: frames.length };
         }
         default:
           return { ok: false, error: `Unknown message type: ${message.type}` };

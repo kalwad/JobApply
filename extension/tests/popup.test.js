@@ -278,7 +278,7 @@ describe('fill button', () => {
     document.body.innerHTML = '';
   });
 
-  it('sends startFill message to active tab on click', async () => {
+  it('broadcasts startFill to all frames on click', async () => {
     loadPopup();
     await vi.waitFor(() => {
       expect(document.getElementById('fillBtn').disabled).toBe(false);
@@ -287,7 +287,10 @@ describe('fill button', () => {
     document.getElementById('fillBtn').click();
 
     await vi.waitFor(() => {
-      expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, { type: 'startFill' });
+      expect(globalThis.chrome.runtime.sendMessage).toHaveBeenCalledWith({
+        type: 'broadcastStartFill',
+        tabId: 42,
+      });
     });
   });
 
@@ -297,8 +300,13 @@ describe('fill button', () => {
       expect(document.getElementById('fillBtn').disabled).toBe(false);
     });
 
-    // Make sendMessage to tab hang briefly
-    globalThis.chrome.tabs.sendMessage.mockImplementation(() => new Promise(r => setTimeout(r, 100)));
+    // Make broadcast hang briefly after connection check resolved
+    globalThis.chrome.runtime.sendMessage.mockImplementation((msg) => {
+      if (msg?.type === 'broadcastStartFill') {
+        return new Promise(r => setTimeout(() => r({ ok: true }), 100));
+      }
+      return Promise.resolve({ ok: true, data: {} });
+    });
     document.getElementById('fillBtn').click();
 
     expect(document.getElementById('fillBtn').textContent).toBe('Filling...');
@@ -310,7 +318,7 @@ describe('fill button', () => {
       expect(document.getElementById('fillBtn').disabled).toBe(false);
     });
 
-    globalThis.chrome.tabs.sendMessage.mockResolvedValue({ ok: true });
+    globalThis.chrome.runtime.sendMessage.mockResolvedValue({ ok: true });
     const closeSpy = vi.spyOn(window, 'close').mockImplementation(() => {});
     document.getElementById('fillBtn').click();
 
@@ -320,15 +328,18 @@ describe('fill button', () => {
     closeSpy.mockRestore();
   });
 
-  it('shows error and stays open when content script unreachable', async () => {
+  it('shows error and stays open when broadcast fails', async () => {
     loadPopup();
     await vi.waitFor(() => {
       expect(document.getElementById('fillBtn').disabled).toBe(false);
     });
 
-    globalThis.chrome.tabs.sendMessage.mockRejectedValue(
-      new Error('Could not establish connection. Receiving end does not exist.')
-    );
+    globalThis.chrome.runtime.sendMessage.mockImplementation((msg) => {
+      if (msg?.type === 'broadcastStartFill') {
+        return Promise.reject(new Error('Could not establish connection. Receiving end does not exist.'));
+      }
+      return Promise.resolve({ ok: true, data: {} });
+    });
     const closeSpy = vi.spyOn(window, 'close').mockImplementation(() => {});
     document.getElementById('fillBtn').click();
 

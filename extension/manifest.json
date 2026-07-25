@@ -3,7 +3,7 @@
   "name": "JobApply – Application Copilot",
   "description": "Auto-fill job applications with your JobApply profile",
   "version": "0.1.0",
-  "permissions": ["activeTab", "scripting", "storage", "downloads"],
+  "permissions": ["activeTab", "scripting", "storage", "downloads", "webNavigation"],
   "host_permissions": ["http://localhost:8085/*"],
   "action": {
     "default_popup": "popup.html",
