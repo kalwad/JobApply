@@ -2650,8 +2650,8 @@
           </ul>
           ${extra > 0 ? `<p class="${PREFIX}-review-meta">+${extra} more not shown</p>` : ''}
           <div class="${PREFIX}-review-actions">
-            <button class="${PREFIX}-approve-btn">Fill approved fields</button>
-            <button class="${PREFIX}-cancel-btn">Cancel</button>
+            <button type="button" class="${PREFIX}-cancel-btn">Cancel — don't fill</button>
+            <button type="button" class="${PREFIX}-approve-btn">Fill approved fields</button>
           </div>
         </div>
       `;
