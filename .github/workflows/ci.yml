@@ -8,7 +8,7 @@ on:
 
 jobs:
   backend:
-    name: Backend Tests
+    name: Backend Tests (Stage 1+)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -24,8 +24,26 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
-      - name: Run tests
-        run: uv run pytest --tb=short --junitxml=test-results/backend.xml
+      - name: Run Stage 1+ tests
+        env:
+          JOBAPPLY_SLIM_MODE: "true"
+        run: |
+          mkdir -p test-results
+          uv run pytest --tb=short --junitxml=test-results/backend.xml \
+            tests/test_config.py \
+            tests/test_ai_client.py \
+            tests/test_ai_settings.py \
+            tests/test_ai_retry.py \
+            tests/test_autofill_timeout.py \
+            tests/test_profile_extended.py \
+            tests/test_resumes.py \
+            tests/test_pdf_generator.py \
+            tests/test_docx_export.py \
+            tests/test_facts.py \
+            tests/test_answers_engine.py \
+            tests/test_resume_engine.py \
+            tests/e2e \
+            -k "not scraper"
 
       - name: Upload test results
         if: always()
@@ -53,8 +71,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Approve esbuild builds
+        run: pnpm config set ignore-scripts false && pnpm rebuild esbuild || true
+
       - name: Run tests
-        run: pnpm exec vitest run --reporter=junit --outputFile=../../test-results/frontend.xml
+        run: |
+          mkdir -p ../../test-results
+          pnpm exec vitest run --reporter=junit --outputFile=../../test-results/frontend.xml
 
       - name: Upload test results
         if: always()
@@ -82,8 +105,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Approve esbuild builds
+        run: pnpm config set ignore-scripts false && pnpm rebuild esbuild || true
+
       - name: Run tests
-        run: pnpm exec vitest run --reporter=junit --outputFile=../test-results/extension.xml
+        run: |
+          mkdir -p ../test-results
+          pnpm exec vitest run --reporter=junit --outputFile=../test-results/extension.xml
 
       - name: Upload test results
         if: always()

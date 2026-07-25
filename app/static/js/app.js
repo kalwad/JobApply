@@ -20,21 +20,26 @@ function cleanupCurrentView() {
     }
 }
 
-// === Router ===
+// === Router (JobApply slim Mode: Settings-first) ===
 function getRoute() {
-    const hash = window.location.hash || '#/';
-    if (hash.startsWith('#/job/')) {
-        const id = hash.slice(6);
-        return { view: 'detail', id: parseInt(id, 10) };
+    const hash = window.location.hash || '#/settings';
+    if (hash === '#/' || hash === '' || hash === '#') {
+        return { view: 'settings' };
     }
-    if (hash === '#/stats') return { view: 'stats' };
-    if (hash === '#/calendar') return { view: 'calendar' };
-    if (hash === '#/pipeline') return { view: 'pipeline' };
-    if (hash === '#/queue') return { view: 'queue' };
-    if (hash === '#/network') return { view: 'network' };
     if (hash === '#/settings') return { view: 'settings' };
-    if (hash === '#/calculator') return { view: 'calculator' };
-    return { view: 'feed' };
+    if (hash === '#/facts') return { view: 'facts' };
+    if (hash === '#/resume-studio') return { view: 'resume-studio' };
+    // Legacy CareerPulse routes redirect into Settings in slim mode.
+    if (hash.startsWith('#/job/') ||
+        hash === '#/stats' ||
+        hash === '#/calendar' ||
+        hash === '#/pipeline' ||
+        hash === '#/queue' ||
+        hash === '#/network' ||
+        hash === '#/calculator') {
+        return { view: 'settings' };
+    }
+    return { view: 'settings' };
 }
 
 function navigate(hash) {
@@ -46,14 +51,9 @@ function updateActiveNav() {
     document.querySelectorAll('.nav-link').forEach(link => {
         const r = link.dataset.route;
         link.classList.toggle('active',
-            (r === 'feed' && route.view === 'feed') ||
-            (r === 'stats' && route.view === 'stats') ||
-            (r === 'calendar' && route.view === 'calendar') ||
-            (r === 'pipeline' && route.view === 'pipeline') ||
-            (r === 'queue' && route.view === 'queue') ||
-            (r === 'network' && route.view === 'network') ||
-            (r === 'calculator' && route.view === 'calculator') ||
-            (r === 'settings' && route.view === 'settings')
+            (r === 'settings' && route.view === 'settings') ||
+            (r === 'facts' && route.view === 'facts') ||
+            (r === 'resume-studio' && route.view === 'resume-studio')
         );
     });
 }
@@ -64,24 +64,12 @@ async function handleRoute() {
     updateActiveNav();
     const app = document.getElementById('app');
 
-    if (route.view === 'detail') {
-        await renderJobDetail(app, route.id);
-    } else if (route.view === 'stats') {
-        await renderStats(app);
-    } else if (route.view === 'calendar') {
-        await renderCalendar(app);
-    } else if (route.view === 'pipeline') {
-        await renderPipeline(app);
-    } else if (route.view === 'queue') {
-        await renderQueue(app);
-    } else if (route.view === 'network') {
-        await renderNetwork(app);
-    } else if (route.view === 'settings') {
-        await renderSettings(app);
-    } else if (route.view === 'calculator') {
-        await renderSalaryCalculator(app);
+    if (route.view === 'facts' && typeof renderFacts === 'function') {
+        await renderFacts(app);
+    } else if (route.view === 'resume-studio' && typeof renderResumeStudio === 'function') {
+        await renderResumeStudio(app);
     } else {
-        await renderFeed(app);
+        await renderSettings(app);
     }
 
     app.setAttribute('tabindex', '-1');

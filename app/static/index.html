@@ -3,31 +3,24 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CareerPulse</title>
+    <title>JobApply</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/style.css">
-    <script defer data-domain="careerpulse.macneilmediagroup.com" src="https://plausible.macneilmediagroup.com/js/script.file-downloads.hash.outbound-links.pageview-props.revenue.tagged-events.js"></script>
-    <script>window.plausible = window.plausible || function() { (window.plausible.q = window.plausible.q || []).push(arguments) }</script>
 </head>
 <body>
     <nav class="navbar">
         <div class="nav-brand">
             <a href="#/" style="display:flex;align-items:center;gap:10px;text-decoration:none">
-                <img src="/static/favicon.svg" alt="CareerPulse" width="28" height="28">
-                <h1>Career<span style="background:linear-gradient(135deg,#00f0ff,#22ff88);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">Pulse</span></h1>
+                <img src="/static/favicon.svg" alt="JobApply" width="28" height="28">
+                <h1>Job<span style="background:linear-gradient(135deg,#00f0ff,#22ff88);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">Pulse</span></h1>
             </a>
         </div>
         <div id="nav-links" class="nav-links">
-            <a href="#/" class="nav-link active" data-route="feed">Jobs</a>
-            <a href="#/stats" class="nav-link" data-route="stats">Dashboard</a>
-            <a href="#/pipeline" class="nav-link" data-route="pipeline">Pipeline</a>
-            <a href="#/calendar" class="nav-link" data-route="calendar">Calendar</a>
-            <a href="#/queue" class="nav-link" data-route="queue">Queue</a>
-            <a href="#/network" class="nav-link" data-route="network">Network</a>
-            <a href="#/calculator" class="nav-link" data-route="calculator">Calculator</a>
-            <a href="#/settings" class="nav-link" data-route="settings">Settings</a>
+            <a href="#/settings" class="nav-link active" data-route="settings">Settings</a>
+            <a href="#/facts" class="nav-link" data-route="facts">Fact Bank</a>
+            <a href="#/resume-studio" class="nav-link" data-route="resume-studio">Resume Studio</a>
         </div>
         <div class="nav-actions">
             <button id="nav-hamburger" class="btn btn-ghost btn-icon nav-hamburger" aria-label="Open menu" aria-expanded="false" aria-controls="nav-links">
@@ -38,7 +31,7 @@
                 <span id="notif-badge" class="notif-badge" aria-live="polite" role="status" style="display:none">0</span>
             </button>
             <div id="notif-dropdown" class="notif-dropdown" style="display:none"></div>
-            <button id="scrape-btn" class="btn btn-primary btn-sm" aria-label="Scrape job boards now">Scrape Now</button>
+            <!-- scrape disabled in JobApply slim mode -->
             <button id="theme-toggle" class="btn btn-ghost btn-sm" aria-label="Toggle theme">Toggle Theme</button>
         </div>
     </nav>
@@ -51,7 +44,7 @@
     <div id="toast-container" aria-live="polite"></div>
 
     <footer class="site-footer">
-        &copy; 2026 <a href="https://macneilmediagroup.com" target="_blank" rel="noopener">MacNeil Media Group, LLC</a>
+        JobApply — Application Copilot. Derived from <a href="https://github.com/tcpsyn/CareerPulse" target="_blank" rel="noopener">CareerPulse</a> (MIT).
     </footer>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4/dist/chart.umd.min.js"></script>
@@ -69,6 +62,8 @@
     <script src="/static/js/views/network.js"></script>
     <script src="/static/js/views/queue.js"></script>
     <script src="/static/js/views/settings.js"></script>
+    <script src="/static/js/views/facts.js"></script>
+    <script src="/static/js/views/resume-studio.js"></script>
     <script src="/static/js/onboarding.js"></script>
     <script src="/static/js/app.js"></script>
 </body>

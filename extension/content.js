@@ -2,19 +2,87 @@
   'use strict';
 
   // Guard against multiple injections
-  if (window.__cpAutofillLoaded) return;
-  window.__cpAutofillLoaded = true;
+  if (window.__jaAutofillLoaded) return;
+  window.__jaAutofillLoaded = true;
 
-  const PREFIX = 'cp-autofill';
-  const OVERLAY_PREFIX = 'cp-overlay';
+  const PREFIX = 'ja-autofill';
+  const OVERLAY_PREFIX = 'ja-overlay';
   const FIELD_TIMEOUT_MS = 8000;  // Max time per field fill
   const API_TIMEOUT_MS = 60000;   // Max time for API analyze call
   const SCAN_DEBOUNCE_MS = 1500;  // Debounce for MutationObserver re-scans
-  let currentState = 'idle'; // idle | analyzing | filling | done | error
+  let currentState = 'idle'; // idle | analyzing | review | filling | done | error
+
+  // Stage 1 safety defaults (overridable via chrome.storage.local)
+  let overwriteExistingFields = false;
+  let enableJobBoardOverlay = false;
+  let enableQueueFill = false;
 
   // Track original field values for undo support
   const originalValues = new Map(); // selector -> { originalValue, label, value, confidence, action }
   let overlayMode = 'status'; // status | compact | expanded
+
+  const PLACEHOLDER_VALUES = new Set([
+    '', 'select', 'select one', 'select an option', 'choose', 'choose one',
+    '--', '—', 'n/a', 'na', 'none', 'please select',
+  ]);
+
+  function isEffectivelyEmpty(value) {
+    const v = String(value ?? '').trim().toLowerCase();
+    return !v || PLACEHOLDER_VALUES.has(v);
+  }
+
+  function getCurrentFieldValue(el) {
+    if (!el) return '';
+    const type = (el.type || '').toLowerCase();
+    // Radios/checkboxes always have a value attribute; "filled" means selected.
+    if (type === 'radio' || type === 'checkbox') {
+      return el.checked ? String(el.value || 'on') : '';
+    }
+    if (el.isContentEditable || el.getAttribute?.('contenteditable') === 'true') {
+      return (el.textContent || '').trim();
+    }
+    // Custom Workday-style button dropdowns: use visible text only if it looks selected
+    if (el.tagName === 'BUTTON' && el.getAttribute('aria-haspopup')) {
+      return (el.textContent || '').trim();
+    }
+    return el.value || '';
+  }
+
+  function isSubmitControl(el) {
+    if (!el || !el.tagName) return false;
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    const text = (el.textContent || el.value || '').trim().toLowerCase();
+    if (type === 'submit') return true;
+    if (tag === 'button' && type === 'submit') return true;
+    if (/(^|\s)submit(\s|$)/.test(text) && /application|apply|form/.test(text)) return true;
+    if (text === 'submit application' || text === 'submit your application') return true;
+    return false;
+  }
+
+  async function loadSafetySettings() {
+    // Tests control flags via __jaAutofillTestAPI; avoid async storage races.
+    if (typeof window !== 'undefined' && window.__jaAutofillTest) {
+      return;
+    }
+    try {
+      const stored = await chrome.storage.local.get([
+        'overwriteExistingFields',
+        'enableJobBoardOverlay',
+        'enableQueueFill',
+      ]);
+      overwriteExistingFields = !!stored.overwriteExistingFields;
+      enableJobBoardOverlay = !!stored.enableJobBoardOverlay;
+      enableQueueFill = !!stored.enableQueueFill;
+    } catch {
+      // Defaults already set
+    }
+  }
+
+  // Load once in production; tests set flags explicitly.
+  if (!(typeof window !== 'undefined' && window.__jaAutofillTest)) {
+    try { loadSafetySettings(); } catch { /* ignore */ }
+  }
 
   // ─── History interceptor (single patch, multiple callbacks) ──
 
@@ -276,7 +344,7 @@
         if (el.disabled) continue;
 
         // Skip our own overlay/badge elements
-        if (el.closest(`#${PREFIX}-overlay`) || el.closest(`#${PREFIX}-learn-prompt`) || el.closest('.cp-auto-badge')) continue;
+        if (el.closest(`#${PREFIX}-overlay`) || el.closest(`#${PREFIX}-learn-prompt`) || el.closest('.ja-auto-badge')) continue;
 
         const selector = buildSelector(el);
         if (!selector || seen.has(selector)) continue;
@@ -576,9 +644,9 @@
     }
 
     // Pass 3: normalization via lookup tables
-    if (window.__cpNormalize) {
+    if (window.__jaNormalize) {
       try {
-        const norm = window.__cpNormalize;
+        const norm = window.__jaNormalize;
         const hints = fieldHints || {};
         const hintValues = [hints.label, hints.name, hints.id, hints.placeholder].filter(Boolean);
         const tables = norm.detectFieldCategory(hintValues);
@@ -773,9 +841,9 @@
     }
 
     // Pass 3: Normalization via lookup tables
-    if (window.__cpNormalize) {
+    if (window.__jaNormalize) {
       try {
-        const norm = window.__cpNormalize;
+        const norm = window.__jaNormalize;
         const hints = fieldHints || {};
         const hintValues = [hints.label, hints.name, hints.id, hints.placeholder].filter(Boolean);
         const tables = norm.detectFieldCategory(hintValues);
@@ -846,9 +914,9 @@
     // canonical full name yields the correct single match; typing "CA" matches
     // California, North Carolina, and South Carolina.
     let effectiveValue = value;
-    if (window.__cpNormalize && fieldHints) {
+    if (window.__jaNormalize && fieldHints) {
       try {
-        const norm = window.__cpNormalize;
+        const norm = window.__jaNormalize;
         const hintValues = [fieldHints.label, fieldHints.name, fieldHints.id, fieldHints.placeholder].filter(Boolean);
         const tables = norm.detectFieldCategory(hintValues);
         for (const t of tables) {
@@ -965,6 +1033,10 @@
   }
 
   function clickOption(optionEl) {
+    if (isSubmitControl(optionEl)) {
+      console.warn('[JobApply] Refusing to click submit control');
+      return;
+    }
     optionEl.scrollIntoView?.({ block: 'nearest' });
     optionEl.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
     optionEl.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
@@ -1139,7 +1211,7 @@
 
       return true;
     } catch (err) {
-      console.warn('[CareerPulse] fillRichText failed:', err.message);
+      console.warn('[JobApply] fillRichText failed:', err.message);
       return false;
     }
   }
@@ -1248,6 +1320,10 @@
         return { selector, success: false, reason: 'element not found' };
       }
 
+      if (isSubmitControl(el)) {
+        return { selector, success: true, skipped: true, reason: 'refusing to interact with submit control' };
+      }
+
       // Compute field hints once for normalization throughout this fill
       const fieldHints = getFieldHints(el);
 
@@ -1265,7 +1341,18 @@
       }
 
       // Capture original value before filling (for undo support)
-      const origVal = el.value || el.textContent?.trim() || '';
+      const origVal = getCurrentFieldValue(el);
+
+      // Stage 1: never overwrite nonempty fields unless explicitly enabled
+      if (!overwriteExistingFields && action !== 'skip' && !isEffectivelyEmpty(origVal)) {
+        return {
+          selector,
+          success: true,
+          skipped: true,
+          reason: 'nonempty field protected',
+          alreadyCompleted: true,
+        };
+      }
       const fieldLabel = label || findLabel(el) || el.name || el.id || selector;
       originalValues.set(selector, {
         originalValue: origVal,
@@ -1305,15 +1392,15 @@
 
           // 3. Phone formatting — normalize and format before text fill
           let fillValue = value;
-          if (isPhoneField(el) && window.__cpNormalize) {
+          if (isPhoneField(el) && window.__jaNormalize) {
             try {
-              let digits = window.__cpNormalize.normalizePhone(value);
+              let digits = window.__jaNormalize.normalizePhone(value);
               // Strip leading country code if a separate country code dropdown exists nearby
               if (digits && digits.length === 11 && digits[0] === '1' && hasNearbyPhoneCountryCode(el)) {
                 digits = digits.slice(1);
               }
               if (digits) {
-                fillValue = window.__cpNormalize.formatPhoneLike(digits, fieldHints.placeholder);
+                fillValue = window.__jaNormalize.formatPhoneLike(digits, fieldHints.placeholder);
               }
             } catch { /* skip, use original value */ }
           }
@@ -1452,9 +1539,9 @@
             }
 
             // Pass 3: normalization via lookup tables (handles synonyms like Caucasian→White)
-            if (window.__cpNormalize) {
+            if (window.__jaNormalize) {
               try {
-                const norm = window.__cpNormalize;
+                const norm = window.__jaNormalize;
                 const hints = fieldHints || {};
                 const hintValues = [hints.label, hints.name, hints.id, hints.placeholder].filter(Boolean);
                 const tables = norm.detectFieldCategory(hintValues);
@@ -1555,7 +1642,7 @@
 
     const text = document.createElement('span');
     text.className = `${PREFIX}-upload-helper-text`;
-    text.textContent = `${label} ready -- download from CareerPulse, then upload here`;
+    text.textContent = `${label} ready -- download from JobApply, then upload here`;
 
     const btn = document.createElement('button');
     btn.className = `${PREFIX}-upload-helper-btn`;
@@ -1567,7 +1654,7 @@
       e.stopPropagation();
 
       if (!currentJobId) {
-        text.textContent = 'No job ID available. Open this page from CareerPulse first.';
+        text.textContent = 'No job ID available. Open this page from JobApply first.';
         return;
       }
 
@@ -1621,6 +1708,9 @@
     const totalMappable = mappings.filter(m => m.action !== 'skip').length;
     const failedSelectors = new Set();
     const atsFormRoot = atsAdapter?.getFormRoot?.(document) || null;
+    const mappingBySelector = Object.fromEntries(
+      mappings.filter(m => m.selector).map(m => [m.selector, m])
+    );
 
     for (let iteration = 0; iteration < 2; iteration++) {
       const currentMappings = iteration === 0 ? mappings : await getNewMappings();
@@ -1641,6 +1731,7 @@
           result = { selector: mapping.selector, success: false, reason: err.message };
         }
 
+        result.mapping = mapping;
         results.push(result);
 
         // Close any dropdowns left open by the previous fill
@@ -1677,7 +1768,11 @@
     // After filling, detect file upload fields that need user help
     detectFileUploadFields();
 
-    return { results, filledCount, total: totalMappable };
+    const fillReport = window.__jaAtsAdapters?.buildFillReport
+      ? window.__jaAtsAdapters.buildFillReport(results, mappingBySelector)
+      : null;
+
+    return { results, filledCount, total: totalMappable, fillReport, mappingBySelector };
   }
 
   async function getNewMappings() {
@@ -1692,7 +1787,7 @@
         return response.data.mappings;
       }
     } catch (err) {
-      console.warn('[CareerPulse] Re-analysis failed:', err?.message || err);
+      console.warn('[JobApply] Re-analysis failed:', err?.message || err);
     }
     return null;
   }
@@ -1709,7 +1804,7 @@
     overlayEl.id = `${PREFIX}-overlay`;
     overlayEl.innerHTML = `
       <div class="${PREFIX}-overlay-header">
-        <span class="${PREFIX}-overlay-title">CareerPulse</span>
+        <span class="${PREFIX}-overlay-title">JobApply – Application Copilot</span>
         <div class="${PREFIX}-overlay-actions">
           <button class="${PREFIX}-overlay-minimize" title="Minimize">&#x2013;</button>
           <button class="${PREFIX}-overlay-close" title="Close">&#x2715;</button>
@@ -1988,7 +2083,7 @@
     promptEl.innerHTML = `
       <div class="${PREFIX}-learn-modal">
         <div class="${PREFIX}-learn-header">
-          <h3 class="${PREFIX}-learn-title">Save ${newData.length} new answer${newData.length > 1 ? 's' : ''} to CareerPulse?</h3>
+          <h3 class="${PREFIX}-learn-title">Save ${newData.length} new answer${newData.length > 1 ? 's' : ''} to JobApply?</h3>
           <button class="${PREFIX}-learn-close" aria-label="Close">\u00d7</button>
         </div>
         <div class="${PREFIX}-learn-list">
@@ -2095,10 +2190,10 @@
       const pageUrl = location.href;
       const result = await chrome.runtime.sendMessage({ type: 'markAppliedByUrl', url: pageUrl });
       if (result && result.ok) {
-        showToast('Job marked as applied in CareerPulse', 'success');
+        showToast('Job marked as applied in JobApply', 'success');
       }
     } catch (err) {
-      console.warn('[CareerPulse] autoTrackApplied failed:', err.message);
+      console.warn('[JobApply] autoTrackApplied failed:', err.message);
     }
   }
 
@@ -2180,7 +2275,7 @@
       // Auto-track this job as applied
       autoTrackApplied();
     } catch (err) {
-      console.warn('[CareerPulse] handleSubmission failed:', err.message);
+      console.warn('[JobApply] handleSubmission failed:', err.message);
     }
   }
 
@@ -2232,7 +2327,7 @@
       if (!qaResult || !qaResult.ok || !Array.isArray(qaResult.data)) return mappings;
       qaEntries = qaResult.data;
     } catch (err) {
-      console.warn('[CareerPulse] applyCustomQA failed:', err.message);
+      console.warn('[JobApply] applyCustomQA failed:', err.message);
       return mappings;
     }
 
@@ -2250,11 +2345,72 @@
     });
   }
 
+  // ─── Review-before-fill ──────────────────────────────────────
+
+  function reviewMappingsBeforeFill(mappings) {
+    if (window.__jaSkipReview || window.__jaAutofillTest) {
+      return Promise.resolve(mappings);
+    }
+
+    return new Promise((resolve) => {
+      currentState = 'review';
+      createOverlay();
+      const body = overlayEl.querySelector(`.${PREFIX}-overlay-body`);
+      const fillable = mappings.filter(m => m.action && m.action !== 'skip');
+      const reviewCount = fillable.filter(m => (m.confidence || 1) < 0.8).length;
+      body.innerHTML = `
+        <div class="${PREFIX}-review">
+          <p><strong>Review ${fillable.length} proposed fill${fillable.length === 1 ? '' : 's'}</strong></p>
+          <p class="${PREFIX}-review-meta">${reviewCount} need review (confidence &lt; 0.8). Nonempty fields stay protected.</p>
+          <label class="${PREFIX}-review-overwrite">
+            <input type="checkbox" class="${PREFIX}-overwrite-toggle" ${overwriteExistingFields ? 'checked' : ''}/>
+            Overwrite existing field values
+          </label>
+          <ul class="${PREFIX}-review-list">
+            ${fillable.slice(0, 40).map(m => {
+              const conf = m.confidence == null ? 1 : m.confidence;
+              const cls = conf < 0.8 ? 'yellow' : 'green';
+              const label = (m.field_label || m.label || m.selector || '').toString().slice(0, 60);
+              const val = String(m.value ?? '').slice(0, 80);
+              return `<li class="${PREFIX}-review-item ${cls}"><span class="${PREFIX}-dot ${cls}"></span><strong>${escapeHtml(label)}</strong>: ${escapeHtml(val)} <em>(${conf.toFixed(2)})</em></li>`;
+            }).join('')}
+          </ul>
+          <div class="${PREFIX}-review-actions">
+            <button class="${PREFIX}-approve-btn">Fill approved fields</button>
+            <button class="${PREFIX}-cancel-btn">Cancel</button>
+          </div>
+        </div>
+      `;
+
+      const overwriteToggle = body.querySelector(`.${PREFIX}-overwrite-toggle`);
+      overwriteToggle?.addEventListener('change', (e) => {
+        overwriteExistingFields = !!e.target.checked;
+        try { chrome.storage.local.set({ overwriteExistingFields }); } catch { /* ignore */ }
+      });
+
+      body.querySelector(`.${PREFIX}-approve-btn`).addEventListener('click', () => {
+        resolve(mappings);
+      });
+      body.querySelector(`.${PREFIX}-cancel-btn`).addEventListener('click', () => {
+        resolve(null);
+      });
+    });
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
   // ─── Main fill flow ──────────────────────────────────────────
 
   const OVERALL_TIMEOUT_MS = 90000; // Max time for entire fill flow
 
   async function startFillFlow() {
+    await loadSafetySettings();
     try {
       // Remove the auto-detection badge if present
       removeBadge();
@@ -2281,8 +2437,8 @@
       }
 
       // Detect ATS-specific adapter
-      const atsAdapter = window.__cpAtsAdapters
-        ? window.__cpAtsAdapters.detectATS(location.href, document)
+      const atsAdapter = window.__jaAtsAdapters
+        ? window.__jaAtsAdapters.detectATS(location.href, document)
         : null;
 
       if (atsAdapter) {
@@ -2305,7 +2461,7 @@
           try {
             adapterFields = atsAdapter.getExtraFields(document);
           } catch (err) {
-            console.warn('[CareerPulse] ATS getExtraFields failed:', err.message);
+            console.warn('[JobApply] ATS getExtraFields failed:', err.message);
           }
         }
 
@@ -2323,7 +2479,7 @@
         try {
           structuredFields = enrichFieldHints(structuredFields);
         } catch (err) {
-          console.warn('[CareerPulse] enrichFieldHints failed:', err.message);
+          console.warn('[JobApply] enrichFieldHints failed:', err.message);
         }
 
         // Apply ATS-specific field enhancement if adapter provides it
@@ -2331,12 +2487,12 @@
           try {
             structuredFields = atsAdapter.enhanceExtraction(structuredFields);
           } catch (err) {
-            console.warn('[CareerPulse] ATS enhanceExtraction failed:', err.message);
+            console.warn('[JobApply] ATS enhanceExtraction failed:', err.message);
           }
         }
 
         // Debug: log extracted fields so we can diagnose fill issues
-        console.log('[CareerPulse] Extracted fields:', structuredFields.map(f => ({
+        console.log('[JobApply] Extracted fields:', structuredFields.map(f => ({
           selector: f.selector, tag: f.tag, type: f.type, label: f.label,
           name: f.name, role: f.role, currentValue: f.currentValue,
           hasOptions: !!(f.options && f.options.length),
@@ -2365,7 +2521,7 @@
           return;
         }
 
-        console.log('[CareerPulse] Analyze response:', JSON.stringify(response?.data?.mappings || [], null, 2));
+        console.log('[JobApply] Analyze response:', JSON.stringify(response?.data?.mappings || [], null, 2));
 
         if (!response || !response.ok) {
           updateOverlay('error', `Error: ${response?.error || 'Analysis failed'}`);
@@ -2381,12 +2537,23 @@
         // Post-process: fill skipped fields that match custom Q&A
         mappings = await applyCustomQA(mappings);
 
+        // Stage 1: review-before-fill (tests may set __jaSkipReview)
+        const approved = await reviewMappingsBeforeFill(mappings);
+        if (!approved) {
+          updateOverlay('done', 'Fill cancelled — no fields were changed.');
+          currentState = 'idle';
+          return;
+        }
+        mappings = approved;
+
         currentState = 'filling';
         const result = await fillForm(mappings, atsAdapter);
 
         const failedCount = result.results.filter(r => !r.success).length;
         let statusMsg = `Filled ${result.filledCount}/${result.total} fields.`;
-        if (failedCount > 0) {
+        if (result.fillReport && window.__jaAtsAdapters?.formatFillReport) {
+          statusMsg = window.__jaAtsAdapters.formatFillReport(result.fillReport);
+        } else if (failedCount > 0) {
           statusMsg += ` ${failedCount} field${failedCount > 1 ? 's' : ''} need manual review.`;
         } else {
           statusMsg += ' Review highlighted fields.';
@@ -2563,25 +2730,25 @@
     if (badgeEl) return;
 
     badgeEl = document.createElement('div');
-    badgeEl.className = 'cp-auto-badge' + (confidence === 'medium' ? ' cp-badge-medium' : '');
+    badgeEl.className = 'ja-auto-badge' + (confidence === 'medium' ? ' ja-badge-medium' : '');
     badgeEl.innerHTML = `
-      <span class="cp-auto-badge-main">
-        <svg class="cp-auto-badge-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <span class="ja-auto-badge-main">
+        <svg class="ja-auto-badge-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
           <polyline points="14 2 14 8 20 8"/>
           <line x1="16" y1="13" x2="8" y2="13"/>
           <line x1="16" y1="17" x2="8" y2="17"/>
           <polyline points="10 9 9 9 8 9"/>
         </svg>
-        Fill with CareerPulse
+        Fill with JobApply
       </span>
-      <button class="cp-auto-badge-dismiss" title="Dismiss">\u00d7</button>
+      <button class="ja-auto-badge-dismiss" title="Dismiss">\u00d7</button>
     `;
 
     document.body.appendChild(badgeEl);
 
     // Click main area to start fill
-    badgeEl.querySelector('.cp-auto-badge-main').addEventListener('click', () => {
+    badgeEl.querySelector('.ja-auto-badge-main').addEventListener('click', () => {
       removeBadge();
       // If we're on a parent page with an ATS iframe, broadcast startFill via
       // the background script so the iframe's content script picks it up.
@@ -2593,7 +2760,7 @@
     });
 
     // Dismiss button: suppress for this hostname
-    badgeEl.querySelector('.cp-auto-badge-dismiss').addEventListener('click', async (e) => {
+    badgeEl.querySelector('.ja-auto-badge-dismiss').addEventListener('click', async (e) => {
       e.stopPropagation();
       const host = window.location.hostname;
       try {
@@ -2606,7 +2773,7 @@
           await chrome.storage.local.set({ dismissedHosts: hosts });
         }
       } catch (err) {
-        console.warn('[CareerPulse] Failed to save dismissed host:', err.message);
+        console.warn('[JobApply] Failed to save dismissed host:', err.message);
       }
       removeBadge();
     });
@@ -2622,7 +2789,7 @@
       if (result.dismissedHosts.includes(host)) return;
       showBadge(confidence);
     } catch (err) {
-      console.warn('[CareerPulse] Failed to check dismissed hosts:', err.message);
+      console.warn('[JobApply] Failed to check dismissed hosts:', err.message);
     }
   }
 
@@ -2826,6 +2993,12 @@
   }
 
   async function startQueueFill(message) {
+    await loadSafetySettings();
+    if (!enableQueueFill && !window.__jaAutofillTest) {
+      console.info('[JobApply] Queue fill disabled by default (enableQueueFill=false)');
+      return;
+    }
+
     // If we're the parent frame with an ATS embed, skip — the iframe handles filling
     if (!isInIframe() && (hasAtsIframe() || hasAtsEmbedContainer() || hasAtsUrlParam())) {
       return;
@@ -3028,8 +3201,8 @@
 
     const btn = document.createElement('button');
     btn.className = `${OVERLAY_PREFIX}-save-btn`;
-    btn.textContent = 'Save to CareerPulse';
-    btn.title = 'Save this job to CareerPulse';
+    btn.textContent = 'Save to JobApply';
+    btn.title = 'Save this job to JobApply';
 
     btn.addEventListener('click', async (e) => {
       e.preventDefault();
@@ -3088,7 +3261,7 @@
 
     const numScore = Math.round(Number(score));
     badge.textContent = `${numScore}%`;
-    badge.title = `CareerPulse match score: ${numScore}%`;
+    badge.title = `JobApply match score: ${numScore}%`;
 
     badge.classList.remove(
       `${OVERLAY_PREFIX}-score-high`,
@@ -3157,17 +3330,22 @@
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  // Run job board overlay detection (separate from the auto-fill badge)
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initJobBoardOverlay);
-  } else {
-    setTimeout(initJobBoardOverlay, 300);
+  // Job board overlay is off by default in JobApply Stage 1 (review-first product).
+  async function maybeInitJobBoardOverlay() {
+    await loadSafetySettings();
+    if (!enableJobBoardOverlay) return;
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initJobBoardOverlay);
+    } else {
+      setTimeout(initJobBoardOverlay, 300);
+    }
   }
+  maybeInitJobBoardOverlay();
 
   // ─── Export for testing ────────────────────────────────────────
 
-  if (typeof window !== 'undefined' && window.__cpAutofillTest) {
-    window.__cpAutofillTestAPI = {
+  if (typeof window !== 'undefined' && window.__jaAutofillTest) {
+    window.__jaAutofillTestAPI = {
       extractFormData,
       resolveElement,
       fillField,
@@ -3232,6 +3410,8 @@
       processJobCards,
       initJobBoardOverlay,
       JOB_BOARD_CONFIGS,
+      get enableJobBoardOverlay() { return enableJobBoardOverlay; },
+      set enableJobBoardOverlay(v) { enableJobBoardOverlay = !!v; },
 
       // Queue fill API
       showQueueBanner,
@@ -3240,6 +3420,15 @@
       startQueueFill,
       get queueContext() { return queueContext; },
       set queueContext(v) { queueContext = v; },
+      get enableQueueFill() { return enableQueueFill; },
+      set enableQueueFill(v) { enableQueueFill = !!v; },
+
+      // Safety flags
+      get overwriteExistingFields() { return overwriteExistingFields; },
+      set overwriteExistingFields(v) { overwriteExistingFields = !!v; },
+      isEffectivelyEmpty,
+      isSubmitControl,
+      reviewMappingsBeforeFill,
 
       // Timeout / flow internals for testing
       get API_TIMEOUT_MS() { return API_TIMEOUT_MS; },

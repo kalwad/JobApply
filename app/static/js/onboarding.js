@@ -80,7 +80,7 @@ function showOnboardingWizard() {
 
     function renderStep1() {
         return `
-            <h2 id="onboarding-title" class="onboarding-heading">Welcome to CareerPulse</h2>
+            <h2 id="onboarding-title" class="onboarding-heading">Welcome to JobApply</h2>
             <p class="onboarding-desc">Let's get you set up. First, tell us a bit about yourself.</p>
             <div class="onboarding-form">
                 <div class="onboarding-field">
@@ -105,7 +105,7 @@ function showOnboardingWizard() {
     function renderStep2() {
         return `
             <h2 id="onboarding-title" class="onboarding-heading">Upload Your Resume</h2>
-            <p class="onboarding-desc">Upload a resume so we can match you with relevant jobs and tailor applications.</p>
+            <p class="onboarding-desc">Upload your master resume. JobApply extracts facts into the Fact Bank (you verify each one before they're used for grounded answers and tailoring).</p>
             <div class="onboarding-upload" id="onb-upload-area">
                 <div class="onboarding-upload-icon">&#128196;</div>
                 <div class="onboarding-upload-text">Drop a file here or click to browse</div>
@@ -124,7 +124,7 @@ function showOnboardingWizard() {
     function renderStep3() {
         return `
             <h2 id="onboarding-title" class="onboarding-heading">Connect AI Provider</h2>
-            <p class="onboarding-desc">CareerPulse uses AI to score jobs and tailor resumes. Connect a provider to get started.</p>
+            <p class="onboarding-desc">JobApply uses AI to autofill applications and draft answers. Connect a provider (Ollama recommended for local use).</p>
             <div class="onboarding-form">
                 <div class="onboarding-field">
                     <label for="onb-provider">Provider</label>
@@ -159,13 +159,13 @@ function showOnboardingWizard() {
     function renderStep4() {
         return `
             <h2 id="onboarding-title" class="onboarding-heading">You're All Set!</h2>
-            <p class="onboarding-desc">CareerPulse is ready to find and match jobs for you. Start your first scrape to discover opportunities.</p>
+            <p class="onboarding-desc">JobApply Application Copilot is ready. Install the Chrome extension, open a job application, and use review-before-fill on ATS forms.</p>
             <div class="onboarding-summary">
                 <div class="onboarding-summary-item" id="onb-summary"></div>
             </div>
             <div class="onboarding-actions">
                 <button class="btn btn-secondary" id="onb-back">Back</button>
-                <button class="btn btn-primary" id="onb-scrape">Start Scraping</button>
+                <button class="btn btn-primary" id="onb-finish">Open Settings</button>
                 <button class="btn btn-ghost" id="onb-later">I'll do this later</button>
             </div>
         `;
@@ -175,7 +175,7 @@ function showOnboardingWizard() {
         const next = wizard.querySelector('#onb-next');
         const back = wizard.querySelector('#onb-back');
         const skip = wizard.querySelector('#onb-skip');
-        const scrape = wizard.querySelector('#onb-scrape');
+        const finish = wizard.querySelector('#onb-finish');
         const later = wizard.querySelector('#onb-later');
 
         if (back) back.addEventListener('click', () => { currentStep--; renderStep(); });
@@ -297,12 +297,13 @@ function showOnboardingWizard() {
                 });
             }
 
-            if (scrape) {
-                scrape.addEventListener('click', async () => {
+            const finishBtn = wizard.querySelector('#onb-finish');
+            if (finishBtn) {
+                finishBtn.addEventListener('click', () => {
                     markOnboardingDone();
                     wizard.remove();
                     updateSetupIndicator();
-                    handleScrape();
+                    navigate('#/settings');
                 });
             }
 

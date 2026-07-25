@@ -2,7 +2,7 @@
   'use strict';
 
   // Guard against multiple injections
-  if (window.__cpAtsAdapters) return;
+  if (window.__jaAtsAdapters) return;
 
   // ─── Helper: safe iframe contentDocument access ──────────────
 
@@ -599,11 +599,19 @@
 
   // ─── Registry ─────────────────────────────────────────────────
 
-  const atsAdapters = [workday, greenhouse, lever, icims, taleo, googleForms];
+  const legacyAdapters = [workday, greenhouse, lever, icims, taleo, googleForms];
+  const core = window.__jaAtsCore;
+
+  const atsAdapters = core
+    ? legacyAdapters.map(a => core.wrapLegacyAdapter(a))
+    : legacyAdapters;
 
   function detectATS(url, doc) {
+    if (core) {
+      return core.detectAdapter(atsAdapters, url, doc);
+    }
     try {
-      return atsAdapters.find(a => a.match(url, doc)) || null;
+      return legacyAdapters.find(a => a.match(url, doc)) || null;
     } catch {
       return null;
     }
@@ -613,12 +621,28 @@
     return atsAdapters.map(a => a.name);
   }
 
+  function buildFillReport(results, mappingBySelector) {
+    if (core) {
+      return core.buildFillReport(results, mappingBySelector);
+    }
+    return { filled: 0, failed: (results || []).filter(r => !r.success).length, total: (results || []).length };
+  }
+
+  function formatFillReport(report) {
+    if (core) {
+      return core.formatFillReport(report);
+    }
+    return `${report.filled || 0} filled`;
+  }
+
   // ─── Export ───────────────────────────────────────────────────
 
-  window.__cpAtsAdapters = {
+  window.__jaAtsAdapters = {
     detectATS,
     listAdapters,
     adapters: atsAdapters,
+    buildFillReport,
+    formatFillReport,
   };
 
 })();

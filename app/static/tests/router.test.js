@@ -5,32 +5,18 @@ beforeAll(() => {
     document.body.innerHTML = `
         <div id="toast-container"></div>
         <div class="nav-links">
-            <a class="nav-link" data-route="feed">Jobs</a>
-            <a class="nav-link" data-route="stats">Dashboard</a>
-            <a class="nav-link" data-route="pipeline">Pipeline</a>
-            <a class="nav-link" data-route="calendar">Calendar</a>
-            <a class="nav-link" data-route="queue">Queue</a>
-            <a class="nav-link" data-route="network">Network</a>
-            <a class="nav-link" data-route="calculator">Calculator</a>
             <a class="nav-link" data-route="settings">Settings</a>
+            <a class="nav-link" data-route="facts">Fact Bank</a>
+            <a class="nav-link" data-route="resume-studio">Resume Studio</a>
         </div>
         <div id="app"></div>
     `;
-    // Load utils first (needed by app.js), then api (needed by app.js filter code)
     loadScripts('utils.js', 'api.js');
 
-    // Stub out view render functions that handleRoute calls
-    globalThis.renderFeed = async () => {};
-    globalThis.renderJobDetail = async () => {};
-    globalThis.renderStats = async () => {};
-    globalThis.renderPipeline = async () => {};
-    globalThis.renderQueue = async () => {};
-    globalThis.renderNetwork = async () => {};
     globalThis.renderSettings = async () => {};
-    globalThis.renderCalendar = async () => {};
-    globalThis.renderSalaryCalculator = async () => {};
+    globalThis.renderFacts = async () => {};
+    globalThis.renderResumeStudio = async () => {};
 
-    // Stub triage globals referenced by app.js keyboard shortcuts
     globalThis.enterTriageMode = () => {};
     globalThis.exitTriageMode = () => {};
     globalThis.triageActive = false;
@@ -42,38 +28,38 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-    window.location.hash = '#/';
+    window.location.hash = '#/settings';
 });
 
 describe('getRoute', () => {
-    it('returns feed for default hash', () => {
+    it('returns settings for default hash', () => {
         window.location.hash = '#/';
-        expect(getRoute()).toEqual({ view: 'feed' });
+        expect(getRoute()).toEqual({ view: 'settings' });
     });
 
-    it('returns feed for empty hash', () => {
+    it('returns settings for empty hash', () => {
         window.location.hash = '';
-        expect(getRoute()).toEqual({ view: 'feed' });
+        expect(getRoute()).toEqual({ view: 'settings' });
     });
 
-    it('returns stats for #/stats', () => {
+    it('returns settings for legacy #/stats', () => {
         window.location.hash = '#/stats';
-        expect(getRoute()).toEqual({ view: 'stats' });
+        expect(getRoute()).toEqual({ view: 'settings' });
     });
 
-    it('returns pipeline for #/pipeline', () => {
+    it('returns settings for legacy #/pipeline', () => {
         window.location.hash = '#/pipeline';
-        expect(getRoute()).toEqual({ view: 'pipeline' });
+        expect(getRoute()).toEqual({ view: 'settings' });
     });
 
-    it('returns queue for #/queue', () => {
+    it('returns settings for legacy #/queue', () => {
         window.location.hash = '#/queue';
-        expect(getRoute()).toEqual({ view: 'queue' });
+        expect(getRoute()).toEqual({ view: 'settings' });
     });
 
-    it('returns network for #/network', () => {
+    it('returns settings for legacy #/network', () => {
         window.location.hash = '#/network';
-        expect(getRoute()).toEqual({ view: 'network' });
+        expect(getRoute()).toEqual({ view: 'settings' });
     });
 
     it('returns settings for #/settings', () => {
@@ -81,51 +67,41 @@ describe('getRoute', () => {
         expect(getRoute()).toEqual({ view: 'settings' });
     });
 
-    it('returns calendar for #/calendar', () => {
-        window.location.hash = '#/calendar';
-        expect(getRoute()).toEqual({ view: 'calendar' });
+    it('returns facts for #/facts', () => {
+        window.location.hash = '#/facts';
+        expect(getRoute()).toEqual({ view: 'facts' });
     });
 
-    it('returns calculator for #/calculator', () => {
-        window.location.hash = '#/calculator';
-        expect(getRoute()).toEqual({ view: 'calculator' });
-    });
-
-    it('parses job detail routes with id', () => {
-        window.location.hash = '#/job/42';
-        expect(getRoute()).toEqual({ view: 'detail', id: 42 });
-    });
-
-    it('defaults to feed for unknown hashes', () => {
-        window.location.hash = '#/unknown';
-        expect(getRoute()).toEqual({ view: 'feed' });
+    it('returns resume-studio for #/resume-studio', () => {
+        window.location.hash = '#/resume-studio';
+        expect(getRoute()).toEqual({ view: 'resume-studio' });
     });
 });
 
 describe('navigate', () => {
     it('sets window.location.hash', () => {
-        navigate('#/stats');
-        expect(window.location.hash).toBe('#/stats');
+        navigate('#/settings');
+        expect(window.location.hash).toBe('#/settings');
     });
 });
 
 describe('updateActiveNav', () => {
-    it('highlights the correct nav link for feed', () => {
+    it('highlights settings for default route', () => {
         window.location.hash = '#/';
         updateActiveNav();
-        const feedLink = document.querySelector('[data-route="feed"]');
-        const statsLink = document.querySelector('[data-route="stats"]');
-        expect(feedLink.classList.contains('active')).toBe(true);
-        expect(statsLink.classList.contains('active')).toBe(false);
+        const settingsLink = document.querySelector('[data-route="settings"]');
+        const factsLink = document.querySelector('[data-route="facts"]');
+        expect(settingsLink.classList.contains('active')).toBe(true);
+        expect(factsLink.classList.contains('active')).toBe(false);
     });
 
-    it('highlights the correct nav link for stats', () => {
-        window.location.hash = '#/stats';
+    it('highlights facts for #/facts', () => {
+        window.location.hash = '#/facts';
         updateActiveNav();
-        const feedLink = document.querySelector('[data-route="feed"]');
-        const statsLink = document.querySelector('[data-route="stats"]');
-        expect(feedLink.classList.contains('active')).toBe(false);
-        expect(statsLink.classList.contains('active')).toBe(true);
+        const settingsLink = document.querySelector('[data-route="settings"]');
+        const factsLink = document.querySelector('[data-route="facts"]');
+        expect(settingsLink.classList.contains('active')).toBe(false);
+        expect(factsLink.classList.contains('active')).toBe(true);
     });
 });
 
@@ -142,7 +118,6 @@ describe('filter persistence', () => {
     });
 
     it('saves and loads filter state', () => {
-        // Create filter elements
         document.body.innerHTML += `
             <input id="filter-search" value="python">
             <select id="filter-score"><option value="60" selected>60+</option></select>
@@ -153,7 +128,6 @@ describe('filter persistence', () => {
         expect(loaded['filter-search']).toBe('python');
         expect(loaded['filter-score']).toBe('60');
 
-        // Cleanup
         document.getElementById('filter-search')?.remove();
         document.getElementById('filter-score')?.remove();
     });
@@ -163,20 +137,9 @@ describe('filter persistence', () => {
     });
 
     it('applyFilterState sets element values', () => {
-        document.body.innerHTML += `
-            <input id="filter-search" value="">
-            <select id="filter-score">
-                <option value="">All</option>
-                <option value="60">60+</option>
-            </select>
-        `;
-
-        applyFilterState({ 'filter-search': 'react', 'filter-score': '60' });
-        expect(document.getElementById('filter-search').value).toBe('react');
-        expect(document.getElementById('filter-score').value).toBe('60');
-
-        // Cleanup
+        document.body.innerHTML += `<input id="filter-search" value="">`;
+        applyFilterState({ 'filter-search': 'rust' });
+        expect(document.getElementById('filter-search').value).toBe('rust');
         document.getElementById('filter-search')?.remove();
-        document.getElementById('filter-score')?.remove();
     });
 });

@@ -139,6 +139,10 @@ _COLUMN_ALLOWLISTS = {
     "custom_qa": {
         "question_pattern", "category", "answer", "times_used", "last_used",
     },
+    "facts": {
+        "id", "category", "text", "employer", "role", "skills_json",
+        "verified", "source", "metadata_json", "created_at",
+    },
     "resumes": {
         "name", "resume_text", "is_default", "search_terms", "job_titles",
         "key_skills", "seniority", "summary", "updated_at",
@@ -401,6 +405,20 @@ class Database:
                 times_used INTEGER DEFAULT 0,
                 last_used TEXT
             );
+            CREATE TABLE IF NOT EXISTS facts (
+                id TEXT PRIMARY KEY,
+                category TEXT NOT NULL DEFAULT 'other',
+                text TEXT NOT NULL DEFAULT '',
+                employer TEXT,
+                role TEXT,
+                skills_json TEXT NOT NULL DEFAULT '[]',
+                verified INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'master_resume',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
+            CREATE INDEX IF NOT EXISTS idx_facts_verified ON facts(verified);
             CREATE TABLE IF NOT EXISTS autofill_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 job_url TEXT NOT NULL DEFAULT '',
@@ -2247,7 +2265,7 @@ class Database:
             "search_config", "ai_settings", "user_profile", "companies",
             "work_history", "education", "certifications", "skills",
             "languages", "user_references", "military_service", "eeo_responses",
-            "custom_qa", "autofill_history", "follow_up_templates",
+            "facts", "custom_qa", "autofill_history", "follow_up_templates",
             "career_suggestions", "saved_views", "scraper_keys",
             "scraper_schedule", "job_alerts", "email_settings",
             "embedding_settings",
@@ -3216,3 +3234,114 @@ class Database:
             return
         from app.embeddings import delete_embedding
         await delete_embedding(self.db, "vec_context", item_id)
+
+    # ─── Fact Bank CRUD ───────────────────────────────────────────
+
+    def _row_to_fact(self, row) -> dict:
+        d = dict(row)
+        d["skills"] = json.loads(d.pop("skills_json", "[]") or "[]")
+        d["metadata"] = json.loads(d.pop("metadata_json", "{}") or "{}")
+        d["verified"] = bool(d.get("verified"))
+        return d
+
+    async def list_facts(
+        self,
+        *,
+        verified_only: bool = False,
+        category: str | None = None,
+    ) -> list[dict]:
+        clauses = []
+        params: list = []
+        if verified_only:
+            clauses.append("verified = 1")
+        if category:
+            clauses.append("category = ?")
+            params.append(category)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        cursor = await self.db.execute(
+            f"SELECT * FROM facts{where} ORDER BY created_at DESC",
+            params,
+        )
+        return [self._row_to_fact(r) for r in await cursor.fetchall()]
+
+    async def get_fact(self, fact_id: str) -> dict | None:
+        cursor = await self.db.execute("SELECT * FROM facts WHERE id = ?", (fact_id,))
+        row = await cursor.fetchone()
+        return self._row_to_fact(row) if row else None
+
+    async def create_fact(self, fact: dict) -> dict:
+        now = datetime.now(timezone.utc).isoformat()
+        fact_id = fact.get("id")
+        if not fact_id:
+            import uuid
+            fact_id = str(uuid.uuid4())
+        skills = fact.get("skills") or []
+        metadata = fact.get("metadata") or {}
+        verified = 1 if fact.get("verified") else 0
+        await self.db.execute(
+            """INSERT INTO facts
+               (id, category, text, employer, role, skills_json, verified, source,
+                metadata_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                fact_id,
+                fact.get("category", "other"),
+                fact.get("text", ""),
+                fact.get("employer"),
+                fact.get("role"),
+                json.dumps(skills),
+                verified,
+                fact.get("source", "master_resume"),
+                json.dumps(metadata),
+                fact.get("created_at") or now,
+            ),
+        )
+        await self.db.commit()
+        return await self.get_fact(fact_id)
+
+    async def update_fact(self, fact_id: str, updates: dict) -> dict | None:
+        existing = await self.get_fact(fact_id)
+        if not existing:
+            return None
+        merged = {**existing, **updates}
+        _validate_columns("facts", {
+            "category", "text", "employer", "role", "skills_json",
+            "verified", "source", "metadata_json",
+        }.intersection(set(updates.keys()) | {"skills", "metadata", "verified"}))
+        skills_json = json.dumps(merged.get("skills") or [])
+        metadata_json = json.dumps(merged.get("metadata") or {})
+        verified = 1 if merged.get("verified") else 0
+        await self.db.execute(
+            """UPDATE facts SET category = ?, text = ?, employer = ?, role = ?,
+               skills_json = ?, verified = ?, source = ?, metadata_json = ?
+               WHERE id = ?""",
+            (
+                merged.get("category", "other"),
+                merged.get("text", ""),
+                merged.get("employer"),
+                merged.get("role"),
+                skills_json,
+                verified,
+                merged.get("source", "master_resume"),
+                metadata_json,
+                fact_id,
+            ),
+        )
+        await self.db.commit()
+        return await self.get_fact(fact_id)
+
+    async def verify_fact(self, fact_id: str, verified: bool = True) -> dict | None:
+        existing = await self.get_fact(fact_id)
+        if not existing:
+            return None
+        await self.db.execute(
+            "UPDATE facts SET verified = ? WHERE id = ?",
+            (1 if verified else 0, fact_id),
+        )
+        await self.db.commit()
+        return await self.get_fact(fact_id)
+
+    async def delete_fact(self, fact_id: str) -> bool:
+        cursor = await self.db.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
+        await self.db.commit()
+        return cursor.rowcount > 0

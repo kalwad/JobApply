@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  if (window.__cpNormalize) return;
+  if (window.__jaNormalize) return;
 
   // ─── Lookup Tables ──────────────────────────────────────────
   // Each table is an array of synonym groups. Every value within a group
@@ -363,7 +363,7 @@
 
   // ─── Export ──────────────────────────────────────────────────
 
-  window.__cpNormalize = {
+  window.__jaNormalize = {
     // Tables
     US_STATES,
     CA_PROVINCES,

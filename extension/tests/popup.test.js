@@ -17,7 +17,7 @@ function createPopupDOM() {
           <button class="btn-small" id="saveUrlBtn">Save</button>
         </div>
       </div>
-      <a class="settings-link" id="settingsLink" href="#">Open CareerPulse Settings</a>
+      <a class="settings-link" id="settingsLink" href="#">Open JobApply Settings</a>
     </div>
   `;
 }
