@@ -705,6 +705,8 @@
       if ((el.type || '').toLowerCase() === 'tel') return true;
       const hints = getFieldHints(el);
       const combined = `${hints.label} ${hints.name} ${hints.id} ${hints.placeholder}`;
+      // SMS/opt-in checkboxes are not phone number fields (Workday phone-sms-opt-in).
+      if (/sms|opt[-_]?in|text\s*me|marketing|consent/i.test(combined)) return false;
       return /phone|tel|mobile|cell/i.test(combined);
     } catch {
       return false;
@@ -2052,8 +2054,8 @@
       <div class="${PREFIX}-overlay-header">
         <span class="${PREFIX}-overlay-title">JobApply – Application Copilot</span>
         <div class="${PREFIX}-overlay-actions">
-          <button class="${PREFIX}-overlay-minimize" title="Minimize">&#x2013;</button>
-          <button class="${PREFIX}-overlay-close" title="Close">&#x2715;</button>
+          <button type="button" class="${PREFIX}-overlay-minimize" title="Minimize" aria-label="Minimize">&#x2013;</button>
+          <button type="button" class="${PREFIX}-overlay-close" title="Close" aria-label="Close">&#x2715;</button>
         </div>
       </div>
       <div class="${PREFIX}-overlay-body">
@@ -2067,9 +2069,23 @@
       removeOverlay();
     });
 
-    overlayEl.querySelector(`.${PREFIX}-overlay-minimize`).addEventListener('click', () => {
+    const minBtn = overlayEl.querySelector(`.${PREFIX}-overlay-minimize`);
+    minBtn.addEventListener('click', () => {
       const body = overlayEl.querySelector(`.${PREFIX}-overlay-body`);
-      body.style.display = body.style.display === 'none' ? 'block' : 'none';
+      const collapsed = body.style.display === 'none';
+      if (collapsed) {
+        body.style.display = '';
+        minBtn.innerHTML = '&#x2013;';
+        minBtn.title = 'Minimize';
+        minBtn.setAttribute('aria-label', 'Minimize');
+        overlayEl.classList.remove(`${PREFIX}-overlay-collapsed`);
+      } else {
+        body.style.display = 'none';
+        minBtn.innerHTML = '&#x25BC;'; // chevron: expand again
+        minBtn.title = 'Expand';
+        minBtn.setAttribute('aria-label', 'Expand');
+        overlayEl.classList.add(`${PREFIX}-overlay-collapsed`);
+      }
     });
 
     // Drag support on header
@@ -2631,6 +2647,7 @@
       const reviewCount = fillable.filter(m => (m.confidence || 1) < 0.8).length;
       const shown = fillable.slice(0, 25);
       const extra = fillable.length - shown.length;
+      // Actions sit outside the scrollable list so Fill/Cancel stay visible.
       body.innerHTML = `
         <div class="${PREFIX}-review-panel">
           <p><strong>Review ${fillable.length} proposed fill${fillable.length === 1 ? '' : 's'}</strong></p>
@@ -2649,10 +2666,10 @@
             }).join('')}
           </ul>
           ${extra > 0 ? `<p class="${PREFIX}-review-meta">+${extra} more not shown</p>` : ''}
-          <div class="${PREFIX}-review-actions">
-            <button type="button" class="${PREFIX}-cancel-btn">Cancel — don't fill</button>
-            <button type="button" class="${PREFIX}-approve-btn">Fill approved fields</button>
-          </div>
+        </div>
+        <div class="${PREFIX}-review-actions">
+          <button type="button" class="${PREFIX}-cancel-btn">Cancel — don't fill</button>
+          <button type="button" class="${PREFIX}-approve-btn">Fill approved fields</button>
         </div>
       `;
 
