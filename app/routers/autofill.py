@@ -14,20 +14,85 @@ AUTOFILL_ANALYZE_TIMEOUT_PARTIAL = 15
 router = APIRouter(prefix="/api")
 
 
-def _is_excluded(pattern: str, searchable: str, field_id: str = "") -> bool:
+_WORK_AUTH_CONTEXT = (
+    r"authori[sz]e|sponsorship|sponsor|visa|citizenship|eligib|"
+    r"legally\s+work|work\s+in\s+this\s+country|work\s+authorization|"
+    r"employment\s+eligib"
+)
+
+
+def _is_excluded(pattern: str, searchable: str, field_id: str = "", field: dict | None = None) -> bool:
     """Check if a field should be excluded from a pattern match based on context."""
     s = searchable.lower()
     fid = field_id.lower()
+    kind = ((field or {}).get("fieldKind") or (field or {}).get("atsHint") or "").lower()
     if "phone" in pattern and "country" not in pattern:
         if _re.search(r"country|code|device.?type|extension", fid):
             return True
         if _re.search(r"country\s*(?:phone\s*)?code|phone\s*country|phone\s*ext|device\s*type", s):
             return True
+        if kind == "phone_country":
+            return True
     # City/town must not match work-auth / sponsorship questions.
     if r"\bcity\b" in pattern or r"\btown\b" in pattern:
-        if _re.search(r"authori[sz]e|sponsor|visa|citizenship|eligible|work\s+in", s):
+        if _re.search(_WORK_AUTH_CONTEXT, s):
+            return True
+    # Ordinary country must never fill work-auth / phone-country controls.
+    if pattern == r"\bcountry\b":
+        if kind == "phone_country":
+            return True
+        if _re.search(_WORK_AUTH_CONTEXT, s):
+            return True
+        if _re.search(r"phone|dial|calling", s) and _re.search(r"country|code", s):
             return True
     return False
+
+
+def _name_components(profile: dict) -> tuple[str, str, str]:
+    """Return (first, middle, last) preferring explicit profile fields."""
+    first = (profile.get("first_name") or "").strip()
+    middle = (profile.get("middle_name") or "").strip()
+    last = (profile.get("last_name") or "").strip()
+    if first and last:
+        return first, middle, last
+
+    full = (profile.get("full_name") or "").strip()
+    parts = full.split()
+    if not parts:
+        return first, middle, last
+
+    if not first:
+        first = parts[0]
+    rest = parts[1:]
+    if middle and rest:
+        filtered = []
+        removed = False
+        for token in rest:
+            if not removed and token.lower() == middle.lower():
+                removed = True
+                continue
+            filtered.append(token)
+        rest = filtered
+    if not last:
+        last = " ".join(rest)
+    return first, middle, last
+
+
+def _is_phone_country_field(field: dict) -> bool:
+    kind = (field.get("fieldKind") or field.get("atsHint") or "").lower()
+    if kind == "phone_country":
+        return True
+    searchable = " ".join([
+        str(field.get("label") or ""),
+        str(field.get("name") or ""),
+        str(field.get("id") or ""),
+        str(field.get("placeholder") or ""),
+    ]).lower()
+    return bool(_re.search(
+        r"phone[\s_-]?country|country[\s_-]?phone|country[\s_-]?code|dial[\s_-]?code|"
+        r"calling[\s_-]?code|countryphonecode",
+        searchable,
+    ))
 
 
 _US_STATE_ABBREVS = {
@@ -154,22 +219,22 @@ def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], 
     if not fields or not profile:
         return [], fields or []
 
-    full_name = profile.get("full_name", "")
-    name_parts = full_name.split(None, 1) if full_name else ["", ""]
-    first_name = name_parts[0] if name_parts else ""
-    last_name = name_parts[1] if len(name_parts) > 1 else ""
+    first_name, middle_name, last_name = _name_components(profile)
+    full_name = (profile.get("full_name") or "").strip() or " ".join(
+        p for p in (first_name, middle_name, last_name) if p
+    )
 
+    # Work-auth / sponsorship MUST run before generic country (live Greenhouse bug).
     rules = [
         (r"\bfirst[\s_-]?name\b", first_name, "fill_text"),
         (r"\bgiven[\s_-]?name\b", first_name, "fill_text"),
         (r"\blast[\s_-]?name\b", last_name, "fill_text"),
         (r"\bsurname\b|\bfamily[\s_-]?name\b", last_name, "fill_text"),
         (r"\bfull[\s_-]?name\b|\byour[\s_-]?name\b", full_name, "fill_text"),
-        (r"\bmiddle[\s_-]?name\b", profile.get("middle_name", ""), "fill_text"),
+        (r"\bmiddle[\s_-]?name\b", middle_name, "fill_text"),
         # Contact-preference checkbox must win over the generic email text rule.
         (r"\bcontact[\s_-]?me[\s_-]?by[\s_-]?email\b|\bemail[\s_-]?me[\s_-]?about\b", profile.get("contact_by_email", ""), None),
         (r"\bemail\b", profile.get("email", ""), "fill_text"),
-        (r"\bphone[\s_-]?country[\s_-]?code\b|\bcountry[\s_-]?code\b|\bcountry[\s_-]?phone\b", profile.get("address_country_name", "United States") + " (" + profile.get("phone_country_code", "+1") + ")", "select_dropdown_safe"),
         (r"\bphone[\s_-]?ext(ension)?\b|\bext(ension)?\b", "", "skip"),
         (r"\bphone\b|\bphone[\s_-]?number\b|\bmobile\b|\bcell\b|\btelephone\b", profile.get("phone", ""), "fill_text"),
         (r"\baddress[\s_-]?line[\s_-]?1\b|\bstreet[\s_-]?address\b|\baddress[\s_-]?1\b", profile.get("address_street1", ""), "fill_text"),
@@ -177,12 +242,12 @@ def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], 
         (r"\bcity\b|\btown\b", profile.get("address_city", ""), "fill_text"),
         (r"\bpostal[\s_-]?code\b|\bzip[\s_-]?code\b|\bzip\b|\bpostcode\b", profile.get("address_zip", ""), "fill_text"),
         (r"\bstate\b|\bprovince\b|\bregion\b", profile.get("address_state", ""), "select_dropdown"),
+        (r"\bauthori[sz]ed[\s_-]?to[\s_-]?work\b|\bwork[\s_-]?authori[sz]ation\b", profile.get("authorized_to_work_us", ""), None),
+        (r"\bsponsorship\b|\bvisa[\s_-]?sponsor\b", profile.get("requires_sponsorship", ""), None),
         (r"\bcountry\b", profile.get("address_country_name", "United States"), None),
         (r"\blinkedin\b", profile.get("linkedin_url", ""), "fill_text"),
         (r"\bgithub\b", profile.get("github_url", ""), "fill_text"),
         (r"\bportfolio\b|\bwebsite\b|\bpersonal[\s_-]?url\b", profile.get("portfolio_url", "") or profile.get("website_url", ""), "fill_text"),
-        (r"\bauthori[sz]ed[\s_-]?to[\s_-]?work\b|\bwork[\s_-]?authori[sz]ation\b", profile.get("authorized_to_work_us", ""), None),
-        (r"\bsponsorship\b|\bvisa[\s_-]?sponsor\b", profile.get("requires_sponsorship", ""), None),
         (r"\bsalary\b|\bcompensation\b|\bdesired[\s_-]?pay\b", str(profile.get("desired_salary_min", "")), "fill_text"),
         (r"\bhow[\s_-]?did[\s_-]?you[\s_-]?(hear|find|learn)\b|\breferral[\s_-]?source\b|\bhow.{0,10}hear\b|\bsource\b.*\bhear\b|\bhear.{0,10}about\b", profile.get("how_heard_default", "Online Job Board"), None),
         (r"\bdate[\s_-]?of[\s_-]?birth\b|\bbirthday\b|\bdob\b", profile.get("date_of_birth", ""), "fill_text"),
@@ -203,11 +268,29 @@ def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], 
         field_id = (field.get("id") or "").lower()
         searchable = f"{label} {name} {placeholder} {field_id}"
 
+        # Stage 1 fail-safe: never autofill phone-country controls (Greenhouse
+        # "Select country" next to phone). Wrong +355 is worse than manual.
+        if _is_phone_country_field(field):
+            mappings.append({
+                "selector": field["selector"],
+                "value": "",
+                "action": "skip",
+                "confidence": 1.0,
+                "field_label": field.get("label", ""),
+                "reason": "phone_country_manual_review",
+                "fieldKind": "phone_country",
+                "supportingFactIds": [],
+            })
+            matched_selectors.add(field["selector"])
+            continue
+
         matched = False
         for pattern, value, action in rules:
             if not value and action != "skip":
                 continue
-            if _re.search(pattern, searchable, _re.IGNORECASE) and not _is_excluded(pattern, searchable, field_id):
+            if _re.search(pattern, searchable, _re.IGNORECASE) and not _is_excluded(
+                pattern, searchable, field_id, field
+            ):
                 tag = field.get("tag", "").lower()
                 if action is None:
                     # Radios/checkboxes also carry an options[] group descriptor — check type first.
@@ -219,14 +302,8 @@ def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], 
                     else:
                         action = "fill_text"
 
-                if action in ("select_dropdown", "select_dropdown_safe") and field.get("options"):
-                    options = field["options"]
-                    # Phone-country uses select_dropdown_safe — match dial codes exactly
-                    # so "+1" does not hit Albania (+355) / Algeria (+213) via substring.
-                    if action == "select_dropdown_safe":
-                        best = _match_phone_country_option(value, options) or _match_option(value, options)
-                    else:
-                        best = _match_option(value, options)
+                if action == "select_dropdown" and field.get("options"):
+                    best = _match_option(value, field["options"])
                     if best:
                         value = best
 
@@ -275,7 +352,8 @@ def _trim_profile_for_autofill(profile: dict) -> dict:
     trimmed = {}
     personal_keys = [
         "full_name", "middle_name", "preferred_name", "email", "phone",
-        "phone_country_code", "phone_type", "additional_phone",
+        "first_name", "middle_name", "last_name", "preferred_name",
+        "phone_country_code", "phone_country_iso2", "phone_type", "additional_phone",
         "address_street1", "address_street2", "address_city", "address_state",
         "address_zip", "address_country_code", "address_country_name",
         "location", "linkedin_url", "github_url", "portfolio_url", "website_url",
@@ -337,14 +415,16 @@ def _build_form_analysis_prompt(
         html_section = ""
 
     p = profile or {}
-    full_name = p.get("full_name", "")
-    name_parts = full_name.split(None, 1) if full_name else ["", ""]
-    first_name = name_parts[0] if len(name_parts) > 0 else ""
-    last_name = name_parts[1] if len(name_parts) > 1 else ""
+    first_name, middle_name, last_name = _name_components(p)
+    full_name = (p.get("full_name") or "").strip() or " ".join(
+        x for x in (first_name, middle_name, last_name) if x
+    )
 
-    quick_ref = f"""IMPORTANT — The user's name is {full_name}. First name: {first_name}. Last name: {last_name}.
-Email: {p.get('email', '')}. Phone: {p.get('phone_country_code', '')} {p.get('phone', '')}.
+    quick_ref = f"""IMPORTANT — The user's name is {full_name}. First name: {first_name}. Middle name: {middle_name}. Last name: {last_name}.
+Email: {p.get('email', '')}. Phone: {p.get('phone_country_code', '')} {p.get('phone', '')}. Phone country ISO: {p.get('phone_country_iso2', '') or 'US'}.
 Address: {p.get('address_street1', '')}, {p.get('address_city', '')}, {p.get('address_state', '')} {p.get('address_zip', '')}, {p.get('address_country_name', '')}.
+NEVER fill phone-country / dial-code selectors — leave those for the user.
+NEVER fill work-authorization questions with a country name — use Yes/No from authorized_to_work_us only.
 NEVER use "John Doe", "123 Main St", "Anytown", or any placeholder. Use ONLY the values above."""
 
     prompt = f"""You are a job application autofill assistant. Map form fields to the user's profile data.
@@ -478,6 +558,8 @@ async def analyze_form(request: Request):
 
     deterministic_mappings, remaining_fields = _deterministic_fill(form_fields, profile)
     deterministic_mappings = _filter_eeo_mappings(deterministic_mappings, fill_eeo)
+    # Never send phone-country controls to AI — Stage 1 fail-safe.
+    remaining_fields = [f for f in remaining_fields if not _is_phone_country_field(f)]
 
     if not remaining_fields:
         return {"mappings": deterministic_mappings, "fill_eeo": fill_eeo}
@@ -541,8 +623,15 @@ async def analyze_form(request: Request):
         # Deterministic profile matches win over slower/noisier AI for the same field.
         seen = {m.get("selector") for m in deterministic_mappings if m.get("selector")}
         ai_mappings = [m for m in ai_mappings if m.get("selector") not in seen]
+        # Drop any AI attempt to fill phone-country / dial-code selectors.
+        safe_ai = []
+        for m in ai_mappings:
+            label = f"{m.get('field_label', '')} {m.get('selector', '')}"
+            if _re.search(r"phone.?country|country.?code|dial.?code|calling.?code", label, _re.I):
+                continue
+            safe_ai.append(m)
         return {
-            "mappings": deterministic_mappings + ai_mappings,
+            "mappings": deterministic_mappings + safe_ai,
             "fill_eeo": fill_eeo,
         }
     except asyncio.TimeoutError:

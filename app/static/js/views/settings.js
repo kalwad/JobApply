@@ -440,16 +440,29 @@ function renderTabProfile(container, p) {
     const mil = p.military || {};
     const eeo = p.eeo || {};
     const sameAddr = !p.perm_address_street1 && !p.perm_address_city;
-    const nameParts = (p.full_name || '').split(' ');
-    const firstName = nameParts[0] || '';
-    const lastName = nameParts.length > 2 ? nameParts.slice(2).join(' ') : (nameParts[1] || '');
+    const nameParts = (p.full_name || '').split(/\s+/).filter(Boolean);
+    const firstName = p.first_name || nameParts[0] || '';
+    const middleName = p.middle_name || '';
+    let lastName = p.last_name || '';
+    if (!lastName && nameParts.length >= 2) {
+      // Prefer peeling a known middle name out of full_name leftovers.
+      const rest = nameParts.slice(1);
+      if (middleName) {
+        const idx = rest.findIndex(w => w.toLowerCase() === middleName.toLowerCase());
+        lastName = (idx >= 0 ? [...rest.slice(0, idx), ...rest.slice(idx + 1)] : rest).join(' ');
+      } else if (nameParts.length > 2) {
+        lastName = nameParts.slice(2).join(' ');
+      } else {
+        lastName = nameParts[1] || '';
+      }
+    }
 
     container.innerHTML = `
         <div class="card" style="padding:24px;margin-bottom:24px">
             <h2 style="font-size:1.125rem;font-weight:600;margin-bottom:16px">Personal Information</h2>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
                 ${settingsField('First Name', 'pf-first', firstName)}
-                ${settingsField('Middle Name', 'pf-middle', p.middle_name)}
+                ${settingsField('Middle Name', 'pf-middle', middleName)}
                 ${settingsField('Last Name', 'pf-last', lastName)}
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
@@ -615,13 +628,18 @@ function renderTabProfile(container, p) {
         const last = document.getElementById('pf-last').value.trim();
         const sameAddress = document.getElementById('pf-same-addr').checked;
 
+        const phoneCc = document.getElementById('pf-phone-cc').value;
         const profileData = {
             full_name: [first, middle, last].filter(Boolean).join(' '),
+            first_name: first,
             middle_name: middle,
+            last_name: last,
             preferred_name: document.getElementById('pf-preferred').value,
             email: document.getElementById('pf-email').value,
             pronouns: document.getElementById('pf-pronouns').value,
-            phone_country_code: document.getElementById('pf-phone-cc').value,
+            phone_country_code: phoneCc,
+            // Stage 1: +1 alone is ambiguous (NANP). Default ISO for US when +1 is selected.
+            phone_country_iso2: phoneCc === '+1' ? 'US' : (p.phone_country_iso2 || ''),
             phone: document.getElementById('pf-phone').value,
             phone_type: document.getElementById('pf-phone-type').value,
             additional_phone: document.getElementById('pf-addl-phone').value,
