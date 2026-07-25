@@ -123,11 +123,17 @@ Steps remaining (operator-driven; JobApply must not navigate):
 Next: finish steps 2–7 on freeze HEAD, then same-HEAD Greenhouse + Lever re-smoke
 ```
 
-## Stage 1.1 backlog (document only — not this freeze)
+## Resume analyzer status
+
+Do **not** describe the resume analyzer as verified. Upload produces a **draft** for review (`/api/resume/draft/approve`). Heuristic score is labeled **AI Resume Content Heuristic**, not ATS Compatibility. Stage 1.1 will add binary résumé assets, ATS attach, and Projects.
+
+## Stage 1.1 backlog (separate branch after PR #1 — not this PR)
+
+Branch name: `stage1.1/resume-assets-projects`
 
 1. **Async review:** show deterministic + saved Q&A immediately; append Ollama drafts (“Generating N additional responses…”). Contact fields must not wait on AI timeout.
-2. **Projects:** Settings CRUD + parse; if ATS has Projects, fill there; else append under Work Experience after real jobs (never overwrite).
-3. **Résumé binary:** store uploaded PDF/DOCX; Settings file picker; extension `upload_file` only after review shows chosen filename. Until then ATS résumé remains manual.
+2. **Projects:** Settings CRUD + parse; if ATS has Projects, fill there; else optional reviewed fallback under Work Experience (off by default; never silent paid-employment labeling).
+3. **Résumé binary:** store uploaded PDF/DOCX outside git; Settings file picker; extension `upload_file` only after review shows chosen filename. Until then ATS résumé remains manual.
 
 ## What counts as a Stage 1 merge blocker
 

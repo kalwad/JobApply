@@ -92,9 +92,21 @@ See `docs/screenshots/` and CI artifact `stage1-browser-evidence`.
 
 ## PII hygiene
 
-- Working tree and new commits use synthetic fixtures only (`555…`, `example.com`, `Testville`).
-- **History note:** older commits on this branch still contain the digit string `5551234567` inside `extension/tests/content.test.js` (introduced in phone-flood fix era). Current tip uses `5551234567`. History rewrite (`git filter-repo` / BFG) requires explicit owner approval — do not force-push `main`.
-- Live smoke notes must stay sanitized (no street, relay email, phone, LinkedIn URL in docs).
+- Working tree and commits use synthetic fixtures only (`555…`, `example.com`, `Testville`).
+- Owner-approved history rewrite on unmerged `stage1/slim-autofill` replaced a real phone digit string previously present in test fixtures. Mapping documented in `docs/pii-history-rewrite.md`.
+- Do not force-push `main`. Live smoke notes must stay sanitized (no street, relay email, phone, LinkedIn URL in docs).
+
+## Resume analysis (pre-merge safety)
+
+- `/api/resume/upload` returns a **draft only** — does not save search terms, seniority, ATS/heuristic scores, or profile rows until `POST /api/resume/draft/approve`.
+- Employment dates validated deterministically against today’s date; June 2026–Present is valid in July 2026.
+- Seniority enum includes intern→principal + unknown; senior+ clamped by professional years.
+- UI label: **AI Resume Content Heuristic** (not a real ATS parse).
+- Analyzer is **not** verified as trustworthy for automatic job-search targeting.
+
+## Stage 1.1 (separate branch after PR #1)
+
+Create `stage1.1/resume-assets-projects` for: original PDF/DOCX assets, ATS file attach with review, Projects model + dual placement, corrected async analysis jobs. **Not in PR #1.**
 
 ## Security / Stage 1 scope notes
 

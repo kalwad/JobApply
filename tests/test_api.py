@@ -349,7 +349,7 @@ async def test_export_csv(client, app):
 
 @pytest.mark.asyncio
 async def test_upload_resume_no_client(client, app):
-    app.state._anthropic_client = None
+    app.state.ai_client = None
     app.state.testing = True
     import io
     files = {"file": ("resume.txt", io.BytesIO(b"My resume content"), "text/plain")}
@@ -357,19 +357,24 @@ async def test_upload_resume_no_client(client, app):
     assert resp.status_code == 200
     data = resp.json()
     assert data["ok"] is True
+    assert data["draft"] is True
+    assert data["draft_id"]
     assert data["resume_length"] == len("My resume content")
     assert data["search_terms"] == []
+    # Must not silently persist into search_config
+    cfg = await app.state.db.get_search_config()
+    assert not (cfg or {}).get("resume_text")
 
 
 @pytest.mark.asyncio
 async def test_upload_resume_pdf(client, app):
-    app.state._anthropic_client = None
+    app.state.ai_client = None
     app.state.testing = True
     import fitz
     import io
     doc = fitz.open()
     page = doc.new_page()
-    page.insert_text((72, 72), "Senior DevOps Engineer Resume")
+    page.insert_text((72, 72), "Software Engineer Resume")
     pdf_bytes = doc.tobytes()
     doc.close()
     files = {"file": ("resume.pdf", io.BytesIO(pdf_bytes), "application/pdf")}
@@ -377,4 +382,59 @@ async def test_upload_resume_pdf(client, app):
     assert resp.status_code == 200
     data = resp.json()
     assert data["ok"] is True
+    assert data["draft"] is True
     assert data["resume_length"] > 0
+    assert data["filename"] == "resume.pdf"
+
+
+@pytest.mark.asyncio
+async def test_upload_resume_rejects_docx(client, app):
+    app.state.testing = True
+    import io
+    files = {"file": ("resume.docx", io.BytesIO(b"PK fake"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+    resp = await client.post("/api/resume/upload", files=files)
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_resume_draft_approve_selected_only(client, app):
+    app.state.ai_client = None
+    app.state.testing = True
+    import io
+    files = {"file": ("resume.txt", io.BytesIO(b"Ada Lovelace\nSoftware Engineer"), "text/plain")}
+    up = await client.post("/api/resume/upload", files=files)
+    draft_id = up.json()["draft_id"]
+    # Inject analysis into the in-memory draft
+    draft = app.state.resume_drafts[draft_id]
+    draft["analysis"] = {
+        "search_terms": ["Software Engineer"],
+        "job_titles": [{"title": "Software Engineer", "why": "x", "evidence": ["y"]}],
+        "key_skills": ["Python"],
+        "seniority": "mid",
+        "summary": "Strong engineer",
+        "content_heuristic_score": 70,
+        "content_issues": [],
+        "content_tips": [],
+        "ats_score": 70,
+        "ats_issues": [],
+        "ats_tips": [],
+    }
+    # Approve resume text + search terms only (not seniority)
+    resp = await client.post("/api/resume/draft/approve", json={
+        "draft_id": draft_id,
+        "approve": {
+            "resume_text": True,
+            "search_terms": True,
+            "seniority": False,
+            "job_titles": False,
+            "key_skills": False,
+            "summary": False,
+            "content_heuristic": False,
+            "profile_sections": {},
+        },
+    })
+    assert resp.status_code == 200
+    cfg = await app.state.db.get_search_config()
+    assert "Ada Lovelace" in (cfg.get("resume_text") or "")
+    assert cfg.get("search_terms") == ["Software Engineer"]
+    assert not cfg.get("seniority")

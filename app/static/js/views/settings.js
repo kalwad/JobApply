@@ -914,6 +914,101 @@ function renderTabWorkHistory(container, fp) {
 }
 
 // === Tab 3: Job Search ===
+function renderResumeDraftPanel(panel, result, onApplied) {
+    if (!panel) return;
+    const analysis = result.analysis || result;
+    const score = analysis.content_heuristic_score ?? analysis.ats_score ?? 0;
+    const issues = analysis.content_issues || analysis.ats_issues || [];
+    const tips = analysis.content_tips || analysis.ats_tips || [];
+    const proposed = result.profile_proposed || {};
+    const current = result.current_config || {};
+    const curProf = result.current_profile_summary || {};
+    const stages = (result.stages || []).map(s => {
+        const mark = s.status === 'done' ? '✓' : s.status === 'error' ? '✕' : s.status === 'running' ? '⟳' : '·';
+        return `<div style="font-size:0.8125rem;color:var(--text-secondary)">${mark} ${escapeHtml(s.label)}</div>`;
+    }).join('');
+
+    const termPreview = (analysis.search_terms || []).slice(0, 8).map(t => escapeHtml(t)).join(', ');
+    const titlePreview = (analysis.job_titles || []).slice(0, 5).map(jt => {
+        const t = typeof jt === 'string' ? jt : jt.title;
+        return escapeHtml(t || '');
+    }).join(', ');
+
+    panel.innerHTML = `
+        <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px;background:var(--bg-surface-secondary)">
+            <h3 style="font-size:1rem;font-weight:600;margin:0 0 8px">Review analysis draft</h3>
+            <p style="font-size:0.8125rem;color:var(--text-tertiary);margin:0 0 12px">
+                Approve only what you want saved. Suggested search terms and seniority are <strong>not</strong> applied automatically.
+            </p>
+            <div style="display:grid;gap:4px;margin-bottom:12px">${stages}</div>
+            <div style="font-size:0.875rem;margin-bottom:12px;line-height:1.5">
+                <div><strong>File:</strong> ${escapeHtml(result.filename || 'resume')} · ${result.resume_length || 0} chars extracted</div>
+                <div><strong>Seniority (draft):</strong> ${escapeHtml(analysis.seniority || 'unknown')}
+                    <span style="color:var(--text-tertiary)"> (current: ${escapeHtml(current.seniority || '—')})</span></div>
+                <div><strong>AI content heuristic:</strong> ${score}/100 <span style="color:var(--text-tertiary)">(not a real ATS test)</span></div>
+                <div><strong>Suggested titles:</strong> ${titlePreview || '—'}</div>
+                <div><strong>Suggested search terms:</strong> ${termPreview || '—'}</div>
+                <div><strong>Profile parse:</strong> work ${(proposed.work_history || []).length} (have ${curProf.work_history_count || 0}),
+                    edu ${(proposed.education || []).length} (have ${curProf.education_count || 0}),
+                    skills ${(proposed.skills || []).length} (have ${curProf.skills_count || 0})</div>
+            </div>
+            ${issues.length ? `<div style="margin-bottom:8px"><span style="font-size:0.75rem;font-weight:600;color:var(--text-tertiary)">ISSUES</span><ul style="margin:4px 0 0;padding-left:18px">${issues.map(i => `<li style="font-size:0.8125rem">${escapeHtml(i)}</li>`).join('')}</ul></div>` : ''}
+            ${tips.length ? `<div style="margin-bottom:12px"><span style="font-size:0.75rem;font-weight:600;color:var(--text-tertiary)">TIPS</span><ul style="margin:4px 0 0;padding-left:18px">${tips.map(t => `<li style="font-size:0.8125rem">${escapeHtml(t)}</li>`).join('')}</ul></div>` : ''}
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:0.8125rem;margin-bottom:12px">
+                <label><input type="checkbox" class="draft-approve" data-key="resume_text" checked> Save extracted resume text</label>
+                <label><input type="checkbox" class="draft-approve" data-key="search_terms"> Apply search terms</label>
+                <label><input type="checkbox" class="draft-approve" data-key="job_titles"> Apply job title suggestions</label>
+                <label><input type="checkbox" class="draft-approve" data-key="key_skills"> Apply key skills</label>
+                <label><input type="checkbox" class="draft-approve" data-key="seniority"> Apply seniority</label>
+                <label><input type="checkbox" class="draft-approve" data-key="summary"> Apply summary</label>
+                <label><input type="checkbox" class="draft-approve" data-key="content_heuristic"> Save content heuristic score</label>
+                <label><input type="checkbox" class="draft-approve" data-key="personal"> Merge personal fields (empty only)</label>
+                <label><input type="checkbox" class="draft-approve" data-key="work_history"> Import work history (if empty)</label>
+                <label><input type="checkbox" class="draft-approve" data-key="education"> Import education (if empty)</label>
+                <label><input type="checkbox" class="draft-approve" data-key="skills"> Import skills (if empty)</label>
+                <label><input type="checkbox" class="draft-approve" data-key="languages"> Import languages (if empty)</label>
+                <label><input type="checkbox" class="draft-approve" data-key="certifications"> Import certifications (if empty)</label>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn btn-primary" id="resume-draft-approve-btn">Approve selected</button>
+                <button class="btn btn-ghost" id="resume-draft-discard-btn">Discard draft</button>
+            </div>
+        </div>
+    `;
+
+    panel.querySelector('#resume-draft-approve-btn')?.addEventListener('click', async () => {
+        const approve = {
+            profile_sections: {},
+        };
+        panel.querySelectorAll('.draft-approve').forEach(cb => {
+            const key = cb.dataset.key;
+            if (['personal', 'work_history', 'education', 'skills', 'languages', 'certifications'].includes(key)) {
+                approve.profile_sections[key] = cb.checked;
+            } else {
+                approve[key] = cb.checked;
+            }
+        });
+        try {
+            await api.approveResumeDraft(result.draft_id, approve);
+            showToast('Approved sections saved', 'success');
+            panel.innerHTML = '';
+            if (onApplied) await onApplied();
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    });
+
+    panel.querySelector('#resume-draft-discard-btn')?.addEventListener('click', async () => {
+        try {
+            await api.discardResumeDraft(result.draft_id);
+            panel.innerHTML = '';
+            showToast('Draft discarded', 'success');
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    });
+}
+
 function renderTabJobSearch(container, config, profile, customQA) {
     const termsValue = (config.search_terms || []).join('\n');
     const excludeTermsValue = (config.exclude_terms || []).join('\n');
@@ -932,21 +1027,25 @@ function renderTabJobSearch(container, config, profile, customQA) {
         <div class="card" style="padding:24px;margin-bottom:24px">
             <h2 style="font-size:1.125rem;font-weight:600;margin-bottom:16px">Resume</h2>
             <p style="color:var(--text-secondary);margin-bottom:16px;font-size:0.875rem">
-                Upload your resume to automatically derive search terms. Supported: .pdf, .txt, .md files.
+                Upload a PDF/TXT/MD for draft analysis. Nothing is saved until you approve specific sections.
+                Original PDF attachment storage for ATS upload is Stage 1.1.
             </p>
-            ${hasResume ? `<div class="status-badge status-prepared" style="margin-bottom:12px">Resume uploaded (${config.resume_text.length} chars)</div>` : ''}
-            <div style="display:flex;gap:12px;align-items:center">
+            ${hasResume ? `<div class="status-badge status-prepared" style="margin-bottom:12px">Saved extracted text on file (${config.resume_text.length} chars). Re-upload to propose changes.</div>` : ''}
+            <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
                 <input type="file" id="resume-file" accept=".pdf,.txt,.md,.text" style="font-size:0.875rem">
-                <button class="btn btn-primary" id="upload-resume-btn">Upload & Analyze</button>
+                <button class="btn btn-primary" id="upload-resume-btn">Upload & Analyze (draft)</button>
             </div>
+            <div id="resume-upload-status" style="margin-top:12px;font-size:0.875rem;color:var(--text-secondary)"></div>
+            <div id="resume-draft-panel" style="margin-top:16px"></div>
         </div>
 
         ${hasAts ? `
         <div class="card" style="padding:24px;margin-bottom:24px;${atsScore < 60 ? 'border-left:4px solid var(--danger)' : atsScore < 80 ? 'border-left:4px solid var(--warning, #f59e0b)' : 'border-left:4px solid var(--success, #22c55e)'}">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
-                <h2 style="font-size:1.125rem;font-weight:600;margin:0">ATS Compatibility</h2>
+                <h2 style="font-size:1.125rem;font-weight:600;margin:0">AI Resume Content Heuristic</h2>
                 <span class="score-badge ${atsScore >= 80 ? 'score-badge-green' : atsScore >= 60 ? 'score-badge-amber' : 'score-badge-gray'}" style="font-size:1.25rem;padding:8px 16px">${atsScore}/100</span>
             </div>
+            <p style="font-size:0.8125rem;color:var(--text-tertiary);margin:0 0 12px">Text-only model heuristic — not a real ATS parse of layout, fonts, or pages.</p>
             ${atsIssues.length ? `<div style="margin-bottom:12px"><span style="font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-tertiary)">Issues Found</span><ul style="margin-top:8px;padding-left:20px;display:flex;flex-direction:column;gap:4px">${atsIssues.map(i => `<li style="font-size:0.875rem;color:var(--text-secondary)">${escapeHtml(i)}</li>`).join('')}</ul></div>` : ''}
             ${atsTips.length ? `<div><span style="font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-tertiary)">Suggestions</span><ul style="margin-top:8px;padding-left:20px;display:flex;flex-direction:column;gap:4px">${atsTips.map(t => `<li style="font-size:0.875rem;color:var(--text-secondary)">${escapeHtml(t)}</li>`).join('')}</ul></div>` : ''}
         </div>` : ''}
@@ -1097,16 +1196,47 @@ function renderTabJobSearch(container, config, profile, customQA) {
     document.getElementById('upload-resume-btn').addEventListener('click', async () => {
         const fileInput = document.getElementById('resume-file');
         if (!fileInput.files.length) { showToast('Select a resume file first', 'error'); return; }
+        const file = fileInput.files[0];
         const btn = document.getElementById('upload-resume-btn');
+        const statusEl = document.getElementById('resume-upload-status');
+        const draftPanel = document.getElementById('resume-draft-panel');
         btn.disabled = true;
-        btn.innerHTML = '<span class="spinner"></span> Analyzing...';
+        const stageLabels = [
+            'Uploading file…',
+            'Extracting text…',
+            'Parsing profile…',
+            'Generating career suggestions…',
+            'Ready for review',
+        ];
+        let stageIdx = 0;
+        statusEl.innerHTML = `<span class="spinner"></span> ${stageLabels[0]}`;
+        const tick = setInterval(() => {
+            if (stageIdx < stageLabels.length - 2) {
+                stageIdx += 1;
+                statusEl.innerHTML = `<span class="spinner"></span> ${stageLabels[stageIdx]}`;
+            }
+        }, 4000);
         try {
-            const result = await api.uploadResume(fileInput.files[0]);
-            showToast(`Resume analyzed! ${result.search_terms.length} search terms extracted.`, 'success');
-            settingsData.config = await api.getSearchConfig();
-            renderTabJobSearch(container, settingsData.config, profile, customQA);
-        } catch (err) { showToast(err.message, 'error'); }
-        finally { btn.disabled = false; btn.textContent = 'Upload & Analyze'; }
+            const result = await api.uploadResume(file);
+            clearInterval(tick);
+            const fname = result.filename || file.name;
+            const when = result.uploaded_at ? new Date(result.uploaded_at).toLocaleString() : 'just now';
+            statusEl.innerHTML = `Draft ready — <strong>${escapeHtml(fname)}</strong> · ${(result.byte_size / 1024).toFixed(1)} KB · ${escapeHtml(when)}. Nothing saved yet.`;
+            // Keep the selected file name visible: do not wipe the input via full re-render.
+            renderResumeDraftPanel(draftPanel, result, async () => {
+                settingsData.config = await api.getSearchConfig();
+                const p = await api.request('GET', '/api/profile').catch(() => profile);
+                renderTabJobSearch(container, settingsData.config, p || profile, customQA);
+            });
+            showToast('Draft ready for review — approve sections to save.', 'success');
+        } catch (err) {
+            clearInterval(tick);
+            statusEl.textContent = '';
+            showToast(err.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Upload & Analyze (draft)';
+        }
     });
 
     document.getElementById('save-terms-btn').addEventListener('click', async () => {

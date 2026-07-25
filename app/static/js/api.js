@@ -107,6 +107,14 @@ const api = {
         return res.json();
     },
 
+    approveResumeDraft(draftId, approve) {
+        return this.request('POST', '/api/resume/draft/approve', { draft_id: draftId, approve });
+    },
+
+    discardResumeDraft(draftId) {
+        return this.request('POST', '/api/resume/draft/discard', { draft_id: draftId });
+    },
+
     getAISettings() {
         return this.request('GET', '/api/ai-settings');
     },

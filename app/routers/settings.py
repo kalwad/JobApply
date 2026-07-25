@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import uuid
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File
 
@@ -9,6 +11,14 @@ from app.ai_client import AIClient
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
+
+
+def _resume_drafts(request: Request) -> dict:
+    store = getattr(request.app.state, "resume_drafts", None)
+    if store is None:
+        store = {}
+        request.app.state.resume_drafts = store
+    return store
 
 
 def _mask_key(key: str) -> str:
@@ -603,18 +613,37 @@ async def update_scraper_schedule(request: Request):
 
 
 _MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
-_ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".doc", ".docx", ".rtf"}
+# Stage 1: text-extractable types only. DOCX/DOC/RTF need a real parser (Stage 1.1).
+_ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md"}
+_REJECTED_BINARY_EXTENSIONS = {".doc", ".docx", ".rtf"}
 
 
 @router.post("/resume/upload")
 async def upload_resume(request: Request, file: UploadFile = File(...)):
-    filename = (file.filename or "").lower()
+    """Extract + analyze into a DRAFT. Does not save search config or profile until approve."""
+    original_name = file.filename or "resume"
+    filename = original_name.lower()
     ext = "." + filename.rsplit(".", 1)[-1] if "." in filename else ""
+    if ext in _REJECTED_BINARY_EXTENSIONS:
+        raise HTTPException(
+            400,
+            f"{ext} upload is not supported yet (binary Office formats need a dedicated parser). "
+            f"Upload .pdf, .txt, or .md for now.",
+        )
     if ext not in _ALLOWED_EXTENSIONS:
         raise HTTPException(400, f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(_ALLOWED_EXTENSIONS))}")
     content = await file.read()
     if len(content) > _MAX_UPLOAD_SIZE:
         raise HTTPException(400, f"File too large ({len(content)} bytes). Maximum: {_MAX_UPLOAD_SIZE // (1024*1024)}MB")
+
+    stages = [
+        {"id": "upload", "label": "Uploading file", "status": "done"},
+        {"id": "extract", "label": "Extracting text", "status": "running"},
+        {"id": "profile", "label": "Parsing profile", "status": "pending"},
+        {"id": "career", "label": "Generating career suggestions", "status": "pending"},
+        {"id": "review", "label": "Ready for review", "status": "pending"},
+    ]
+
     if filename.endswith(".pdf"):
         import fitz
         doc = fitz.open(stream=content, filetype="pdf")
@@ -623,6 +652,10 @@ async def upload_resume(request: Request, file: UploadFile = File(...)):
     else:
         resume_text = content.decode("utf-8", errors="replace")
 
+    stages[1]["status"] = "done"
+    uploaded_at = datetime.now(timezone.utc).isoformat()
+    today = date.today()
+
     client = getattr(request.app.state, "ai_client", None)
     if not client and not getattr(request.app.state, "testing", False):
         from app.main import _build_ai_client
@@ -630,40 +663,228 @@ async def upload_resume(request: Request, file: UploadFile = File(...)):
         env_key = getattr(getattr(request.app.state, "settings", None), "anthropic_api_key", "") or ""
         client = _build_ai_client(ai_settings, env_key)
 
-    analysis = {"search_terms": [], "job_titles": [], "key_skills": [],
-                "seniority": "", "summary": "", "ats_score": 0, "ats_issues": [], "ats_tips": []}
-    profile_data = {}
-    logger.info(f"Resume upload: {len(resume_text)} chars, client={'yes' if client else 'no'}")
+    analysis = {
+        "search_terms": [], "job_titles": [], "key_skills": [],
+        "seniority": "unknown", "summary": "",
+        "content_heuristic_score": 0, "content_issues": [], "content_tips": [],
+        "ats_score": 0, "ats_issues": [], "ats_tips": [],
+        "professional_years_estimate": 0, "as_of_date": today.isoformat(),
+    }
+    profile_data: dict = {}
+    logger.info(f"Resume upload draft: {len(resume_text)} chars, client={'yes' if client else 'no'}")
+
     if client:
         from app.resume_analyzer import analyze_resume, parse_resume_to_profile
-        analysis_task = analyze_resume(client, resume_text)
-        profile_task = parse_resume_to_profile(client, resume_text)
-        analysis, profile_data = await asyncio.gather(analysis_task, profile_task)
-        logger.info(f"Analysis result: ats_score={analysis.get('ats_score')}, terms={len(analysis.get('search_terms', []))}")
-        logger.info(f"Profile parse: {len(profile_data)} sections extracted")
-        await request.app.state.reinit_ai_services(client, resume_text)
+        stages[2]["status"] = "running"
+        stages[3]["status"] = "running"
+        try:
+            profile_task = parse_resume_to_profile(client, resume_text, today=today)
+            # Profile first so analysis can clamp seniority from work history.
+            profile_data = await asyncio.wait_for(profile_task, timeout=180)
+            stages[2]["status"] = "done"
+            work_history = profile_data.get("work_history") or []
+            analysis = await asyncio.wait_for(
+                analyze_resume(client, resume_text, today=today, work_history=work_history),
+                timeout=180,
+            )
+            stages[3]["status"] = "done"
+        except asyncio.TimeoutError:
+            stages[2]["status"] = "error"
+            stages[3]["status"] = "error"
+            analysis["content_issues"] = list(analysis.get("content_issues") or []) + [
+                "Analysis timed out. You can retry or discard this draft."
+            ]
+            analysis["ats_issues"] = analysis["content_issues"]
+        except Exception as exc:
+            logger.error(f"Resume draft analysis failed: {exc}")
+            stages[2]["status"] = "error"
+            stages[3]["status"] = "error"
+            analysis["content_issues"] = [f"Analysis failed: {exc}"]
+            analysis["ats_issues"] = analysis["content_issues"]
+    else:
+        stages[2]["status"] = "skipped"
+        stages[3]["status"] = "skipped"
+
+    stages[4]["status"] = "done"
 
     db = request.app.state.db
-    await db.save_search_config(
-        resume_text, analysis["search_terms"],
-        job_titles=analysis["job_titles"], key_skills=analysis["key_skills"],
-        seniority=analysis.get("seniority", ""), summary=analysis.get("summary", ""),
-        ats_score=analysis.get("ats_score", 0), ats_issues=analysis.get("ats_issues", []),
-        ats_tips=analysis.get("ats_tips", []),
-    )
-    if profile_data:
-        await request.app.state.save_parsed_profile(db, profile_data)
+    current_config = await db.get_search_config() or {}
+    full_profile = await db.get_full_profile()
+    # get_full_profile shape: may nest profile under keys — normalize
+    current_profile = full_profile if isinstance(full_profile, dict) else {}
 
+    draft_id = str(uuid.uuid4())
+    draft = {
+        "draft_id": draft_id,
+        "filename": original_name,
+        "byte_size": len(content),
+        "uploaded_at": uploaded_at,
+        "resume_text": resume_text,
+        "analysis": analysis,
+        "profile_proposed": profile_data,
+        "current_config": {
+            "search_terms": current_config.get("search_terms") or [],
+            "job_titles": current_config.get("job_titles") or [],
+            "key_skills": current_config.get("key_skills") or [],
+            "seniority": current_config.get("seniority") or "",
+            "summary": current_config.get("summary") or "",
+            "ats_score": current_config.get("ats_score") or 0,
+            "resume_length": len(current_config.get("resume_text") or ""),
+        },
+        "current_profile_summary": {
+            "work_history_count": len(current_profile.get("work_history") or []),
+            "education_count": len(current_profile.get("education") or []),
+            "skills_count": len(current_profile.get("skills") or []),
+            "languages_count": len(current_profile.get("languages") or []),
+            "certifications_count": len(current_profile.get("certifications") or []),
+            "email": (current_profile.get("profile") or current_profile).get("email")
+                     if isinstance(current_profile.get("profile"), dict)
+                     else current_profile.get("email"),
+        },
+        "stages": stages,
+    }
+    _resume_drafts(request)[draft_id] = draft
+
+    # IMPORTANT: do not save search_config or profile here.
     return {
         "ok": True,
-        "search_terms": analysis["search_terms"],
-        "job_titles": analysis["job_titles"],
-        "key_skills": analysis["key_skills"],
-        "seniority": analysis.get("seniority", ""),
-        "summary": analysis.get("summary", ""),
-        "ats_score": analysis.get("ats_score", 0),
-        "ats_issues": analysis.get("ats_issues", []),
-        "ats_tips": analysis.get("ats_tips", []),
+        "draft": True,
+        "draft_id": draft_id,
+        "filename": original_name,
+        "byte_size": len(content),
+        "uploaded_at": uploaded_at,
+        "stages": stages,
         "resume_length": len(resume_text),
+        "analysis": analysis,
+        "profile_proposed": profile_data,
+        "current_config": draft["current_config"],
+        "current_profile_summary": draft["current_profile_summary"],
         "profile_parsed": bool(profile_data),
+        # Convenience mirrors for older clients (still draft-only — not persisted).
+        "search_terms": analysis.get("search_terms") or [],
+        "job_titles": analysis.get("job_titles") or [],
+        "key_skills": analysis.get("key_skills") or [],
+        "seniority": analysis.get("seniority") or "",
+        "summary": analysis.get("summary") or "",
+        "ats_score": analysis.get("content_heuristic_score") or analysis.get("ats_score") or 0,
+        "ats_issues": analysis.get("content_issues") or analysis.get("ats_issues") or [],
+        "ats_tips": analysis.get("content_tips") or analysis.get("ats_tips") or [],
+        "content_heuristic_score": analysis.get("content_heuristic_score") or 0,
+        "message": "Draft ready for review. Nothing was saved to your profile or search settings.",
+    }
+
+
+@router.get("/resume/draft/{draft_id}")
+async def get_resume_draft(request: Request, draft_id: str):
+    draft = _resume_drafts(request).get(draft_id)
+    if not draft:
+        raise HTTPException(404, "Draft not found or expired")
+    # Omit full resume_text from GET unless needed — include length only
+    out = {k: v for k, v in draft.items() if k != "resume_text"}
+    out["resume_length"] = len(draft.get("resume_text") or "")
+    return out
+
+
+@router.post("/resume/draft/discard")
+async def discard_resume_draft(request: Request):
+    body = await request.json()
+    draft_id = body.get("draft_id")
+    if not draft_id:
+        raise HTTPException(400, "draft_id required")
+    _resume_drafts(request).pop(draft_id, None)
+    return {"ok": True}
+
+
+@router.post("/resume/draft/approve")
+async def approve_resume_draft(request: Request):
+    """Persist selected draft sections only after explicit user approval."""
+    body = await request.json()
+    draft_id = body.get("draft_id")
+    approve = body.get("approve") or {}
+    if not draft_id:
+        raise HTTPException(400, "draft_id required")
+    draft = _resume_drafts(request).get(draft_id)
+    if not draft:
+        raise HTTPException(404, "Draft not found or expired")
+
+    analysis = draft.get("analysis") or {}
+    profile_data = draft.get("profile_proposed") or {}
+    resume_text = draft.get("resume_text") or ""
+    db = request.app.state.db
+    current = await db.get_search_config() or {}
+
+    # Defaults: nothing applied unless explicitly true
+    apply_resume_text = bool(approve.get("resume_text"))
+    apply_search_terms = bool(approve.get("search_terms"))
+    apply_job_titles = bool(approve.get("job_titles"))
+    apply_key_skills = bool(approve.get("key_skills"))
+    apply_seniority = bool(approve.get("seniority"))
+    apply_summary = bool(approve.get("summary"))
+    apply_heuristic = bool(approve.get("content_heuristic") or approve.get("ats"))
+    profile_sections = approve.get("profile_sections") or {}
+
+    new_terms = analysis.get("search_terms") if apply_search_terms else (current.get("search_terms") or [])
+    new_titles = analysis.get("job_titles") if apply_job_titles else (current.get("job_titles") or [])
+    new_skills = analysis.get("key_skills") if apply_key_skills else (current.get("key_skills") or [])
+    new_seniority = analysis.get("seniority") if apply_seniority else (current.get("seniority") or "")
+    new_summary = analysis.get("summary") if apply_summary else (current.get("summary") or "")
+    score = analysis.get("content_heuristic_score", analysis.get("ats_score", 0))
+    issues = analysis.get("content_issues") or analysis.get("ats_issues") or []
+    tips = analysis.get("content_tips") or analysis.get("ats_tips") or []
+
+    text_to_save = resume_text if apply_resume_text else (current.get("resume_text") or resume_text)
+    # Always allow storing extracted text when user approves any analysis slice + resume_text,
+    # or when they approve resume_text alone. If they only approve search terms, keep prior text
+    # unless resume_text approved.
+    if apply_resume_text or (
+        (apply_search_terms or apply_job_titles or apply_key_skills or apply_seniority or apply_summary or apply_heuristic)
+        and not (current.get("resume_text") or "").strip()
+    ):
+        text_to_save = resume_text
+
+    if any([
+        apply_resume_text, apply_search_terms, apply_job_titles, apply_key_skills,
+        apply_seniority, apply_summary, apply_heuristic,
+    ]):
+        await db.save_search_config(
+            text_to_save,
+            new_terms if apply_search_terms else (current.get("search_terms") or []),
+            job_titles=new_titles if apply_job_titles else (current.get("job_titles") or []),
+            key_skills=new_skills if apply_key_skills else (current.get("key_skills") or []),
+            seniority=new_seniority if apply_seniority else (current.get("seniority") or ""),
+            summary=new_summary if apply_summary else (current.get("summary") or ""),
+            ats_score=score if apply_heuristic else (current.get("ats_score") or 0),
+            ats_issues=issues if apply_heuristic else (current.get("ats_issues") or []),
+            ats_tips=tips if apply_heuristic else (current.get("ats_tips") or []),
+        )
+        client = getattr(request.app.state, "ai_client", None)
+        if client and apply_resume_text:
+            await request.app.state.reinit_ai_services(client, text_to_save)
+
+    applied_profile = []
+    if profile_data and any(profile_sections.values()):
+        filtered = {}
+        if profile_sections.get("personal") and profile_data.get("personal"):
+            filtered["personal"] = profile_data["personal"]
+            applied_profile.append("personal")
+        for key in ("work_history", "education", "skills", "languages", "certifications"):
+            if profile_sections.get(key) and profile_data.get(key):
+                filtered[key] = profile_data[key]
+                applied_profile.append(key)
+        if filtered:
+            await request.app.state.save_parsed_profile(db, filtered)
+
+    _resume_drafts(request).pop(draft_id, None)
+    return {
+        "ok": True,
+        "applied": {
+            "resume_text": apply_resume_text,
+            "search_terms": apply_search_terms,
+            "job_titles": apply_job_titles,
+            "key_skills": apply_key_skills,
+            "seniority": apply_seniority,
+            "summary": apply_summary,
+            "content_heuristic": apply_heuristic,
+            "profile_sections": applied_profile,
+        },
     }
