@@ -528,7 +528,7 @@ describe('getServerUrl', () => {
     await sendMessage({ type: 'checkConnection' });
 
     const url = globalThis.fetch.mock.calls[0][0];
-    expect(url).toBe('http://localhost:8085/api/health');
+    expect(url).toBe('http://localhost:8085/api/meta');
   });
 
   it('rejects non-http/https URLs', async () => {

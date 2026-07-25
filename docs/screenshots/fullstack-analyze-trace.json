@@ -1,0 +1,40 @@
+{
+  "backend": "http://127.0.0.1:8085",
+  "analyze_hits": 2,
+  "probe_mappings": [
+    {
+      "selector": "#first_name",
+      "value": "Ada",
+      "action": "fill_text",
+      "confidence": 1.0,
+      "field_label": "First Name",
+      "supportingFactIds": []
+    },
+    {
+      "selector": "input[name=\"sponsorship\"][value=\"no\"]",
+      "value": "no",
+      "action": "click_radio",
+      "confidence": 1.0,
+      "field_label": "Requires sponsorship?",
+      "supportingFactIds": []
+    },
+    {
+      "selector": "#contact_by_email",
+      "value": "yes",
+      "action": "check_checkbox",
+      "confidence": 1.0,
+      "field_label": "Contact me by email",
+      "supportingFactIds": []
+    }
+  ],
+  "fill_report": {
+    "filled": 5,
+    "savedAnswers": 0,
+    "aiDrafts": 0,
+    "needsReview": 0,
+    "skippedSensitive": 0,
+    "alreadyCompleted": 0,
+    "failed": 0,
+    "total": 5
+  }
+}

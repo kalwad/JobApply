@@ -1,46 +1,37 @@
 # Stage 1 acceptance report
 
-Branch: `stage1/slim-autofill` (created from `origin/main` @ `c937e36`)  
-Default branch verified: `main` (`gh repo view kalwad/JobApply --json defaultBranchRef`)  
-WIP / audit refs preserved: `grok/stage1-6-checkpoint`, `audit/stage1-6`, `baseline/untouched`, tag `baseline/careerpulse-upstream`
+Branch: `stage1/slim-autofill` (from `origin/main` @ `c937e36`)  
+PR: https://github.com/kalwad/JobApply/pull/1 — **not approved for merge** until live ATS checklist is done.
 
-## Commit structure
+WIP / audit refs preserved: `grok/stage1-6-checkpoint`, `audit/stage1-6`, `baseline/untouched`, tag `baseline/careerpulse-upstream`.
 
-| Hash | Commit |
-|------|--------|
-| `30def04` | chore: apply JobApply branding and environment compatibility |
-| `b101dd3` | feat: introduce local-only slim application mode |
-| `d320076` | refactor: retain profile Q&A and Ollama application services |
-| `cec014f` | feat: harden ATS extraction and autofill safety |
-| `9e4ac52` | feat: add review-before-fill and structured fill reports |
-| `f3132d9` | test: add browser-level ATS fixtures and safety invariants |
-| `e28245b` | ci: separate core acceptance from upstream diagnostics |
-| `21b16c7` | docs: add Stage 1 setup security and smoke-test guides |
-| `48651fe` | docs: record final Stage 1 docs commit hash in acceptance report |
+## Default branch verification (raw)
 
-## Commands run
+```text
+$ gh api repos/kalwad/JobApply --jq .default_branch
+main
+
+$ git ls-remote --symref origin HEAD
+ref: refs/heads/main	HEAD
+c937e366b9f7566a5c3b6a9d3fafc8f7d25272bd	HEAD
+```
+
+Both identify `main`. No PATCH was required on this pass.
+
+## Commands run (acceptance-gap patch)
 
 ```bash
-gh repo edit kalwad/JobApply --default-branch main
-gh repo view kalwad/JobApply --json defaultBranchRef
-
-git fetch --all --tags
-git switch main && git pull --ff-only origin main
-git switch -c stage1/slim-autofill
+gh api repos/kalwad/JobApply --jq .default_branch
+git ls-remote --symref origin HEAD
 
 uv sync --dev
 uv run playwright install chromium
 
-uv run pytest --tb=short \
-  tests/test_config.py tests/test_ai_client.py tests/test_ai_settings.py \
-  tests/test_ai_retry.py tests/test_autofill_timeout.py \
-  tests/test_profile_extended.py tests/test_resumes.py \
-  tests/test_pdf_generator.py tests/test_docx_export.py \
-  tests/test_autofill_stage1.py
-# → 104 passed
+uv run pytest tests/test_autofill_stage1.py tests/test_config.py -q
+# → 5 passed
 
-uv run pytest tests/browser --tb=short -q
-# → 9 passed
+uv run pytest tests/browser -q
+# → 10 passed
 
 (cd extension && pnpm exec vitest run)
 # → 486 passed
@@ -49,40 +40,89 @@ uv run pytest tests/browser --tb=short -q
 # → 64 passed
 ```
 
-## Browser fixture results
+## Browser fixture evidence (synthetic local ATS fixtures)
 
-| Fixture | Extension load | Review overlay | Cancel (no fill) | Approve + protections | Screenshots |
-|---------|----------------|----------------|------------------|-----------------------|-------------|
-| Workday | pass (shared) | pass | pass | pass | `docs/screenshots/workday-*.png` |
-| Greenhouse | pass | pass | pass | pass | `docs/screenshots/greenhouse-*.png` |
-| Lever | pass | pass | pass | pass | `docs/screenshots/lever-*.png` |
+Screenshots are labeled: **“Pre-fill review overlay on a synthetic local ATS browser fixture”** (and cancel / approve / fill-report counterparts). They are **not** live Workday/Greenhouse/Lever verification.
 
-Protections exercised in browser tests: nonempty preservation, preselected radio preservation, EEO untouched, submit not auto-focused, review not bypassed.
+| Artifact | Path |
+|---|---|
+| Workday review | `docs/screenshots/workday-review-overlay.png` |
+| Workday cancel | `docs/screenshots/workday-cancel-result.png` |
+| Workday approve | `docs/screenshots/workday-after-approve.png` |
+| Workday fill report | `docs/screenshots/workday-fill-report.png` + `.json` |
+| Greenhouse review | `docs/screenshots/greenhouse-review-overlay.png` |
+| Greenhouse cancel | `docs/screenshots/greenhouse-cancel-result.png` |
+| Greenhouse approve | `docs/screenshots/greenhouse-after-approve.png` |
+| Greenhouse fill report | `docs/screenshots/greenhouse-fill-report.png` + `.json` |
+| Lever review | `docs/screenshots/lever-review-overlay.png` |
+| Lever cancel | `docs/screenshots/lever-cancel-result.png` |
+| Lever approve | `docs/screenshots/lever-after-approve.png` |
+| Lever fill report | `docs/screenshots/lever-fill-report.png` + `.json` |
+| Full-stack review/approve | `docs/screenshots/fullstack-greenhouse-*.png` |
+| Full-stack analyze trace | `docs/screenshots/fullstack-analyze-trace.json` |
 
-## Security fixes
+CI uploads these under artifact `stage1-browser-evidence`. Required screenshots fail the run if capture fails.
 
-1. Default bind `127.0.0.1` (`JOBAPPLY_HOST`)
-2. Extension debug logging redacted / off unless `debugAutofill`
-3. Permissions documented in `docs/extension-permissions.md` (`host_permissions` limited to local backend; `<all_urls>` content scripts justified for ATS domains)
-4. Cloud provider disclosure in onboarding, Settings, and `.env.example`
+### Checkbox evidence
 
-## Stage 2–6 exclusion
+- Empty benign `contact_by_email` → checked after Approve
+- Prechecked SMS/newsletter → remains checked (`alreadyCompleted`)
+- Unmapped `marketing_opt_in` (false/absent preference) → remains unchecked
+- Legal terms/privacy → `skip` with reason `manual review — legal attestation` (`needsReview`)
+- EEO controls → skipped without `fill_eeo`
 
-Confirmed absent on this branch: `app/facts`, `app/answers`, `app/resume_engine`, Fact Bank / Resume Studio UI routes, and related tests. Prototypes remain on `grok/stage1-6-checkpoint`.
+### Radio evidence
 
-## Known limitations
+- Empty trusted `work_auth` / `sponsorship` → filled from explicit profile/mock value after Approve
+- Existing `contact_pref=email` → unchanged
+- Untested/untrusted groups (`favorite_color`, `shirt_size`, `team_color`) → remain unselected
+- EEO `disability` radio → untouched
 
-- Live Workday / Greenhouse / Lever supervised smoke **not** performed (see `docs/live-ats-smoke.md`)
-- Full upstream CareerPulse suite has inherited scraper/network failures; tracked by `ci-upstream-diagnostic.yml` and `docs/upstream-diagnostic-failures.md`
-- Browser acceptance uses mocked local autofill API responses for deterministic mappings; review overlay and DOM protections are real extension code paths
-- Generic field extraction beyond the three ATS adapters is inherited best-effort only
+### Submit-event counter evidence
 
-## Manual steps awaiting user confirmation
+Fixture pages install:
 
-- [ ] Workday live smoke (stop before submit)
-- [ ] Greenhouse live smoke (stop before submit)
-- [ ] Lever live smoke (stop before submit)
+- `window.__submitEventCount`
+- `window.__submitButtonClickCount`
+- `window.__requestSubmitCount` (patched `requestSubmit`)
 
-## Verdict
+Cancel and Approve paths assert all three remain **0**. Submit is also deliberately proposed in the mock mapping and refused by the extension (`refusing to interact with submit control`).
 
-Automated Stage 1 evidence on this branch is ready for PR review. **Do not merge** until supervised live ATS checklists are completed and Core CI is green on the PR.
+### Exact fill-report assertions (mocked analyze path)
+
+| ATS | filled | alreadyCompleted (preserved) | skippedSensitive | needsReview | failed |
+|---|---:|---:|---:|---:|---:|
+| Workday | 5 | 2 | 4 | 1 | 0 |
+| Greenhouse | 5 | 3 | 3 | 1 | 0 |
+| Lever | 4 | 2 | 3 | 1 | 0 |
+
+Named categories verified in results JSON: submit refusal, EEO skip, legal manual review, nonempty protection.
+
+### Full-stack request trace
+
+`tests/browser/test_fullstack_autofill.py` runs:
+
+fixture page → unpacked extension → real FastAPI on `127.0.0.1` → `/api/autofill/analyze` (not mocked) → review → Approve → DOM fill → fill report dataset.
+
+Deterministic profile rules supply mappings (no cloud credentials / no live Ollama). Trace: `docs/screenshots/fullstack-analyze-trace.json`.
+
+### Runtime error capture
+
+Harness fails on page exceptions, content-script console errors, service-worker console errors, and unhandled rejections. Nonfatal warnings are recorded separately. Notification prompts are suppressed via Chromium flags; persistent contexts always `close()` in `finally`.
+
+## Security / Stage 1 scope notes
+
+- Default bind `127.0.0.1`; slim mode default on
+- Checkbox/radio `currentValue` extraction uses checked state (not the value attribute)
+- Autofill radio/checkbox action detection no longer misclassifies group `options` as dropdowns
+- No Stage 2–6 modules on this branch
+
+## Remaining manual live-ATS work
+
+See `docs/live-ats-smoke.md`. Still required before merge:
+
+- [ ] Supervised Workday public application (stop before submit)
+- [ ] Supervised Greenhouse public application (stop before submit)
+- [ ] Supervised Lever public application (stop before submit)
+
+Do **not** squash-merge when ready; use a normal merge commit to preserve Stage 1 history.

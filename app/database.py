@@ -682,6 +682,7 @@ class Database:
             "how_heard_default": "ALTER TABLE user_profile ADD COLUMN how_heard_default TEXT NOT NULL DEFAULT ''",
             "cover_letter_template": "ALTER TABLE user_profile ADD COLUMN cover_letter_template TEXT NOT NULL DEFAULT ''",
             "background_check_consent": "ALTER TABLE user_profile ADD COLUMN background_check_consent TEXT NOT NULL DEFAULT ''",
+            "contact_by_email": "ALTER TABLE user_profile ADD COLUMN contact_by_email TEXT NOT NULL DEFAULT ''",
         }
         if profile_columns:
             for col, sql in profile_migrations.items():

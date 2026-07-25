@@ -383,7 +383,8 @@
           label: findLabel(el),
           nearbyHeading: getNearbyHeading(el),
           required: el.required || el.getAttribute('aria-required') === 'true',
-          currentValue: el.value || el.textContent?.trim() || '',
+          // Radios/checkboxes: use checked state, not the value attribute ("on").
+          currentValue: getCurrentFieldValue(el),
           isContentEditable: el.isContentEditable && el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA',
           role: el.getAttribute('role') || null,
         };
@@ -1561,8 +1562,12 @@
                 const hints = fieldHints || {};
                 const hintValues = [hints.label, hints.name, hints.id, hints.placeholder].filter(Boolean);
                 const tables = norm.detectFieldCategory(hintValues);
+                // Avoid country/misc tables mistaking "no" for Norway on yes/no radios.
                 const radioLabels = Array.from(radios).map(r => findLabel(r).trim());
-                const normIdx = norm.normalizedMatch(radioLabels, value, tables.length ? tables : undefined);
+                const simpleYesNo = radioLabels.every(l => /^(yes|no)$/i.test(l.trim()));
+                const normIdx = simpleYesNo
+                  ? -1
+                  : norm.normalizedMatch(radioLabels, value, tables.length ? tables : undefined);
                 if (normIdx >= 0) {
                   radios[normIdx].click();
                   return { selector, success: true, action, selectedValue: radios[normIdx].value };
@@ -1570,8 +1575,8 @@
               } catch { /* normalization unavailable */ }
             }
           }
-          el.click();
-          return { selector, success: true, action };
+          // Do not click the unresolved element — that often selects the wrong radio.
+          return { selector, success: false, reason: `no matching radio for "${value}"` };
         }
 
         case 'check_checkbox': {
@@ -1733,13 +1738,24 @@
       if (!currentMappings || !currentMappings.length) break;
 
       for (const mapping of currentMappings) {
-        if (mapping.action === 'skip') continue;
         if (failedSelectors.has(mapping.selector) && iteration > 0) continue;
+
+        if (mapping.action === 'skip') {
+          results.push({
+            selector: mapping.selector,
+            success: true,
+            skipped: true,
+            reason: mapping.reason || 'skipped',
+            action: 'skip',
+            mapping,
+          });
+          continue;
+        }
 
         let result;
         try {
           result = await withTimeout(
-            fillField(mapping.selector, mapping.value, mapping.action, mapping.confidence, mapping.label),
+            fillField(mapping.selector, mapping.value, mapping.action, mapping.confidence, mapping.label || mapping.field_label),
             FIELD_TIMEOUT_MS,
             `filling ${mapping.selector}`
           );
@@ -2582,6 +2598,22 @@
           statusMsg += ' Review highlighted fields.';
         }
         updateOverlay('done', statusMsg);
+        // Expose structured report on the overlay for acceptance tests (no PII values).
+        try {
+          if (overlayEl && result.fillReport) {
+            const safeResults = (result.results || []).map(r => ({
+              selector: r.selector,
+              success: !!r.success,
+              skipped: !!r.skipped,
+              alreadyCompleted: !!r.alreadyCompleted,
+              reason: r.reason || '',
+              action: r.action || r.mapping?.action || '',
+              field_label: r.mapping?.field_label || r.mapping?.label || '',
+            }));
+            overlayEl.dataset.fillReport = JSON.stringify(result.fillReport);
+            overlayEl.dataset.fillResults = JSON.stringify(safeResults);
+          }
+        } catch { /* ignore */ }
 
         preSubmitValues = captureFormValues();
         detectSubmission();

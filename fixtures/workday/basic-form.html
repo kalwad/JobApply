@@ -7,27 +7,57 @@
     <input data-automation-id="legalNameSection_lastName" id="wd-last" name="lastName" type="text" aria-label="Last Name" />
     <input data-automation-id="email" id="wd-email" name="email" type="email" aria-label="Email Address" />
     <input data-automation-id="phone-number" id="wd-phone" name="phone" type="tel" aria-label="Phone Number" value="555-0100" />
-    <input data-automation-id="addressSection_addressLine1" id="wd-addr1" type="text" aria-label="Address Line 1" />
-    <input data-automation-id="addressSection_city" id="wd-city" type="text" aria-label="City" />
-    <label for="wd-country">Country</label>
-    <select id="wd-country" name="country" aria-label="Country">
-      <option value="">Select One</option>
-      <option value="US">United States</option>
-      <option value="CA">Canada</option>
-    </select>
+
     <fieldset>
-      <legend>Work authorization</legend>
-      <label><input type="radio" name="work_auth" value="yes" /> Authorized</label>
-      <label><input type="radio" name="work_auth" value="no" /> Not authorized</label>
+      <legend>Authorized to work in the US?</legend>
+      <label><input type="radio" name="work_auth" value="yes" /> Yes</label>
+      <label><input type="radio" name="work_auth" value="no" /> No</label>
     </fieldset>
-    <label><input type="checkbox" id="wd-terms" name="terms" /> I agree to the terms</label>
+
+    <fieldset>
+      <legend>Favorite color</legend>
+      <label><input type="radio" name="favorite_color" value="blue" /> Blue</label>
+      <label><input type="radio" name="favorite_color" value="green" /> Green</label>
+    </fieldset>
+
+    <label><input type="checkbox" id="wd-contact-email" name="contact_by_email" /> Contact me by email</label>
+    <label><input type="checkbox" id="wd-sms" name="receive_sms" checked /> Receive SMS updates</label>
+    <label><input type="checkbox" id="wd-marketing" name="marketing_opt_in" /> Send me marketing offers</label>
+    <label><input type="checkbox" id="wd-terms" name="terms" /> I agree to the terms and conditions</label>
+
     <label for="wd-gender">Gender (voluntary)</label>
     <select id="wd-gender" name="gender" aria-label="Gender">
       <option value="">Decline to self-identify</option>
       <option value="female">Female</option>
       <option value="male">Male</option>
     </select>
-    <button type="submit" data-automation-id="bottom-navigation-next-button">Submit Application</button>
+
+    <fieldset>
+      <legend>Disability status (EEO)</legend>
+      <label><input type="radio" name="disability" value="yes" /> Yes</label>
+      <label><input type="radio" name="disability" value="no" /> No</label>
+    </fieldset>
+
+    <button type="submit" id="wd-submit" data-automation-id="bottom-navigation-next-button">Submit Application</button>
   </form>
+  <script>
+    window.__submitEventCount = 0;
+    window.__submitButtonClickCount = 0;
+    window.__requestSubmitCount = 0;
+    const form = document.getElementById('workday-application');
+    const submitButton = document.getElementById('wd-submit');
+    form.addEventListener('submit', (event) => {
+      window.__submitEventCount += 1;
+      event.preventDefault();
+    });
+    submitButton.addEventListener('click', () => {
+      window.__submitButtonClickCount += 1;
+    });
+    const nativeRequestSubmit = HTMLFormElement.prototype.requestSubmit;
+    form.requestSubmit = function (...args) {
+      window.__requestSubmitCount += 1;
+      return nativeRequestSubmit.apply(this, args);
+    };
+  </script>
 </body>
 </html>

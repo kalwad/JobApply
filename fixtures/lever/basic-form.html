@@ -2,33 +2,57 @@
 <html lang="en">
 <head><meta charset="UTF-8"><title>Lever Application</title></head>
 <body>
-  <div class="application-form">
+  <form id="lever-form" class="application-form">
     <label for="lever-name">Full Name</label>
     <input id="lever-name" name="name" type="text" />
     <label for="lever-email">Email</label>
     <input id="lever-email" name="email" type="email" />
     <label for="lever-phone">Phone</label>
-    <input id="lever-phone" name="phone" type="tel" />
-    <label for="lever-linkedin">LinkedIn</label>
-    <input id="lever-linkedin" name="urls[LinkedIn]" type="url" />
-    <label for="lever-org">How did you hear about us?</label>
-    <select id="lever-org" name="org" aria-label="How did you hear about us?">
-      <option value="">Select one</option>
-      <option value="linkedin">LinkedIn</option>
-      <option value="referral">Referral</option>
-    </select>
+    <input id="lever-phone" name="phone" type="tel" value="555-0100" />
+
     <fieldset>
-      <legend>Sponsorship required?</legend>
-      <label><input type="radio" name="sponsorship" value="yes" /> Yes</label>
-      <label><input type="radio" name="sponsorship" value="no" /> No</label>
+      <legend>Authorized to work in the US?</legend>
+      <label><input type="radio" name="work_auth" value="yes" /> Yes</label>
+      <label><input type="radio" name="work_auth" value="no" /> No</label>
     </fieldset>
+
+    <fieldset>
+      <legend>Preferred team color</legend>
+      <label><input type="radio" name="team_color" value="red" /> Red</label>
+      <label><input type="radio" name="team_color" value="blue" /> Blue</label>
+    </fieldset>
+
+    <label><input type="checkbox" id="lever-contact-email" name="contact_by_email" /> Contact me by email</label>
+    <label><input type="checkbox" id="lever-sms" name="receive_sms" checked /> Text me SMS reminders</label>
+    <label><input type="checkbox" id="lever-marketing" name="marketing_opt_in" /> Send me marketing offers</label>
     <label><input type="checkbox" id="lever-privacy" name="privacy" /> I accept the privacy policy</label>
+
     <label for="lever-gender">Gender identity (voluntary)</label>
     <select id="lever-gender" name="gender" aria-label="Gender identity">
       <option value="">Prefer not to say</option>
       <option value="nonbinary">Non-binary</option>
     </select>
-    <button type="submit">Submit application</button>
-  </div>
+
+    <button type="submit" id="lever-submit">Submit application</button>
+  </form>
+  <script>
+    window.__submitEventCount = 0;
+    window.__submitButtonClickCount = 0;
+    window.__requestSubmitCount = 0;
+    const form = document.getElementById('lever-form');
+    const submitButton = document.getElementById('lever-submit');
+    form.addEventListener('submit', (event) => {
+      window.__submitEventCount += 1;
+      event.preventDefault();
+    });
+    submitButton.addEventListener('click', () => {
+      window.__submitButtonClickCount += 1;
+    });
+    const nativeRequestSubmit = HTMLFormElement.prototype.requestSubmit;
+    form.requestSubmit = function (...args) {
+      window.__requestSubmitCount += 1;
+      return nativeRequestSubmit.apply(this, args);
+    };
+  </script>
 </body>
 </html>
