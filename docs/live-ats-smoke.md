@@ -1,7 +1,9 @@
 # Live ATS supervised smoke test (Stage 1)
 
-**Status:** checklist prepared — awaiting human supervised runs.  
-Automated tests cover only synthetic fixtures under `fixtures/`. Do **not** claim live ATS verification until each platform below is completed.
+**Status:** Greenhouse pending final +1-preservation run → then Lever → Workday.  
+Automated tests cover only synthetic fixtures under `fixtures/`. Do **not** claim live ATS verification until each platform below is completed.  
+**PR #1:** do not merge until all three platforms pass supervised smoke. Do not resume Stages 2–6.  
+**Phone-country:** Stage 1 keeps manual-review skip (see backlog: verified ISO-based phone-country selection). Do not re-automate in PR #1.
 
 Public-site interaction must **never** submit an application. Stop before the final submit page.
 
@@ -57,37 +59,31 @@ On each site:
 
 ### Greenhouse
 
+**Interim live result (pre–preservation run):** names correct; national phone correct; phone-country not autofilled; +355 not inserted; user manually selected United States (+1).
+
+**Pass criteria (final run):** select +1 *before* JobApply; after fill, +1 still selected; first/middle/last correct; address country United States; work auth Yes/No only; EEO/legal/submit untouched; fill report shows phone country skipped/manual.
+
 ```
 Platform: Greenhouse
+Status: PENDING final +1-preservation run (then PASS with known limitation)
 Date:
-Git HEAD:
+Git HEAD: 25b72dc+
 Extension reloaded from this checkout:
 Backend restarted:
 Job path/domain:
 Platform correctly detected:
 First/middle/last names correct:
 Address country = United States:
-Phone country skipped (manual) or verified United States (+1):
+Phone country skipped (manual):
 Phone country never showed +355 / Albania:
 Phone national number correct:
 Existing +1 preserved when pre-selected:
 Work authorization Yes/No (never a country name):
-Fields detected:
-Fields correctly filled:
-Fields missed:
-Fields filled incorrectly:
-Existing fields preserved:
-Cancel changed nothing:
-Radio behavior:
-Checkbox behavior:
-Dropdown behavior:
-Conditional fields:
-Saved Q&A behavior:
-Ollama-generated answer behavior:
 EEO fields untouched:
+Legal agreements untouched:
 Final submit untouched:
-Console/service-worker errors:
-Known limitations:
+Fill report records phone country skipped/manual:
+Known limitations: Phone-country selector requires manual selection in Stage 1.
 ```
 
 ### Lever
