@@ -3849,31 +3849,29 @@
       const body = overlayEl.querySelector(`.${PREFIX}-overlay-body`);
       const fillable = mappings.filter(m => m.action && m.action !== 'skip');
       const reviewCount = fillable.filter(m => (m.confidence || 1) < 0.8).length;
-      const shown = fillable.slice(0, 25);
-      const extra = fillable.length - shown.length;
-      const build = getBuildInfo();
-      // Actions sit outside the scrollable list so Fill/Cancel stay visible.
+      // Show every fillable row in a scrollable list (do not truncate to 25).
+      const shown = fillable;
+      // Chrome / meta / overwrite stay fixed; only the <ul> scrolls; actions stay pinned.
       body.innerHTML = `
-        <div class="${PREFIX}-review-panel">
+        <div class="${PREFIX}-review-chrome">
           <p><strong>Review ${fillable.length} proposed fill${fillable.length === 1 ? '' : 's'}</strong></p>
-          <p class="${PREFIX}-review-meta">JobApply source: ${build.sourceSha || build.shortSha}</p>
           <p class="${PREFIX}-review-meta">${reviewCount} need review (confidence &lt; 0.8). Nonempty fields stay protected.</p>
+          <p class="${PREFIX}-review-meta">Profile matches only — no AI wait. Scroll the list for all fields.</p>
           <button type="button" class="${PREFIX}-diag-btn">Copy sanitized diagnostics</button>
           <label class="${PREFIX}-review-overwrite">
             <input type="checkbox" class="${PREFIX}-overwrite-toggle" ${overwriteExistingFields ? 'checked' : ''}/>
             Overwrite existing field values
           </label>
-          <ul class="${PREFIX}-review-list">
-            ${shown.map(m => {
-              const conf = m.confidence == null ? 1 : m.confidence;
-              const cls = conf < 0.8 ? 'yellow' : 'green';
-              const label = (m.field_label || m.label || m.selector || '').toString().slice(0, 60);
-              const val = String(m.value ?? '').slice(0, 80);
-              return `<li class="${PREFIX}-review-item ${cls}"><span class="${PREFIX}-dot ${cls}"></span><strong>${escapeHtml(label)}</strong>: ${escapeHtml(val)} <em>(${conf.toFixed(2)})</em></li>`;
-            }).join('')}
-          </ul>
-          ${extra > 0 ? `<p class="${PREFIX}-review-meta">+${extra} more not shown</p>` : ''}
         </div>
+        <ul class="${PREFIX}-review-list" tabindex="0" aria-label="Proposed fills">
+          ${shown.map(m => {
+            const conf = m.confidence == null ? 1 : m.confidence;
+            const cls = conf < 0.8 ? 'yellow' : 'green';
+            const label = (m.field_label || m.label || m.selector || '').toString().slice(0, 60);
+            const val = String(m.value ?? '').slice(0, 80);
+            return `<li class="${PREFIX}-review-item ${cls}"><span class="${PREFIX}-dot ${cls}"></span><strong>${escapeHtml(label)}</strong>: ${escapeHtml(val)} <em>(${conf.toFixed(2)})</em></li>`;
+          }).join('')}
+        </ul>
         <div class="${PREFIX}-review-actions">
           <button type="button" class="${PREFIX}-cancel-btn">Cancel — don't fill</button>
           <button type="button" class="${PREFIX}-approve-btn">Fill approved fields</button>

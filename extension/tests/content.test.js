@@ -2521,10 +2521,18 @@ describe('review overlay Fill/Cancel and Expand', () => {
     expect(approve.textContent).toMatch(/Fill approved/i);
     expect(cancel.textContent).toMatch(/Cancel/i);
 
-    // Actions are siblings of the scrollable panel (not trapped inside the list).
-    const panel = overlay.querySelector('.ja-autofill-review-panel');
-    expect(panel.contains(actions)).toBe(false);
+    // Actions are siblings of the scrollable list (not trapped inside <ul>).
+    const list = overlay.querySelector('.ja-autofill-review-list');
+    const chrome = overlay.querySelector('.ja-autofill-review-chrome');
+    expect(list).not.toBeNull();
+    expect(chrome).not.toBeNull();
+    expect(list.contains(actions)).toBe(false);
+    expect(list.querySelectorAll('.ja-autofill-review-item').length).toBe(40);
     expect(overlay.querySelector('.ja-autofill-overlay-body').contains(actions)).toBe(true);
+    // Actions come after the scrollable list in DOM order (pinned footer).
+    expect(
+      actions.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_PRECEDING
+    ).toBeTruthy();
 
     cancel.click();
     await expect(reviewPromise).resolves.toBeNull();
