@@ -35,7 +35,7 @@ def mock_ai_client():
 
 
 async def test_autofill_analyze_timeout(app, client, mock_ai_client):
-    """AI call that exceeds the timeout should return an error, not hang."""
+    """AI timeout should keep deterministic mappings and surface an error."""
 
     async def slow_chat(*args, **kwargs):
         await asyncio.sleep(5)
@@ -44,17 +44,49 @@ async def test_autofill_analyze_timeout(app, client, mock_ai_client):
     mock_ai_client.chat = AsyncMock(side_effect=slow_chat)
     app.state.ai_client = mock_ai_client
 
-    with patch("app.routers.autofill.AUTOFILL_ANALYZE_TIMEOUT", 1):
+    await app.state.db.save_user_profile(
+        full_name="Jane Doe",
+        email="jane@example.com",
+        phone="555-0100",
+    )
+
+    fields = [
+        {
+            "selector": "#email",
+            "name": "email",
+            "id": "email",
+            "label": "Email",
+            "tag": "input",
+            "type": "email",
+            "placeholder": "",
+            "currentValue": "",
+        },
+        {
+            "selector": "#custom_question",
+            "name": "custom_question",
+            "id": "custom_question",
+            "label": "Why do you want this role?",
+            "tag": "textarea",
+            "type": "",
+            "placeholder": "",
+            "currentValue": "",
+        },
+    ]
+
+    with patch("app.routers.autofill.AUTOFILL_ANALYZE_TIMEOUT", 1), \
+         patch("app.routers.autofill.AUTOFILL_ANALYZE_TIMEOUT_PARTIAL", 1):
         resp = await client.post(
             "/api/autofill/analyze",
-            json={"form_html": "<form><input name='email'></form>", "fields": [{"name": "email"}]},
+            json={"form_html": "<form></form>", "fields": fields},
         )
 
     assert resp.status_code == 200
     data = resp.json()
     assert "error" in data
     assert "timed out" in data["error"].lower()
-    assert data["mappings"] == []
+    assert len(data["mappings"]) == 1
+    assert data["mappings"][0]["selector"] == "#email"
+    assert data["mappings"][0]["value"] == "jane@example.com"
 
 
 async def test_autofill_analyze_no_timeout_on_fast_response(app, client, mock_ai_client):

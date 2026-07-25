@@ -2507,6 +2507,14 @@
           return;
         }
 
+        if (!structuredFields.length && !adapterFields.length) {
+          updateOverlay(
+            'done',
+            'No form fields detected on this page. Open the application form, then try Fill again.'
+          );
+          return;
+        }
+
         // Enrich field hints (e.g. detect dial-code selects as country code fields)
         try {
           structuredFields = enrichFieldHints(structuredFields);
@@ -2568,9 +2576,20 @@
         }
 
         let mappings = response.data?.mappings || [];
+        const analyzeError = response.data?.error || '';
+
         if (!mappings.length) {
-          updateOverlay('done', 'No fillable fields found');
+          updateOverlay(
+            'done',
+            analyzeError
+              ? `${analyzeError}. No profile fields could be matched — check Settings → Profile and that Ollama is running.`
+              : 'No fillable fields found'
+          );
           return;
+        }
+
+        if (analyzeError) {
+          showOverlay(`${analyzeError} — filling ${mappings.length} matched profile field(s)...`);
         }
 
         // Post-process: fill skipped fields that match custom Q&A
