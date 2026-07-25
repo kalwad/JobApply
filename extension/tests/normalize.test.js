@@ -4,10 +4,10 @@ import { join } from 'path';
 
 // Load and execute the normalize IIFE
 function loadNormalize() {
-  window.__cpNormalize = undefined;
+  window.__jaNormalize = undefined;
   const code = readFileSync(join(__dirname, '..', 'normalize.js'), 'utf-8');
   eval(code);
-  return window.__cpNormalize;
+  return window.__jaNormalize;
 }
 
 let norm;

@@ -3,10 +3,12 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 function loadAdapters() {
-  window.__cpAtsAdapters = undefined;
+  window.__jaAtsAdapters = undefined;
+  window.__jaAtsCore = undefined;
+  eval(readFileSync(join(__dirname, '..', 'ats-core.js'), 'utf-8'));
   const code = readFileSync(join(__dirname, '..', 'ats-adapters.js'), 'utf-8');
   eval(code);
-  return window.__cpAtsAdapters;
+  return window.__jaAtsAdapters;
 }
 
 let adapters;
@@ -35,11 +37,11 @@ describe('adapter registry', () => {
   });
 
   it('guard against double-load', () => {
-    const first = window.__cpAtsAdapters;
-    // Load again — should return early since __cpAtsAdapters is already set
+    const first = window.__jaAtsAdapters;
+    // Load again — should return early since __jaAtsAdapters is already set
     const code = readFileSync(join(__dirname, '..', 'ats-adapters.js'), 'utf-8');
     eval(code);
-    expect(window.__cpAtsAdapters).toBe(first);
+    expect(window.__jaAtsAdapters).toBe(first);
   });
 });
 
@@ -339,11 +341,11 @@ describe('Lever adapter', () => {
   });
 
   it('matches jobs.lever.co URLs', () => {
-    expect(lever.match('https://jobs.lever.co/company/123', document)).toBe(true);
+    expect(lever.detect('https://jobs.lever.co/company/123', document)).toBe(true);
   });
 
   it('does not match other URLs', () => {
-    expect(lever.match('https://example.com', document)).toBe(false);
+    expect(lever.detect('https://example.com', document)).toBe(false);
   });
 
   it('getFieldMap includes Lever-specific selectors', () => {
@@ -394,7 +396,7 @@ describe('iCIMS adapter', () => {
   });
 
   it('matches icims.com URLs', () => {
-    expect(icims.match('https://careers.icims.com/jobs/1234', document)).toBe(true);
+    expect(icims.detect('https://careers.icims.com/jobs/1234', document)).toBe(true);
   });
 
   it('getFieldMap includes standard iCIMS fields', () => {
@@ -425,7 +427,7 @@ describe('Taleo adapter', () => {
   });
 
   it('matches taleo.net URLs', () => {
-    expect(taleo.match('https://company.taleo.net/careersection/apply', document)).toBe(true);
+    expect(taleo.detect('https://company.taleo.net/careersection/apply', document)).toBe(true);
   });
 
   it('getFieldMap includes standard Taleo fields', () => {
@@ -474,11 +476,11 @@ describe('Google Forms adapter', () => {
   });
 
   it('matches docs.google.com/forms URLs', () => {
-    expect(googleForms.match('https://docs.google.com/forms/d/e/abc123/viewform')).toBe(true);
+    expect(googleForms.detect('https://docs.google.com/forms/d/e/abc123/viewform', document)).toBe(true);
   });
 
   it('does not match other Google URLs', () => {
-    expect(googleForms.match('https://docs.google.com/spreadsheets/d/abc')).toBe(false);
+    expect(googleForms.detect('https://docs.google.com/spreadsheets/d/abc', document)).toBe(false);
   });
 
   it('getFieldMap returns empty (dynamic IDs)', () => {

@@ -1,9 +1,9 @@
 // Helper to load content.js and get the test API
 export function loadContentScript() {
   // Reset state for each test
-  window.__cpAutofillLoaded = false;
-  window.__cpAutofillTest = true;
-  window.__cpAutofillTestAPI = undefined;
+  window.__jaAutofillLoaded = false;
+  window.__jaAutofillTest = true;
+  window.__jaAutofillTestAPI = undefined;
 
   // Re-import by clearing module cache — not feasible with static imports.
   // Instead, we eval the content script in a controlled way.

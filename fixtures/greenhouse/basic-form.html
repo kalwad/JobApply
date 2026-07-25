@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Greenhouse Application</title></head>
+<body>
+  <form id="app_form">
+    <label for="first_name">First Name</label>
+    <input id="first_name" name="first_name" type="text" />
+    <label for="last_name">Last Name</label>
+    <input id="last_name" name="last_name" type="text" />
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" value="existing@example.com" />
+    <label for="phone">Phone</label>
+    <input id="phone" name="phone" type="tel" />
+    <label for="location">Location</label>
+    <select id="location" name="location" role="combobox" aria-label="Location">
+      <option value="">Select</option>
+      <option value="nyc">New York</option>
+      <option value="sf">San Francisco</option>
+    </select>
+    <fieldset>
+      <legend>Preferred contact</legend>
+      <label><input type="radio" name="contact_pref" value="email" checked /> Email</label>
+      <label><input type="radio" name="contact_pref" value="phone" /> Phone</label>
+    </fieldset>
+    <label><input type="checkbox" id="newsletter" name="newsletter" /> Subscribe to updates</label>
+    <label for="race">Race / Ethnicity (EEO)</label>
+    <select id="race" name="race" aria-label="Race / Ethnicity">
+      <option value="">Decline to self-identify</option>
+      <option value="white">White</option>
+      <option value="asian">Asian</option>
+    </select>
+    <input type="submit" value="Submit Application" />
+  </form>
+</body>
+</html>
