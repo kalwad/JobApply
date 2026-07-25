@@ -44,7 +44,10 @@ function loadBackground() {
         }, 5);
         return tab;
       }),
-      sendMessage: vi.fn(),
+      sendMessage: vi.fn().mockResolvedValue({ ok: true }),
+    },
+    webNavigation: {
+      getAllFrames: vi.fn().mockResolvedValue([{ frameId: 0 }, { frameId: 15 }]),
     },
     commands: {
       onCommand: { addListener: vi.fn() },
@@ -473,7 +476,12 @@ describe('keyboard shortcut handler', () => {
   it('sends startFill message on start-fill command', async () => {
     const commandHandler = globalThis.chrome.commands.onCommand.addListener.mock.calls[0][0];
     await commandHandler('start-fill');
-    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, { type: 'startFill' });
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      42, { type: 'startFill' }, { frameId: 0 },
+    );
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      42, { type: 'startFill' }, { frameId: 15 },
+    );
   });
 });
 
@@ -497,7 +505,13 @@ describe('broadcastStartFill', () => {
       { tab: { id: 99 } }
     );
     expect(result.ok).toBe(true);
-    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(99, { type: 'startFill' });
+    expect(result.frames).toBe(2);
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      99, { type: 'startFill' }, { frameId: 0 },
+    );
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      99, { type: 'startFill' }, { frameId: 15 },
+    );
   });
 
   it('returns error when no tab context', async () => {

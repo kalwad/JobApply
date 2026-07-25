@@ -2447,9 +2447,9 @@
       // Remove the auto-detection badge if present
       removeBadge();
 
-      // If we're in the top frame and there are ATS embed/iframe signals, bail
-      // silently — the iframe's content script handles filling.
-      if (!isInIframe() && (hasAtsIframe() || hasAtsEmbedContainer() || hasAtsUrlParam())) {
+      // Real ATS iframe owns the form and this frame has no fields — no-op here.
+      // Popup/badge/shortcut already broadcast startFill to all frames.
+      if (shouldDeferToAtsIframe()) {
         return;
       }
 
@@ -2675,6 +2675,22 @@
     try { return window.self !== window.top; } catch { return true; }
   }
 
+  /**
+   * Only defer to a child ATS iframe when a real iframe exists and this
+   * document has no local fillable fields. Do NOT defer merely because
+   * #grnhse_app / gh_jid is present — Greenhouse often mounts the form in
+   * the same document inside #grnhse_app.
+   */
+  function shouldDeferToAtsIframe() {
+    if (isInIframe()) return false;
+    if (!hasAtsIframe()) return false;
+    try {
+      const localFields = extractFormData(document);
+      if (localFields && localFields.length > 0) return false;
+    } catch { /* defer if extraction fails */ }
+    return true;
+  }
+
   // ─── Application form auto-detection ────────────────────────
 
   function detectApplicationForm() {
@@ -2805,10 +2821,8 @@
     // Click main area to start fill
     badgeEl.querySelector('.ja-auto-badge-main').addEventListener('click', () => {
       removeBadge();
-      // If we're on a parent page with an ATS iframe, broadcast startFill via
-      // the background script so the iframe's content script picks it up.
-      if (!isInIframe() && (hasAtsIframe() || hasAtsEmbedContainer() || hasAtsUrlParam())) {
-        chrome.runtime.sendMessage({ type: 'broadcastStartFill' });
+      if (shouldDeferToAtsIframe()) {
+        chrome.runtime.sendMessage({ type: 'broadcastStartFill' }).catch(() => {});
       } else {
         startFillFlow();
       }
@@ -3054,8 +3068,7 @@
       return;
     }
 
-    // If we're the parent frame with an ATS embed, skip — the iframe handles filling
-    if (!isInIframe() && (hasAtsIframe() || hasAtsEmbedContainer() || hasAtsUrlParam())) {
+    if (shouldDeferToAtsIframe()) {
       return;
     }
 

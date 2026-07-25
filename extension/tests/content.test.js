@@ -2125,28 +2125,40 @@ describe('startFillFlow overall timeout', () => {
 // ═══════════════════════════════════════════════════════════════
 
 describe('startFillFlow ATS iframe delegation', () => {
-  it('silently returns when in top frame with Greenhouse embed container', async () => {
-    // Simulate being in a top frame (window.self === window.top by default in jsdom)
-    const container = document.createElement('div');
-    container.id = 'grnhse_app';
-    document.body.appendChild(container);
-
-    await api.startFillFlow();
-
-    // Should NOT show an overlay or error since an ATS embed was detected
-    const overlay = document.getElementById('ja-autofill-overlay');
-    expect(overlay).toBeNull();
-  });
-
-  it('silently returns when in top frame with grnhse iframe', async () => {
+  it('defers when a real Greenhouse iframe exists and the page has no local fields', async () => {
     const iframe = document.createElement('iframe');
-    iframe.id = 'grnhse_iframe';
+    iframe.src = 'https://boards.greenhouse.io/acme/jobs/1';
     document.body.appendChild(iframe);
 
     await api.startFillFlow();
 
     const overlay = document.getElementById('ja-autofill-overlay');
     expect(overlay).toBeNull();
+  });
+
+  it('does not defer for #grnhse_app alone when local form fields exist', async () => {
+    const container = document.createElement('div');
+    container.id = 'grnhse_app';
+    const form = document.createElement('form');
+    form.id = 'app_form';
+    const input = document.createElement('input');
+    input.id = 'first_name';
+    input.name = 'first_name';
+    input.type = 'text';
+    form.appendChild(input);
+    container.appendChild(form);
+    document.body.appendChild(container);
+
+    globalThis.chrome.runtime.sendMessage = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { mappings: [] },
+    });
+
+    await api.startFillFlow();
+
+    // Same-document Greenhouse forms should analyze (not silently no-op).
+    const overlay = document.getElementById('ja-autofill-overlay');
+    expect(overlay).not.toBeNull();
   });
 
   it('silently removes overlay in iframe with no form fields', async () => {
@@ -2164,8 +2176,7 @@ describe('startFillFlow ATS iframe delegation', () => {
     Object.defineProperty(window, 'self', { value: window, configurable: true });
   });
 
-  it('silently returns when in top frame with gh_jid URL param', async () => {
-    // Simulate Greenhouse URL param without any DOM elements yet
+  it('does not defer solely because gh_jid is present without an ATS iframe', async () => {
     const origLocation = window.location.href;
     Object.defineProperty(window, 'location', {
       value: new URL('https://careers.example.com/detail/123/?gh_jid=456'),
@@ -2173,12 +2184,17 @@ describe('startFillFlow ATS iframe delegation', () => {
       configurable: true,
     });
 
+    globalThis.chrome.runtime.sendMessage = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { mappings: [] },
+    });
+
     await api.startFillFlow();
 
+    // Parent career pages with only gh_jid used to no-op incorrectly; now they analyze.
     const overlay = document.getElementById('ja-autofill-overlay');
-    expect(overlay).toBeNull();
+    expect(overlay).not.toBeNull();
 
-    // Restore
     Object.defineProperty(window, 'location', {
       value: new URL(origLocation),
       writable: true,

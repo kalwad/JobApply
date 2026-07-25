@@ -8,6 +8,7 @@
 | `scripting` | Inject/coordinate content scripts when the user starts fill |
 | `storage` | Persist local safety flags (`overwriteExistingFields`, `debugAutofill`, etc.) |
 | `downloads` | Optional resume/cover-letter download helpers on application pages |
+| `webNavigation` | Enumerate tab frames so Fill reaches Greenhouse/Lever iframe embeds |
 
 ## Host access
 
