@@ -43,6 +43,11 @@
       required: !!partial.required,
       currentValue: partial.currentValue ?? '',
       atsHint: partial.atsHint ?? null,
+      // Exact ATS map key (linkedin_url, current_company, …) — distinct from atsHint tags.
+      semanticType: partial.semanticType ?? null,
+      // Phone-country / other classifier output — must survive normalize.
+      fieldKind: partial.fieldKind ?? null,
+      isContentEditable: !!partial.isContentEditable,
       options: partial.options ?? undefined,
       role: partial.role ?? null,
     };
@@ -105,14 +110,20 @@
 
   function applyFieldMapHints(fields, fieldMap, doc) {
     if (!fieldMap || !fields?.length) return fields;
+    const root = doc || document;
     for (const field of fields) {
-      for (const [selector, hint] of Object.entries(fieldMap)) {
+      for (const [selector, semantic] of Object.entries(fieldMap)) {
         try {
-          const el = doc.querySelector(selector);
+          const el = root.querySelector(selector);
           if (!el) continue;
-          const fieldEl = doc.querySelector(field.selector);
+          let fieldEl = null;
+          try { fieldEl = root.querySelector(field.selector); } catch { /* skip */ }
           if (fieldEl === el) {
-            field.atsHint = field.atsHint || hint;
+            // Prefer dedicated semanticType; do not overwrite atsHint content tags.
+            if (!field.semanticType) field.semanticType = semantic;
+            if (semantic === 'phone_country_code' || semantic === 'phone_country') {
+              field.fieldKind = field.fieldKind || 'phone_country';
+            }
           }
         } catch { /* skip */ }
       }
@@ -123,6 +134,7 @@
   function extractWithAdapter(adapter, doc, baseExtractFn) {
     const root = adapter.getFormRoot(doc);
     let fields = baseExtractFn ? baseExtractFn(root) : [];
+    // Preserve extractor extras (fieldKind/isContentEditable) through normalize.
     fields = fields.map(normalizeFieldDescriptor);
     fields = applyFieldMapHints(fields, adapter.getFieldMap(), root);
     if (adapter.getExtraFields) {
@@ -161,48 +173,88 @@
   function buildFillReport(results, mappingBySelector = {}) {
     const report = {
       filled: 0,
+      filled_from_profile: 0,
       savedAnswers: 0,
+      saved_answer_available: 0,
       aiDrafts: 0,
+      ai_draft_available: 0,
       needsReview: 0,
       skippedSensitive: 0,
       alreadyCompleted: 0,
+      already_completed: 0,
       failed: 0,
+      failed_verification: 0,
+      file_attachment_unavailable: 0,
+      legal_or_consent_manual: 0,
+      eeo_skipped: 0,
+      explicit_profile_value_missing: 0,
+      unsupported: 0,
+      conditional_not_applicable: 0,
       total: results?.length || 0,
+      categories: [],
     };
 
     for (const result of results || []) {
       const mapping = mappingBySelector[result.selector] || {};
       const confidence = mapping.confidence ?? 1;
+      const reason = String(result.reason || mapping.reason || '');
+      const category = result.inventoryCategory
+        || mapping.inventoryCategory
+        || null;
+      const label = (mapping.field_label || result.field_label || result.selector || '').toString().slice(0, 80);
+
+      if (category) {
+        report.categories.push({ selector: result.selector, label, category });
+        if (report[category] != null) report[category]++;
+      }
 
       if (!result.success) {
         report.failed++;
+        if (/did not stick|verif|cleared|empty after/i.test(reason) || category === 'failed_verification') {
+          report.failed_verification++;
+        }
+        if (/file upload|attachment/i.test(reason) || category === 'file_attachment_unavailable') {
+          report.file_attachment_unavailable++;
+        }
         continue;
       }
 
       if (result.alreadyCompleted) {
         report.alreadyCompleted++;
+        report.already_completed++;
         continue;
       }
 
       if (result.skipped) {
-        const reason = String(result.reason || '');
-        if (/manual review/i.test(reason)) {
+        if (/manual review|legal|consent|acknowledgment/i.test(reason)
+            || category === 'legal_or_consent_manual') {
           report.needsReview++;
+          report.legal_or_consent_manual++;
+        } else if (/eeo/i.test(reason) || category === 'eeo_skipped') {
+          report.skippedSensitive++;
+          report.eeo_skipped++;
         } else if (isSensitiveSkip(result)) {
           report.skippedSensitive++;
+        } else if (/file upload|attachment/i.test(reason)) {
+          report.file_attachment_unavailable++;
+        } else if (/missing|no profile/i.test(reason)) {
+          report.explicit_profile_value_missing++;
         }
         continue;
       }
 
       if (mapping.qa_matched || mapping.source === 'custom_qa') {
         report.savedAnswers++;
+        report.saved_answer_available++;
         report.filled++;
+        report.filled_from_profile++;
         continue;
       }
 
       if (confidence < 0.8) {
         report.needsReview++;
         report.aiDrafts++;
+        report.ai_draft_available++;
         continue;
       }
 
@@ -211,6 +263,7 @@
       }
 
       report.filled++;
+      report.filled_from_profile++;
     }
 
     return report;
@@ -224,6 +277,8 @@
     if (report.needsReview) parts.push(`${report.needsReview} review`);
     if (report.skippedSensitive) parts.push(`${report.skippedSensitive} sensitive skipped`);
     if (report.alreadyCompleted) parts.push(`${report.alreadyCompleted} already set`);
+    if (report.failed_verification) parts.push(`${report.failed_verification} verify failed`);
+    if (report.file_attachment_unavailable) parts.push(`${report.file_attachment_unavailable} resume attach N/A`);
     if (report.failed) parts.push(`${report.failed} failed`);
     return parts.length ? parts.join(' · ') : '0 fields';
   }
@@ -234,6 +289,7 @@
     wrapLegacyAdapter,
     assertAdapterContract,
     detectAdapter,
+    applyFieldMapHints,
     extractWithAdapter,
     buildFillReport,
     formatFillReport,

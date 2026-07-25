@@ -899,10 +899,11 @@ describe('fillField — unknown action', () => {
 // ═══════════════════════════════════════════════════════════════
 
 describe('fillField — upload_file', () => {
-  it('returns failure with reason', async () => {
+  it('reports file attachment unavailable (not a silent verify failure)', async () => {
     createInput({ type: 'file', id: 'resume' });
     const result = await api.fillField('#resume', 'file.pdf', 'upload_file');
-    expect(result.success).toBe(false);
+    expect(result.skipped).toBe(true);
+    expect(result.inventoryCategory).toBe('file_attachment_unavailable');
     expect(result.reason).toContain('user interaction');
   });
 });
@@ -2751,6 +2752,43 @@ describe('overlay lifecycle', () => {
     expect(api.originalValues.size).toBe(1);
     api.clearPageScopedState({ keepCumulative: true });
     expect(api.originalValues.size).toBe(0);
+  });
+});
+
+describe('post-fill verification + None sanitization', () => {
+  it('rejects location fill when autocomplete clears value on blur', async () => {
+    const input = document.createElement('input');
+    input.id = 'job_application_location';
+    input.name = 'job_application[location]';
+    input.setAttribute('aria-label', 'Location (City)');
+    input.setAttribute('role', 'combobox');
+    // Simulate Greenhouse: any value without a committed suggestion is cleared.
+    input.addEventListener('blur', () => { input.value = ''; });
+    document.body.appendChild(input);
+    const label = document.createElement('label');
+    label.setAttribute('for', 'job_application_location');
+    label.textContent = 'Location (City)';
+    document.body.appendChild(label);
+
+    const result = await api.fillField(
+      '#job_application_location',
+      'Sterling Heights, MI, United States',
+      'fill_text',
+      1,
+      'Location (City)',
+    );
+    expect(result.success).toBe(false);
+    expect(result.inventoryCategory).toBe('failed_verification');
+    expect(input.value).toBe('');
+  });
+
+  it('sanitizeMappings drops None/null proposed values', () => {
+    const out = api.sanitizeMappings([
+      { selector: '#a', value: 'None', action: 'fill_text', field_label: 'Salary' },
+      { selector: '#b', value: null, action: 'fill_text', field_label: 'X' },
+      { selector: '#c', value: 'Ada', action: 'fill_text', field_label: 'Name' },
+    ]);
+    expect(out.map(m => m.selector)).toEqual(['#c']);
   });
 });
 

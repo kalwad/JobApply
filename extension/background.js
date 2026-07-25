@@ -55,7 +55,7 @@ async function getFullProfile() {
   }
 }
 
-async function analyzeForm(formHtml, adapterFields, structuredFields) {
+async function analyzeForm(formHtml, adapterFields, structuredFields, meta = {}) {
   try {
     const payload = { form_html: formHtml };
     if (structuredFields?.length) {
@@ -63,6 +63,12 @@ async function analyzeForm(formHtml, adapterFields, structuredFields) {
     } else if (adapterFields?.length) {
       payload.fields = adapterFields;
     }
+    // Forward ATS semantic context — required for exact field-map fills.
+    if (meta.atsName) payload.ats_name = meta.atsName;
+    if (meta.atsFieldMap && typeof meta.atsFieldMap === 'object') {
+      payload.ats_field_map = meta.atsFieldMap;
+    }
+    if (meta.pageUrl) payload.page_url = meta.pageUrl;
     const resp = await apiFetch('/api/autofill/analyze', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -386,7 +392,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case 'getFullProfile':
           return await getFullProfile();
         case 'analyzeForm':
-          return await analyzeForm(message.formHtml, message.adapterFields, message.structuredFields);
+          return await analyzeForm(
+            message.formHtml,
+            message.adapterFields,
+            message.structuredFields,
+            {
+              atsName: message.atsName || message.ats_name,
+              atsFieldMap: message.atsFieldMap || message.ats_field_map,
+              pageUrl: message.pageUrl || message.page_url,
+            },
+          );
         case 'getResumeForJob':
           return await getResumeForJob(message.jobId);
         case 'saveLearnedData':

@@ -96,3 +96,53 @@ describe('adapter contract', () => {
     core.assertAdapterContract(wrapped);
   });
 });
+
+describe('extractWithAdapter / applyFieldMapHints', () => {
+  it('stamps semanticType from field map and preserves fieldKind', () => {
+    document.body.innerHTML = `
+      <form id="app_form">
+        <input id="email" name="email" type="email" />
+        <input id="phone_country_code" name="phone_country_code" />
+      </form>
+    `;
+    const adapter = core.wrapLegacyAdapter({
+      name: 'Greenhouse',
+      match: () => true,
+      getFormRoot: (doc) => doc.querySelector('#app_form') || doc,
+      getFieldMap: () => ({
+        '#email': 'email',
+        '#phone_country_code': 'phone_country_code',
+      }),
+    });
+    const fields = core.extractWithAdapter(adapter, document, (root) => ([
+      {
+        selector: '#email',
+        tag: 'input',
+        type: 'email',
+        name: 'email',
+        id: 'email',
+        label: 'Email',
+        fieldKind: null,
+        isContentEditable: false,
+      },
+      {
+        selector: '#phone_country_code',
+        tag: 'input',
+        name: 'phone_country_code',
+        id: 'phone_country_code',
+        label: 'Country',
+        fieldKind: 'phone_country',
+        isContentEditable: false,
+      },
+    ]));
+    const email = fields.find(f => f.selector === '#email');
+    const phoneCc = fields.find(f => f.selector === '#phone_country_code');
+    expect(email.semanticType).toBe('email');
+    expect(phoneCc.semanticType).toBe('phone_country_code');
+    expect(phoneCc.fieldKind).toBe('phone_country');
+  });
+
+  it('exports applyFieldMapHints', () => {
+    expect(typeof core.applyFieldMapHints).toBe('function');
+  });
+});

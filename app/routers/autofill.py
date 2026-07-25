@@ -218,7 +218,363 @@ def _match_phone_country_option(value: str, options) -> str | None:
     return best_text if best_score >= 60 else None
 
 
-def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], list[dict]]:
+def _normalize_url(url: str | None) -> str:
+    """Ensure http(s) scheme for HTML type=url fields."""
+    s = (url or "").strip()
+    if not s:
+        return ""
+    if _re.match(r"^[a-z][a-z0-9+.-]*:", s, _re.I):
+        return s
+    return f"https://{s.lstrip('/')}"
+
+
+def _compose_location(profile: dict) -> str:
+    """Prefer free-text location; else City, State, Country."""
+    loc = (profile.get("location") or "").strip()
+    if loc:
+        return loc
+    parts = [
+        (profile.get("address_city") or "").strip(),
+        (profile.get("address_state") or "").strip(),
+        (profile.get("address_country_name") or "").strip(),
+    ]
+    parts = [p for p in parts if p]
+    return ", ".join(parts)
+
+
+def _current_company(profile: dict) -> tuple[str | None, str | None]:
+    """Return (company, error_reason). Ambiguous multi-current → review."""
+    jobs = [j for j in (profile.get("work_history") or []) if isinstance(j, dict)]
+    current = [
+        j for j in jobs
+        if j.get("is_current") in (1, True, "1", "true", "yes")
+    ]
+    if len(current) > 1:
+        return None, "ambiguous_multiple_current_jobs"
+    if len(current) == 1:
+        company = (current[0].get("company") or "").strip()
+        return (company or None), None
+    # Fallback: most recent by start_year
+    dated = [j for j in jobs if j.get("start_year")]
+    dated.sort(key=lambda j: int(j.get("start_year") or 0), reverse=True)
+    if dated:
+        company = (dated[0].get("company") or "").strip()
+        return (company or None), None
+    return None, "current_company_missing"
+
+
+def _most_recent_university(profile: dict) -> str:
+    edu = [e for e in (profile.get("education") or []) if isinstance(e, dict)]
+    if not edu:
+        return ""
+    edu_sorted = sorted(
+        edu,
+        key=lambda e: int(e.get("end_year") or e.get("graduation_year") or e.get("start_year") or 0),
+        reverse=True,
+    )
+    return (edu_sorted[0].get("school") or edu_sorted[0].get("institution") or "").strip()
+
+
+def _infer_auth_country(searchable: str, page_url: str = "") -> str:
+    blob = f"{searchable} {page_url}".lower()
+    if _re.search(r"\bcanada\b|\bcanadian\b|\bontario\b|\bcad\b", blob):
+        return "CA"
+    if _re.search(r"\bunited\s+kingdom\b|\buk\b|\blondon\b|\bgb\b", blob):
+        return "GB"
+    if _re.search(r"\bunited\s+states\b|\busa\b|\bu\.s\b|\bamerican\b", blob):
+        return "US"
+    return "US"  # legacy default only when unspecified
+
+
+def _work_auth_value(profile: dict, country: str) -> str | None:
+    """Country-indexed auth. Never reuse US answer for CA/GB questions."""
+    indexed = profile.get("work_authorization") or {}
+    if isinstance(indexed, dict) and country in indexed:
+        val = indexed.get(country)
+        if val in (None, "", "unknown"):
+            return None
+        return str(val)
+    if country == "US":
+        us = profile.get("authorized_to_work_us")
+        return str(us) if us not in (None, "") else None
+    return None
+
+
+def _sponsorship_value(profile: dict, country: str) -> str | None:
+    indexed = profile.get("sponsorship_required") or {}
+    if isinstance(indexed, dict) and country in indexed:
+        val = indexed.get(country)
+        if val in (None, "", "unknown"):
+            return None
+        return str(val)
+    if country == "US":
+        us = profile.get("requires_sponsorship")
+        return str(us) if us not in (None, "") else None
+    return None
+
+
+def _is_blank_value(value) -> bool:
+    if value is None:
+        return True
+    s = str(value).strip()
+    return (not s) or s.lower() in ("none", "null", "undefined", "nan")
+
+
+def _semantic_mapping_for_field(
+    field: dict,
+    profile: dict,
+    page_url: str = "",
+) -> dict | None:
+    """Exact semanticType → profile fill. Returns a mapping dict or None to fall through."""
+    st = (field.get("semanticType") or field.get("semantic_type") or "").strip().lower()
+    if not st:
+        return None
+
+    label = field.get("label") or ""
+    first_name, middle_name, last_name = _name_components(profile)
+    full_name = (profile.get("full_name") or "").strip() or " ".join(
+        p for p in (first_name, middle_name, last_name) if p
+    )
+    preferred = (profile.get("preferred_name") or first_name or "").strip()
+
+    # Files — Stage 1.1
+    if st in ("resume", "resume_file", "cover_letter", "cover_letter_file"):
+        return {
+            "selector": field["selector"],
+            "value": "",
+            "action": "upload_file" if st.startswith("resume") or st.endswith("file") else "skip",
+            "confidence": 1.0,
+            "field_label": label,
+            "reason": "file_attachment_unavailable",
+            "inventoryCategory": "file_attachment_unavailable",
+            "semanticType": st,
+            "supportingFactIds": [],
+        }
+
+    # Legal / consent / open-ended — do not guess
+    if st in (
+        "legal_acknowledgment", "consent", "eeo",
+        "open_ended_question", "additional_info",
+    ):
+        inv = "eeo_skipped" if st == "eeo" else (
+            "ai_draft_available" if st in ("open_ended_question", "additional_info")
+            else "legal_or_consent_manual"
+        )
+        return {
+            "selector": field["selector"],
+            "value": "",
+            "action": "skip",
+            "confidence": 0.0,
+            "field_label": label,
+            "reason": inv,
+            "inventoryCategory": inv,
+            "semanticType": st,
+            "supportingFactIds": [],
+        }
+
+    if st in ("phone_country", "phone_country_code"):
+        return {
+            "selector": field["selector"],
+            "value": "",
+            "action": "skip",
+            "confidence": 1.0,
+            "field_label": label,
+            "reason": "phone_country_manual_review",
+            "fieldKind": "phone_country",
+            "inventoryCategory": "legal_or_consent_manual",
+            "semanticType": st,
+            "supportingFactIds": [],
+        }
+
+    company, company_err = _current_company(profile)
+    location = _compose_location(profile)
+    portfolio = _normalize_url(profile.get("portfolio_url") or profile.get("website_url"))
+    website = _normalize_url(profile.get("website_url") or profile.get("portfolio_url"))
+    linkedin = _normalize_url(profile.get("linkedin_url"))
+    github = _normalize_url(profile.get("github_url"))
+
+    value_map = {
+        "first_name": first_name,
+        "middle_name": middle_name,
+        "last_name": last_name,
+        "full_name": full_name,
+        "preferred_name": preferred,
+        "email": profile.get("email") or "",
+        "phone": profile.get("phone") or "",
+        "current_location": location,
+        "location": location,
+        "address_city": profile.get("address_city") or "",
+        "address_state": profile.get("address_state") or "",
+        "current_company": company or "",
+        "linkedin_url": linkedin,
+        "github_url": github,
+        "portfolio_url": portfolio,
+        "website": website,
+        "university": _most_recent_university(profile),
+        "how_heard": profile.get("how_heard_default") or "",
+        "timezone": profile.get("timezone") or profile.get("time_zone") or "",
+        "twitter_url": "",  # not in profile schema yet
+    }
+
+    if st == "work_authorization":
+        searchable = f"{label} {field.get('name') or ''} {field.get('id') or ''}"
+        country = _infer_auth_country(searchable, page_url)
+        val = _work_auth_value(profile, country)
+        if _is_blank_value(val):
+            return {
+                "selector": field["selector"],
+                "value": "",
+                "action": "skip",
+                "confidence": 0.0,
+                "field_label": label,
+                "reason": f"work_authorization_{country}_unknown",
+                "inventoryCategory": "legal_or_consent_manual",
+                "semanticType": st,
+                "supportingFactIds": [],
+            }
+        action = "click_radio" if (field.get("type") or "").lower() == "radio" else None
+        return {
+            "selector": field["selector"],
+            "value": val,
+            "action": action,
+            "confidence": 1.0,
+            "field_label": label,
+            "inventoryCategory": "filled_from_profile",
+            "semanticType": st,
+            "supportingFactIds": [],
+        }
+
+    if st == "sponsorship":
+        searchable = f"{label} {field.get('name') or ''} {field.get('id') or ''}"
+        country = _infer_auth_country(searchable, page_url)
+        val = _sponsorship_value(profile, country)
+        if _is_blank_value(val):
+            return {
+                "selector": field["selector"],
+                "value": "",
+                "action": "skip",
+                "confidence": 0.0,
+                "field_label": label,
+                "reason": f"sponsorship_{country}_unknown",
+                "inventoryCategory": "legal_or_consent_manual",
+                "semanticType": st,
+                "supportingFactIds": [],
+            }
+        return {
+            "selector": field["selector"],
+            "value": val,
+            "action": None,
+            "confidence": 1.0,
+            "field_label": label,
+            "inventoryCategory": "filled_from_profile",
+            "semanticType": st,
+            "supportingFactIds": [],
+        }
+
+    if st == "languages":
+        langs = profile.get("languages") or []
+        names = [
+            (lg.get("language") if isinstance(lg, dict) else str(lg))
+            for lg in langs
+        ]
+        names = [n for n in names if n]
+        if not names:
+            return {
+                "selector": field["selector"],
+                "value": "",
+                "action": "skip",
+                "confidence": 0.0,
+                "field_label": label,
+                "reason": "languages_missing",
+                "inventoryCategory": "explicit_profile_value_missing",
+                "semanticType": st,
+                "supportingFactIds": [],
+            }
+        # Checkbox groups are filled one option at a time by the fill engine;
+        # emit the first language as a hint — language multi-select is best-effort.
+        return {
+            "selector": field["selector"],
+            "value": names[0],
+            "action": "check_checkbox" if (field.get("type") or "").lower() == "checkbox" else "fill_text",
+            "confidence": 0.9,
+            "field_label": label,
+            "inventoryCategory": "filled_from_profile",
+            "semanticType": st,
+            "languages": names,
+            "supportingFactIds": [],
+        }
+
+    if st == "current_company" and company_err == "ambiguous_multiple_current_jobs":
+        return {
+            "selector": field["selector"],
+            "value": "",
+            "action": "skip",
+            "confidence": 0.0,
+            "field_label": label,
+            "reason": company_err,
+            "inventoryCategory": "explicit_profile_value_missing",
+            "semanticType": st,
+            "supportingFactIds": [],
+        }
+
+    if st == "timezone" and _is_blank_value(value_map.get("timezone")):
+        return {
+            "selector": field["selector"],
+            "value": "",
+            "action": "skip",
+            "confidence": 0.0,
+            "field_label": label,
+            "reason": "timezone_missing",
+            "inventoryCategory": "explicit_profile_value_missing",
+            "semanticType": st,
+            "supportingFactIds": [],
+        }
+
+    if st not in value_map:
+        return None
+
+    value = value_map[st]
+    if _is_blank_value(value):
+        return {
+            "selector": field["selector"],
+            "value": "",
+            "action": "skip",
+            "confidence": 0.0,
+            "field_label": label,
+            "reason": f"{st}_missing",
+            "inventoryCategory": "explicit_profile_value_missing",
+            "semanticType": st,
+            "supportingFactIds": [],
+        }
+
+    action = "fill_text"
+    ftype = (field.get("type") or "").lower()
+    tag = (field.get("tag") or "").lower()
+    if ftype in ("radio", "checkbox"):
+        action = "click_radio" if ftype == "radio" else "check_checkbox"
+    elif tag == "select" or field.get("options"):
+        action = "select_dropdown"
+    elif st in ("current_location", "location"):
+        # Greenhouse/Lever location controls are often typeaheads.
+        action = "fill_text"
+
+    return {
+        "selector": field["selector"],
+        "value": value,
+        "action": action,
+        "confidence": 1.0,
+        "field_label": label,
+        "inventoryCategory": "filled_from_profile",
+        "semanticType": st,
+        "supportingFactIds": [],
+    }
+
+
+def _deterministic_fill(
+    fields: list[dict],
+    profile: dict,
+    page_url: str = "",
+) -> tuple[list[dict], list[dict]]:
     """Match common form fields to profile data without AI. Returns (mappings, remaining_fields)."""
     if not fields or not profile:
         return [], fields or []
@@ -227,14 +583,20 @@ def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], 
     full_name = (profile.get("full_name") or "").strip() or " ".join(
         p for p in (first_name, middle_name, last_name) if p
     )
+    linkedin = _normalize_url(profile.get("linkedin_url"))
+    github = _normalize_url(profile.get("github_url"))
+    portfolio = _normalize_url(profile.get("portfolio_url") or profile.get("website_url"))
+    location = _compose_location(profile)
 
     # Work-auth / sponsorship MUST run before generic country (live Greenhouse bug).
+    # Country-specific auth: only apply US profile answers when the question is US.
     rules = [
         (r"\bfirst[\s_-]?name\b", first_name, "fill_text"),
         (r"\bgiven[\s_-]?name\b", first_name, "fill_text"),
         (r"\blast[\s_-]?name\b", last_name, "fill_text"),
         (r"\bsurname\b|\bfamily[\s_-]?name\b", last_name, "fill_text"),
         (r"\bfull[\s_-]?name\b|\byour[\s_-]?name\b", full_name, "fill_text"),
+        (r"\bpreferred[\s_-]?name\b|\bpreferred[\s_-]?first\b", profile.get("preferred_name") or first_name, "fill_text"),
         (r"\bmiddle[\s_-]?name\b", middle_name, "fill_text"),
         # Contact-preference checkbox must win over the generic email text rule.
         (r"\bcontact[\s_-]?me[\s_-]?by[\s_-]?email\b|\bemail[\s_-]?me[\s_-]?about\b", profile.get("contact_by_email", ""), None),
@@ -243,16 +605,19 @@ def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], 
         (r"\bphone\b|\bphone[\s_-]?number\b|\bmobile\b|\bcell\b|\btelephone\b", profile.get("phone", ""), "fill_text"),
         (r"\baddress[\s_-]?line[\s_-]?1\b|\bstreet[\s_-]?address\b|\baddress[\s_-]?1\b", profile.get("address_street1", ""), "fill_text"),
         (r"\baddress[\s_-]?line[\s_-]?2\b|\bapt\b|\bsuite\b|\baddress[\s_-]?2\b", profile.get("address_street2", ""), "fill_text"),
-        (r"\bcity\b|\btown\b", profile.get("address_city", ""), "fill_text"),
+        (r"\bcurrent[\s_-]?location\b|\blocation\b(?!.*phone)", location, "fill_text"),
+        (r"\bcity\b|\btown\b", profile.get("address_city", "") or location, "fill_text"),
         (r"\bpostal[\s_-]?code\b|\bzip[\s_-]?code\b|\bzip\b|\bpostcode\b", profile.get("address_zip", ""), "fill_text"),
         (r"\bstate\b|\bprovince\b|\bregion\b", profile.get("address_state", ""), "select_dropdown"),
-        (r"\bauthori[sz]ed[\s_-]?to[\s_-]?work\b|\bwork[\s_-]?authori[sz]ation\b", profile.get("authorized_to_work_us", ""), None),
-        (r"\bsponsorship\b|\bvisa[\s_-]?sponsor\b", profile.get("requires_sponsorship", ""), None),
+        (r"\bcurrent[\s_-]?company\b|\bcompany[\s_-]?name\b|\borg\b", (_current_company(profile)[0] or ""), "fill_text"),
+        (r"\bauthori[sz]ed[\s_-]?to[\s_-]?work\b|\bwork[\s_-]?authori[sz]ation\b", "__WORK_AUTH__", None),
+        (r"\bsponsorship\b|\bvisa[\s_-]?sponsor\b", "__SPONSORSHIP__", None),
         (r"\bcountry\b", profile.get("address_country_name", "United States"), None),
-        (r"\blinkedin\b", profile.get("linkedin_url", ""), "fill_text"),
-        (r"\bgithub\b", profile.get("github_url", ""), "fill_text"),
-        (r"\bportfolio\b|\bwebsite\b|\bpersonal[\s_-]?url\b", profile.get("portfolio_url", "") or profile.get("website_url", ""), "fill_text"),
-        (r"\bsalary\b|\bcompensation\b|\bdesired[\s_-]?pay\b", str(profile.get("desired_salary_min", "")), "fill_text"),
+        (r"\blinkedin\b", linkedin, "fill_text"),
+        (r"\bgithub\b", github, "fill_text"),
+        (r"\bportfolio\b|\bwebsite\b|\bpersonal[\s_-]?url\b", portfolio, "fill_text"),
+        (r"\buniversity\b|\bschool\b|\bcollege\b", _most_recent_university(profile), None),
+        (r"\bsalary\b|\bcompensation\b|\bdesired[\s_-]?pay\b", str(profile.get("desired_salary_min", "") or ""), "fill_text"),
         (r"\bhow[\s_-]?did[\s_-]?you[\s_-]?(hear|find|learn)\b|\breferral[\s_-]?source\b|\bhow.{0,10}hear\b|\bsource\b.*\bhear\b|\bhear.{0,10}about\b", profile.get("how_heard_default", "Online Job Board"), None),
         (r"\bdate[\s_-]?of[\s_-]?birth\b|\bbirthday\b|\bdob\b", profile.get("date_of_birth", ""), "fill_text"),
     ]
@@ -283,6 +648,57 @@ def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], 
                 "field_label": field.get("label", ""),
                 "reason": "phone_country_manual_review",
                 "fieldKind": "phone_country",
+                "inventoryCategory": "legal_or_consent_manual",
+                "supportingFactIds": [],
+            })
+            matched_selectors.add(field["selector"])
+            continue
+
+        # Exact ATS semantic type wins over fuzzy label matching.
+        semantic = _semantic_mapping_for_field(field, profile, page_url)
+        if semantic is not None:
+            # Resolve deferred action for radios/selects
+            if semantic.get("action") is None and semantic.get("value"):
+                ftype = (field.get("type") or "").lower()
+                tag = (field.get("tag") or "").lower()
+                if ftype in ("radio", "checkbox"):
+                    semantic["action"] = "click_radio" if ftype == "radio" else "check_checkbox"
+                elif tag == "select" or field.get("options"):
+                    semantic["action"] = "select_dropdown"
+                    if field.get("options"):
+                        best = _match_option(semantic["value"], field["options"])
+                        if best:
+                            semantic["value"] = best
+                else:
+                    semantic["action"] = "fill_text"
+            if semantic.get("action") == "click_radio" and semantic.get("value"):
+                lv = str(semantic["value"]).strip().lower()
+                if lv in ("yes", "y", "true", "1"):
+                    semantic["value"] = "yes"
+                elif lv in ("no", "n", "false", "0"):
+                    semantic["value"] = "no"
+                fname = field.get("name") or ""
+                if fname and semantic["value"] in ("yes", "no"):
+                    semantic["selector"] = f'input[name="{fname}"][value="{semantic["value"]}"]'
+            if not _is_blank_value(semantic.get("value")) or semantic.get("action") in (
+                "skip", "upload_file",
+            ):
+                mappings.append(semantic)
+                matched_selectors.add(field["selector"])
+                continue
+
+        # Never answer Canada/Ontario eligibility from US work-auth profile fields.
+        if _re.search(r"\bontario\b|\bcanada\b|\bcanadian\b", searchable) and _re.search(
+            r"authori|eligib|based\s+in|legal\s+right|reside|live\s+in", searchable
+        ):
+            mappings.append({
+                "selector": field["selector"],
+                "value": "",
+                "action": "skip",
+                "confidence": 0.0,
+                "field_label": field.get("label", ""),
+                "reason": "country_specific_eligibility_manual",
+                "inventoryCategory": "legal_or_consent_manual",
                 "supportingFactIds": [],
             })
             matched_selectors.add(field["selector"])
@@ -290,11 +706,48 @@ def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], 
 
         matched = False
         for pattern, value, action in rules:
-            if not value and action != "skip":
-                continue
             if _re.search(pattern, searchable, _re.IGNORECASE) and not _is_excluded(
                 pattern, searchable, field_id, field
             ):
+                # Country-indexed work auth / sponsorship placeholders
+                if value == "__WORK_AUTH__":
+                    country = _infer_auth_country(searchable, page_url)
+                    value = _work_auth_value(profile, country)
+                    if _is_blank_value(value):
+                        mappings.append({
+                            "selector": field["selector"],
+                            "value": "",
+                            "action": "skip",
+                            "confidence": 0.0,
+                            "field_label": field.get("label", ""),
+                            "reason": f"work_authorization_{country}_unknown",
+                            "inventoryCategory": "legal_or_consent_manual",
+                            "supportingFactIds": [],
+                        })
+                        matched_selectors.add(field["selector"])
+                        matched = True
+                        break
+                elif value == "__SPONSORSHIP__":
+                    country = _infer_auth_country(searchable, page_url)
+                    value = _sponsorship_value(profile, country)
+                    if _is_blank_value(value):
+                        mappings.append({
+                            "selector": field["selector"],
+                            "value": "",
+                            "action": "skip",
+                            "confidence": 0.0,
+                            "field_label": field.get("label", ""),
+                            "reason": f"sponsorship_{country}_unknown",
+                            "inventoryCategory": "legal_or_consent_manual",
+                            "supportingFactIds": [],
+                        })
+                        matched_selectors.add(field["selector"])
+                        matched = True
+                        break
+
+                if _is_blank_value(value) and action != "skip":
+                    continue
+
                 tag = field.get("tag", "").lower()
                 if action is None:
                     # Radios/checkboxes also carry an options[] group descriptor — check type first.
@@ -335,6 +788,7 @@ def _deterministic_fill(fields: list[dict], profile: dict) -> tuple[list[dict], 
                     "action": action,
                     "confidence": 1.0,
                     "field_label": field.get("label", ""),
+                    "inventoryCategory": "filled_from_profile",
                     "supportingFactIds": [],
                 })
                 matched_selectors.add(field["selector"])
@@ -546,12 +1000,90 @@ def _filter_eeo_mappings(mappings: list[dict], fill_eeo: bool) -> list[dict]:
     return filtered
 
 
+def _strip_blank_mappings(mappings: list[dict]) -> list[dict]:
+    """Never propose None/null/blank as a fill value (except explicit skips)."""
+    out = []
+    for m in mappings or []:
+        if not m:
+            continue
+        action = m.get("action")
+        if action in ("skip", "upload_file"):
+            out.append(m)
+            continue
+        if _is_blank_value(m.get("value")):
+            out.append({
+                **m,
+                "action": "skip",
+                "value": "",
+                "confidence": 0.0,
+                "reason": m.get("reason") or "blank_value_rejected",
+                "inventoryCategory": m.get("inventoryCategory") or "explicit_profile_value_missing",
+            })
+            continue
+        out.append(m)
+    return out
+
+
+def _build_field_inventory(fields: list[dict], mappings: list[dict]) -> dict:
+    """Every detected field appears in exactly one inventory category (labels only)."""
+    by_sel = {m.get("selector"): m for m in mappings if m.get("selector")}
+    counts: dict[str, int] = {}
+    items = []
+    for f in fields or []:
+        sel = f.get("selector")
+        m = by_sel.get(sel) if sel else None
+        st = (f.get("semanticType") or (m or {}).get("semanticType") or "").lower()
+        if m:
+            cat = m.get("inventoryCategory")
+            if not cat:
+                if m.get("action") == "skip":
+                    reason = (m.get("reason") or "").lower()
+                    if "eeo" in reason:
+                        cat = "eeo_skipped"
+                    elif "file" in reason or "upload" in reason:
+                        cat = "file_attachment_unavailable"
+                    elif "legal" in reason or "consent" in reason or "manual" in reason:
+                        cat = "legal_or_consent_manual"
+                    elif "missing" in reason:
+                        cat = "explicit_profile_value_missing"
+                    else:
+                        cat = "unsupported"
+                elif m.get("qa_matched") or m.get("source") == "custom_qa":
+                    cat = "saved_answer_available"
+                elif (m.get("confidence") or 1) < 0.8:
+                    cat = "ai_draft_available"
+                else:
+                    cat = "filled_from_profile"
+        else:
+            if st in ("open_ended_question", "additional_info"):
+                cat = "ai_draft_available"
+            elif st in ("legal_acknowledgment", "consent", "work_authorization", "sponsorship"):
+                cat = "legal_or_consent_manual"
+            elif st in ("resume_file", "cover_letter_file", "resume", "cover_letter"):
+                cat = "file_attachment_unavailable"
+            elif st == "eeo":
+                cat = "eeo_skipped"
+            else:
+                cat = "unsupported"
+        counts[cat] = counts.get(cat, 0) + 1
+        items.append({
+            "selector": sel,
+            "label": (f.get("label") or f.get("name") or sel or "")[:80],
+            "semanticType": st or None,
+            "category": cat,
+        })
+    return {"counts": counts, "fields": items, "detected": len(items)}
+
+
 @router.post("/autofill/analyze")
 async def analyze_form(request: Request):
     body = await request.json()
     form_html = body.get("form_html", "")
     form_fields = body.get("fields", [])
     page_url = body.get("page_url", "")
+    ats_name = body.get("ats_name") or body.get("atsName") or ""
+    # ats_field_map is applied client-side into semanticType; accept for diagnostics.
+    _ = body.get("ats_field_map") or body.get("atsFieldMap") or {}
 
     profile = await request.app.state.db.get_full_profile()
     fill_eeo = bool(
@@ -560,13 +1092,22 @@ async def analyze_form(request: Request):
         or ((profile or {}).get("eeo") or {}).get("fill_eeo")
     )
 
-    deterministic_mappings, remaining_fields = _deterministic_fill(form_fields, profile)
+    deterministic_mappings, remaining_fields = _deterministic_fill(
+        form_fields, profile, page_url=page_url,
+    )
     deterministic_mappings = _filter_eeo_mappings(deterministic_mappings, fill_eeo)
+    deterministic_mappings = _strip_blank_mappings(deterministic_mappings)
     # Never send phone-country controls to AI — Stage 1 fail-safe.
     remaining_fields = [f for f in remaining_fields if not _is_phone_country_field(f)]
 
     if not remaining_fields:
-        return {"mappings": deterministic_mappings, "fill_eeo": fill_eeo}
+        inventory = _build_field_inventory(form_fields, deterministic_mappings)
+        return {
+            "mappings": deterministic_mappings,
+            "fill_eeo": fill_eeo,
+            "ats_name": ats_name,
+            "inventory": inventory,
+        }
 
     # When EEO fill is disabled, drop remaining demographic fields before AI.
     if not fill_eeo:
@@ -577,13 +1118,22 @@ async def analyze_form(request: Request):
             )
         ]
         if not remaining_fields:
-            return {"mappings": deterministic_mappings, "fill_eeo": fill_eeo}
+            inventory = _build_field_inventory(form_fields, deterministic_mappings)
+            return {
+                "mappings": deterministic_mappings,
+                "fill_eeo": fill_eeo,
+                "ats_name": ats_name,
+                "inventory": inventory,
+            }
 
     client = getattr(request.app.state, "ai_client", None)
     if not client:
+        inventory = _build_field_inventory(form_fields, deterministic_mappings)
         return {
             "mappings": deterministic_mappings,
             "fill_eeo": fill_eeo,
+            "ats_name": ats_name,
+            "inventory": inventory,
             "error": "No AI provider for remaining fields",
         }
 
@@ -624,6 +1174,7 @@ async def analyze_form(request: Request):
         if not isinstance(ai_mappings, list):
             ai_mappings = []
         ai_mappings = _filter_eeo_mappings(ai_mappings, fill_eeo)
+        ai_mappings = _strip_blank_mappings(ai_mappings)
         # Deterministic profile matches win over slower/noisier AI for the same field.
         seen = {m.get("selector") for m in deterministic_mappings if m.get("selector")}
         ai_mappings = [m for m in ai_mappings if m.get("selector") not in seen]
@@ -633,10 +1184,15 @@ async def analyze_form(request: Request):
             label = f"{m.get('field_label', '')} {m.get('selector', '')}"
             if _re.search(r"phone.?country|country.?code|dial.?code|calling.?code", label, _re.I):
                 continue
+            if not m.get("inventoryCategory") and (m.get("confidence") or 1) < 0.8:
+                m["inventoryCategory"] = "ai_draft_available"
             safe_ai.append(m)
+        combined = deterministic_mappings + safe_ai
         return {
-            "mappings": deterministic_mappings + safe_ai,
+            "mappings": combined,
             "fill_eeo": fill_eeo,
+            "ats_name": ats_name,
+            "inventory": _build_field_inventory(form_fields, combined),
         }
     except asyncio.TimeoutError:
         # Keep deterministic profile matches — do not discard them on AI timeout.
@@ -644,12 +1200,16 @@ async def analyze_form(request: Request):
         return {
             "mappings": deterministic_mappings,
             "fill_eeo": fill_eeo,
+            "ats_name": ats_name,
+            "inventory": _build_field_inventory(form_fields, deterministic_mappings),
             "error": f"AI analysis timed out after {ai_timeout}s",
         }
     except json.JSONDecodeError:
         return {
             "mappings": deterministic_mappings,
             "fill_eeo": fill_eeo,
+            "ats_name": ats_name,
+            "inventory": _build_field_inventory(form_fields, deterministic_mappings),
             "error": "Failed to parse AI response",
         }
     except Exception as e:

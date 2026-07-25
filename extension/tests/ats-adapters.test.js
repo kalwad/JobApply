@@ -229,7 +229,7 @@ describe('Greenhouse adapter', () => {
     expect(map['#last_name']).toBe('last_name');
     expect(map['#email']).toBe('email');
     expect(map['#phone']).toBe('phone');
-    expect(map['#resume_text']).toBe('resume');
+    expect(map['#resume_text']).toBe('resume_file');
   });
 
   it('getFieldMap includes new React/Remix form selectors', () => {
@@ -269,8 +269,8 @@ describe('Greenhouse adapter', () => {
     expect(greenhouse.getNextButton(document)).toBeNull();
   });
 
-  it('getDropdownHandler returns null', () => {
-    expect(greenhouse.getDropdownHandler()).toBeNull();
+  it('getDropdownHandler advertises location autocomplete', () => {
+    expect(greenhouse.getDropdownHandler()).toEqual({ locationAutocomplete: true });
   });
 
   it('enhanceExtraction tags resume fields', () => {
@@ -354,6 +354,8 @@ describe('Lever adapter', () => {
     expect(map['input[name="email"]']).toBe('email');
     expect(map['input[name="urls[LinkedIn]"]']).toBe('linkedin_url');
     expect(map['input[name="urls[GitHub]"]']).toBe('github_url');
+    expect(map['input[name="urls[Portfolio]"]']).toBe('portfolio_url');
+    expect(map['input[name="org"]']).toBe('current_company');
   });
 
   it('getFormRoot prefers .application-form', () => {

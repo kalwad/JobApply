@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Greenhouse — Location Autocomplete</title></head>
+<body>
+  <form id="app_form">
+    <label for="first_name">First Name*</label>
+    <input id="first_name" name="first_name" type="text" />
+    <label for="last_name">Last Name*</label>
+    <input id="last_name" name="last_name" type="text" />
+    <label for="email">Email*</label>
+    <input id="email" name="email" type="email" />
+    <label for="phone">Phone*</label>
+    <input id="phone" name="phone" type="tel" />
+
+    <label for="job_application_location">Location (City)*</label>
+    <div class="autocomplete">
+      <input
+        id="job_application_location"
+        name="job_application[location]"
+        type="text"
+        role="combobox"
+        aria-autocomplete="list"
+        aria-controls="gh-location-list"
+        aria-expanded="false"
+        autocomplete="off"
+      />
+      <ul id="gh-location-list" role="listbox" hidden></ul>
+      <input type="hidden" id="job_application_location_id" name="job_application[location_id]" value="" />
+    </div>
+
+    <label for="linkedin">LinkedIn Profile</label>
+    <input id="linkedin" name="linkedin" type="url" />
+
+    <label for="resume">Resume/CV*</label>
+    <input id="resume" name="resume" type="file" accept=".pdf,.doc,.docx,.txt,.rtf" />
+
+    <label for="teams_q">What internal teams do you currently support as a Data Scientist?*</label>
+    <textarea id="teams_q" name="cards[teams]" rows="4"></textarea>
+
+    <label for="stack_q">Please list your current tech stack.*</label>
+    <textarea id="stack_q" name="cards[stack]" rows="3"></textarea>
+
+    <label for="timezone">What is the Time Zone you most commonly operate in?*</label>
+    <select id="timezone" name="timezone">
+      <option value="">Select...</option>
+      <option value="ET">Eastern Time</option>
+      <option value="PT">Pacific Time</option>
+    </select>
+
+    <label for="ontario">Due to current team needs, we are only considering candidates based in Ontario, Canada. Please confirm you're based in Ontario.*</label>
+    <select id="ontario" name="based_in_ontario">
+      <option value="">Select...</option>
+      <option value="yes">Yes</option>
+      <option value="no">No</option>
+    </select>
+
+    <label for="canada_auth">Do you have a legal right to work in Canada if hired by Greenhouse?*</label>
+    <select id="canada_auth" name="work_auth_canada">
+      <option value="">Select...</option>
+      <option value="yes">Yes</option>
+      <option value="no">No</option>
+    </select>
+
+    <label for="recording">Greenhouse Interview Recording Policy (Fraud Detection)*</label>
+    <select id="recording" name="recording_consent">
+      <option value="">Select...</option>
+      <option value="acknowledge">I acknowledge</option>
+      <option value="object">I object</option>
+    </select>
+
+    <input type="submit" id="gh-submit" value="Submit Application" />
+  </form>
+  <script>
+    window.__submitEventCount = 0;
+    window.__submitButtonClickCount = 0;
+    window.__requestSubmitCount = 0;
+    const form = document.getElementById('app_form');
+    const submitButton = document.getElementById('gh-submit');
+    const input = document.getElementById('job_application_location');
+    const list = document.getElementById('gh-location-list');
+    const hidden = document.getElementById('job_application_location_id');
+    const SUGGESTIONS = [
+      { id: '1', text: 'Sterling Heights, Michigan, United States' },
+      { id: '2', text: 'Toronto, Ontario, Canada' },
+      { id: '3', text: 'Ann Arbor, Michigan, United States' },
+    ];
+
+    // Simulate Greenhouse: typing without selecting a suggestion clears on blur.
+    input.addEventListener('input', () => {
+      const q = (input.value || '').toLowerCase();
+      list.innerHTML = '';
+      const matches = SUGGESTIONS.filter(s => s.text.toLowerCase().includes(q.split(',')[0].trim()));
+      if (!q || !matches.length) {
+        list.hidden = true;
+        input.setAttribute('aria-expanded', 'false');
+        return;
+      }
+      matches.forEach(s => {
+        const li = document.createElement('li');
+        li.setAttribute('role', 'option');
+        li.textContent = s.text;
+        li.dataset.id = s.id;
+        li.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          input.value = s.text;
+          hidden.value = s.id;
+          list.hidden = true;
+          input.setAttribute('aria-expanded', 'false');
+        });
+        list.appendChild(li);
+      });
+      list.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+    });
+    input.addEventListener('blur', () => {
+      setTimeout(() => {
+        if (!hidden.value) {
+          input.value = '';
+        }
+        list.hidden = true;
+        input.setAttribute('aria-expanded', 'false');
+      }, 150);
+    });
+
+    form.addEventListener('submit', (event) => {
+      window.__submitEventCount += 1;
+      event.preventDefault();
+    });
+    submitButton.addEventListener('click', () => {
+      window.__submitButtonClickCount += 1;
+    });
+    const nativeRequestSubmit = HTMLFormElement.prototype.requestSubmit;
+    form.requestSubmit = function (...args) {
+      window.__requestSubmitCount += 1;
+      return nativeRequestSubmit.apply(this, args);
+    };
+  </script>
+</body>
+</html>

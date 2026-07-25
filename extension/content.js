@@ -1715,6 +1715,122 @@
 
   // ─── Field filling (main) ──────────────────────────────────
 
+  function normalizeComparable(s) {
+    return String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+
+  function looksLikeLocationField(el, label) {
+    const hints = `${label || ''} ${el?.getAttribute?.('aria-label') || ''} ${el?.name || ''} ${el?.id || ''} ${el?.placeholder || ''}`.toLowerCase();
+    return /\blocation\b|\bcity\b/.test(hints) && !/\bphone\b|\bdial\b|\bcountry\s*code\b/.test(hints);
+  }
+
+  /**
+   * Post-fill verification: a dispatched event is not a successful fill.
+   * Returns { ok, reason, actual }.
+   */
+  function verifyFilled(el, expected, action, opts = {}) {
+    if (!el) return { ok: false, reason: 'element missing', actual: '' };
+    const exp = normalizeComparable(expected);
+    const actType = String(action || '');
+
+    if (actType === 'check_checkbox') {
+      const shouldCheck = expected === true || expected === 'true' || expected === 'yes' || expected === '1';
+      return el.checked === shouldCheck
+        ? { ok: true, actual: String(el.checked) }
+        : { ok: false, reason: 'checkbox state did not stick', actual: String(el.checked) };
+    }
+
+    if (actType === 'click_radio') {
+      const name = el.name || el.getAttribute('name');
+      if (!name) return { ok: false, reason: 'radio group missing name', actual: '' };
+      const root = el.closest('form') || el.getRootNode();
+      const checked = root.querySelector(`input[type="radio"][name="${CSS.escape(name)}"]:checked`);
+      if (!checked) return { ok: false, reason: 'no radio selected', actual: '' };
+      // Prefer the concrete option value we clicked (handles synonym → option mapping).
+      const selected = normalizeComparable(opts.selectedValue || '');
+      const actual = normalizeComparable(checked.value || findLabel(checked));
+      const labelActual = normalizeComparable(findLabel(checked));
+      if (selected && (actual === selected || labelActual === selected)) {
+        return { ok: true, actual: checked.value };
+      }
+      if (actual === exp || labelActual === exp || actual.includes(exp) || exp.includes(actual)
+          || labelActual.includes(exp) || exp.includes(labelActual)) {
+        return { ok: true, actual: checked.value };
+      }
+      // If the clicked element itself is checked, treat as verified.
+      if (el.checked) return { ok: true, actual: el.value };
+      return { ok: false, reason: 'radio selection did not stick', actual: checked.value };
+    }
+
+    if (el.tagName === 'SELECT' || actType === 'select_dropdown' || actType === 'select_dropdown_safe') {
+      const opt = el.options?.[el.selectedIndex];
+      const actual = normalizeComparable(opt?.text || opt?.value || el.value || el.textContent);
+      if (!exp) return { ok: false, reason: 'empty expected value', actual };
+      if (actual === exp || actual.includes(exp) || exp.includes(actual)) {
+        return { ok: true, actual };
+      }
+      return { ok: false, reason: 'selection did not stick', actual };
+    }
+
+    // Text / typeahead / contenteditable
+    let actualRaw = '';
+    if (el.isContentEditable || el.getAttribute?.('contenteditable') === 'true') {
+      actualRaw = el.textContent || '';
+    } else {
+      actualRaw = el.value || '';
+    }
+    const actual = normalizeComparable(actualRaw);
+    // Intentional clear / empty fill
+    if (!exp) {
+      return actual ? { ok: false, reason: 'expected empty but value remained', actual } : { ok: true, actual };
+    }
+
+    if (opts.requireCommit) {
+      if (!actual || actual.length < 2) {
+        return { ok: false, reason: 'location/autocomplete value did not stick', actual };
+      }
+      const words = exp.split(/[\s,/|-]+/).filter(w => w.length > 2);
+      const hit = words.length === 0
+        ? actual.includes(exp) || exp.includes(actual)
+        : words.some(w => actual.includes(w));
+      if (!hit) {
+        return { ok: false, reason: 'committed autocomplete value does not match', actual };
+      }
+      return { ok: true, actual };
+    }
+
+    if (actual === exp || actual.includes(exp) || exp.includes(actual)) {
+      return { ok: true, actual };
+    }
+    // Phone digits: allow formatting differences
+    const digA = actual.replace(/\D/g, '');
+    const digE = exp.replace(/\D/g, '');
+    if (digA && digE && digA.length >= 7 && (digA.endsWith(digE) || digE.endsWith(digA) || digA.includes(digE))) {
+      return { ok: true, actual };
+    }
+    return { ok: false, reason: 'value did not stick', actual };
+  }
+
+  function withVerification(result, el, expected, action, opts = {}) {
+    if (!result?.success || result.skipped) return result;
+    const verifyOpts = {
+      ...opts,
+      selectedValue: opts.selectedValue || result.selectedValue || result.selectedText,
+    };
+    // Allow framework state to settle (Greenhouse React location clears on blur).
+    const verified = verifyFilled(el, expected, action, verifyOpts);
+    if (!verified.ok) {
+      return {
+        ...result,
+        success: false,
+        reason: verified.reason || 'verification failed',
+        inventoryCategory: 'failed_verification',
+        actualValue: verified.actual,
+      };
+    }
+    return result;
+  }
+
   async function fillField(selector, value, action, confidence, label) {
     try {
       // Dismiss any stale dropdowns from previous field
@@ -1839,11 +1955,13 @@
           }
 
           // 5. Check if this is a typeahead/autocomplete field (has ARIA hints)
+          const locationField = looksLikeLocationField(el, label || fieldHints.label);
           const isTypeahead = el.getAttribute('role') === 'combobox'
             || el.getAttribute('aria-autocomplete')
             || el.getAttribute('aria-owns')
             || el.getAttribute('aria-controls')
             || el.getAttribute('list')
+            || locationField
             || el.closest('[class*="autocomplete"]')
             || el.closest('[class*="typeahead"]')
             || el.closest('[class*="combobox"]');
@@ -1851,7 +1969,27 @@
           if (isTypeahead) {
             const result = await typeAndSelectDropdown(el, fillValue, fieldHints);
             if (result.success) {
-              return { selector, success: true, action, selectedText: result.selectedText };
+              await sleep(locationField ? 400 : 100);
+              return withVerification(
+                { selector, success: true, action, selectedText: result.selectedText },
+                el,
+                result.selectedText || fillValue,
+                action,
+                { requireCommit: locationField },
+              );
+            }
+            // Location/autocomplete: never report success after a bare text set.
+            if (locationField) {
+              setNativeValue(el, fillValue);
+              dispatchEvents(el, ['input', 'change', 'blur']);
+              await sleep(400);
+              return withVerification(
+                { selector, success: true, action },
+                el,
+                fillValue,
+                action,
+                { requireCommit: true },
+              );
             }
           }
 
@@ -1869,13 +2007,26 @@
               if (match) {
                 clickOption(match);
                 await sleep(100);
-                return { selector, success: true, action, selectedText: match.textContent.trim() };
+                return withVerification(
+                  { selector, success: true, action, selectedText: match.textContent.trim() },
+                  el,
+                  match.textContent.trim() || fillValue,
+                  action,
+                  { requireCommit: locationField },
+                );
               }
             }
           }
 
           dispatchEvents(el, ['blur']);
-          return { selector, success: true, action };
+          await sleep(locationField ? 350 : 50);
+          return withVerification(
+            { selector, success: true, action },
+            el,
+            fillValue,
+            action,
+            { requireCommit: locationField },
+          );
         }
 
         case 'select_dropdown_safe':
@@ -1928,7 +2079,12 @@
             if (idx >= 0) {
               el.selectedIndex = idx;
               dispatchEvents(el, ['change', 'blur']);
-              return { selector, success: true, action, selectedValue: options[idx].value };
+              return withVerification(
+                { selector, success: true, action, selectedValue: options[idx].value },
+                el,
+                options[idx].text || options[idx].value || value,
+                action,
+              );
             }
             return { selector, success: false, reason: `no matching option for "${value}"` };
           }
@@ -1939,7 +2095,13 @@
             : fieldHints;
           const customResult = await handleCustomDropdown(el, value, dropdownHints);
           if (customResult.success) {
-            return { selector, success: true, action, selectedText: customResult.selectedText };
+            await sleep(100);
+            return withVerification(
+              { selector, success: true, action, selectedText: customResult.selectedText },
+              el,
+              customResult.selectedText || value,
+              action,
+            );
           }
           return { selector, success: false, reason: customResult.reason || `no matching option for "${value}"` };
         }
@@ -1957,7 +2119,13 @@
               const radioValue = radio.value.toLowerCase();
               if (radioValue === target || radioLabel === target) {
                 radio.click();
-                return { selector, success: true, action, selectedValue: radio.value };
+                return withVerification(
+                  { selector, success: true, action, selectedValue: radio.value },
+                  radio,
+                  radio.value,
+                  action,
+                  { selectedValue: radio.value },
+                );
               }
             }
             // Pass 2: label contains target (but only if target is long enough to be meaningful)
@@ -1966,7 +2134,13 @@
                 const radioLabel = findLabel(radio).toLowerCase().trim();
                 if (radioLabel.includes(target)) {
                   radio.click();
-                  return { selector, success: true, action, selectedValue: radio.value };
+                  return withVerification(
+                    { selector, success: true, action, selectedValue: radio.value },
+                    radio,
+                    radio.value,
+                    action,
+                    { selectedValue: radio.value },
+                  );
                 }
               }
             }
@@ -1986,7 +2160,13 @@
                   : norm.normalizedMatch(radioLabels, value, tables.length ? tables : undefined);
                 if (normIdx >= 0) {
                   radios[normIdx].click();
-                  return { selector, success: true, action, selectedValue: radios[normIdx].value };
+                  return withVerification(
+                    { selector, success: true, action, selectedValue: radios[normIdx].value },
+                    radios[normIdx],
+                    radios[normIdx].value,
+                    action,
+                    { selectedValue: radios[normIdx].value },
+                  );
                 }
               } catch { /* normalization unavailable */ }
             }
@@ -2000,11 +2180,23 @@
           if (el.checked !== shouldCheck) {
             el.click(); // .click() toggles checked and fires events
           }
-          return { selector, success: true, action };
+          return withVerification(
+            { selector, success: true, action },
+            el,
+            shouldCheck ? 'yes' : 'no',
+            action,
+          );
         }
 
         case 'upload_file': {
-          return { selector, success: false, reason: 'file upload requires user interaction' };
+          // Not a verify failure — Stage 1.1 will attach real PDF assets.
+          return {
+            selector,
+            success: true,
+            skipped: true,
+            reason: 'file upload requires user interaction — résumé asset attach is Stage 1.1',
+            inventoryCategory: 'file_attachment_unavailable',
+          };
         }
 
         case 'skip':
@@ -2226,8 +2418,36 @@
   async function getNewMappings() {
     try {
       const formHtml = serializeFormHtml();
+      const atsAdapter = window.__jaAtsAdapters
+        ? window.__jaAtsAdapters.detectATS(location.href, document)
+        : null;
+      let structuredFields = [];
+      try {
+        if (atsAdapter && window.__jaAtsCore?.extractWithAdapter) {
+          structuredFields = window.__jaAtsCore.extractWithAdapter(
+            atsAdapter,
+            document,
+            (root) => extractFormData(root),
+          );
+        } else {
+          structuredFields = extractFormData(atsAdapter?.getFormRoot?.(document) || null);
+        }
+        structuredFields = enrichFieldHints(structuredFields);
+      } catch (err) {
+        console.warn('[JobApply] getNewMappings extract failed:', err?.message || err);
+      }
+      const payload = {
+        type: 'analyzeForm',
+        formHtml,
+        structuredFields,
+        pageUrl: location.href,
+      };
+      if (atsAdapter) {
+        payload.atsName = atsAdapter.name;
+        payload.atsFieldMap = atsAdapter.getFieldMap?.() || {};
+      }
       const response = await withTimeout(
-        chrome.runtime.sendMessage({ type: 'analyzeForm', formHtml }),
+        chrome.runtime.sendMessage(payload),
         API_TIMEOUT_MS,
         'API form analysis'
       );
@@ -2913,7 +3133,16 @@
   function sanitizeMappings(mappings) {
     if (!Array.isArray(mappings)) return [];
     const filtered = mappings.filter((m) => {
-      if (!m || m.action === 'skip') return true;
+      if (!m) return false;
+      if (m.action === 'skip') return true;
+      // Never propose null/None/undefined/blank as a fill value.
+      const raw = m.value;
+      if (raw == null) return false;
+      const s = String(raw).trim();
+      if (!s || /^(none|null|undefined|nan)$/i.test(s)) {
+        debugLog('Dropped empty/None mapping', m.selector, m.field_label);
+        return false;
+      }
       if (valueLooksLikePhone(m.value) && !fieldLooksLikePhone(m)) {
         debugLog('Dropped phone-like value on non-phone field', m.selector, m.field_label);
         return false;
@@ -3114,18 +3343,29 @@
 
         const formHtml = serializeFormHtml();
 
-        // If adapter provides extra field extraction (e.g. Google Forms), merge them
+        // Extract via ATS adapter pipeline when available (exact semantic map).
+        let structuredFields = [];
         let adapterFields = [];
-        if (atsAdapter?.getExtraFields) {
-          try {
-            adapterFields = atsAdapter.getExtraFields(document);
-          } catch (err) {
-            console.warn('[JobApply] ATS getExtraFields failed:', err.message);
+        try {
+          if (atsAdapter && window.__jaAtsCore?.extractWithAdapter) {
+            structuredFields = window.__jaAtsCore.extractWithAdapter(
+              atsAdapter,
+              document,
+              (root) => extractFormData(root || formRoot),
+            );
+          } else {
+            structuredFields = extractFormData(formRoot);
+            if (atsAdapter?.getExtraFields) {
+              try { adapterFields = atsAdapter.getExtraFields(document) || []; } catch { /* skip */ }
+            }
+            if (atsAdapter?.enhanceExtraction) {
+              structuredFields = atsAdapter.enhanceExtraction(structuredFields);
+            }
           }
+        } catch (err) {
+          console.warn('[JobApply] ATS extractWithAdapter failed, falling back:', err.message);
+          structuredFields = extractFormData(formRoot);
         }
-
-        // Extract structured fields for more reliable AI analysis
-        let structuredFields = extractFormData(formRoot);
 
         // In iframes with no form fields, bail silently — avoids showing
         // confusing overlays in tracking/footer/privacy iframes
@@ -3151,26 +3391,24 @@
           console.warn('[JobApply] enrichFieldHints failed:', err.message);
         }
 
-        // Apply ATS-specific field enhancement if adapter provides it
-        if (atsAdapter?.enhanceExtraction) {
-          try {
-            structuredFields = atsAdapter.enhanceExtraction(structuredFields);
-          } catch (err) {
-            console.warn('[JobApply] ATS enhanceExtraction failed:', err.message);
-          }
-        }
-
         // Debug only (redacted): never log raw profile/answer values by default
         debugLog('Extracted fields:', structuredFields.map(f => ({
           selector: f.selector, tag: f.tag, type: f.type,
           label: f.label ? String(f.label).slice(0, 40) : '',
           name: f.name, role: f.role,
+          semanticType: f.semanticType || null,
+          fieldKind: f.fieldKind || null,
           currentValue: f.currentValue ? '[set]' : '[empty]',
           optionCount: f.options?.length || 0,
         })));
 
-        // Include ATS metadata in the analysis request
-        const analyzePayload = { type: 'analyzeForm', formHtml, structuredFields };
+        // Include ATS metadata in the analysis request (background must forward these)
+        const analyzePayload = {
+          type: 'analyzeForm',
+          formHtml,
+          structuredFields,
+          pageUrl: location.href,
+        };
         if (atsAdapter) {
           analyzePayload.atsName = atsAdapter.name;
           analyzePayload.atsFieldMap = atsAdapter.getFieldMap?.() || {};
@@ -4289,6 +4527,8 @@
       isSubmitControl,
       reviewMappingsBeforeFill,
       sanitizeMappings,
+      verifyFilled,
+      looksLikeLocationField,
       getNearbyHeading,
       matchPhoneCountryCodeOption,
       extractDialCode,

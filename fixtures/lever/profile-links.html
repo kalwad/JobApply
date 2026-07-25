@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Lever — Profile Links</title></head>
+<body>
+  <form id="lever-form" class="application-form">
+    <label for="lever-name">Full name✱</label>
+    <input id="lever-name" name="name" type="text" />
+    <label for="lever-email">Email✱</label>
+    <input id="lever-email" name="email" type="email" />
+    <label for="lever-phone">Phone</label>
+    <input id="lever-phone" name="phone" type="tel" />
+
+    <label for="lever-location">Current location✱</label>
+    <input id="lever-location" name="location" type="text" />
+
+    <label for="lever-org">Current company</label>
+    <input id="lever-org" name="org" type="text" />
+
+    <fieldset>
+      <legend>Links</legend>
+      <label for="lever-linkedin">LinkedIn URL</label>
+      <input id="lever-linkedin" name="urls[LinkedIn]" type="url" />
+      <label for="lever-github">GitHub URL</label>
+      <input id="lever-github" name="urls[GitHub]" type="url" />
+      <label for="lever-portfolio">Portfolio URL</label>
+      <input id="lever-portfolio" name="urls[Portfolio]" type="url" />
+    </fieldset>
+
+    <label for="lever-preferred">Preferred Name | What would you like us to call you?</label>
+    <input id="lever-preferred" name="cards[preferred_name]" type="text" />
+
+    <label for="lever-university">Which university are you currently attending or did you last attend?✱</label>
+    <select id="lever-university" name="cards[university]">
+      <option value="">Select...</option>
+      <option value="umich">University of Michigan</option>
+      <option value="other">Other (School Not Listed)</option>
+    </select>
+
+    <fieldset>
+      <legend>Language Skill(s) (Check all that apply)✱</legend>
+      <label><input type="checkbox" name="cards[languages]" value="English" /> English (ENG)</label>
+      <label><input type="checkbox" name="cards[languages]" value="Spanish" /> Spanish (SPA)</label>
+      <label><input type="checkbox" name="cards[languages]" value="Hindi" /> Hindi (HIN)</label>
+    </fieldset>
+
+    <label for="lever-heard">How did you hear about this opportunity?✱</label>
+    <select id="lever-heard" name="cards[hear]">
+      <option value="">Select...</option>
+      <option value="LinkedIn">LinkedIn</option>
+      <option value="Online Job Board">Online Job Board</option>
+      <option value="Other">Other</option>
+    </select>
+
+    <fieldset>
+      <legend>Are you legally authorized to work in the country for which you are applying?✱</legend>
+      <label><input type="radio" name="cards[work_auth]" value="yes" /> Yes</label>
+      <label><input type="radio" name="cards[work_auth]" value="no" /> No</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Will you now or in the future require sponsorship for employment visa status?✱</legend>
+      <label><input type="radio" name="cards[sponsorship]" value="yes" /> Yes</label>
+      <label><input type="radio" name="cards[sponsorship]" value="no" /> No</label>
+    </fieldset>
+
+    <label for="lever-proud">What has been your favorite project or proudest accomplishment? Why?</label>
+    <textarea id="lever-proud" name="cards[proud]" rows="4"></textarea>
+
+    <label for="lever-why">Why do you want to work at Palantir?</label>
+    <textarea id="lever-why" name="cards[why]" rows="4"></textarea>
+
+    <fieldset>
+      <legend>AI Notetaker consent✱</legend>
+      <label><input type="radio" name="cards[ai_notetaker]" value="yes" /> Yes, I consent</label>
+      <label><input type="radio" name="cards[ai_notetaker]" value="no" /> No, I do not consent</label>
+    </fieldset>
+
+    <label for="lever-resume">Resume/CV✱</label>
+    <input id="lever-resume" name="resume" type="file" />
+
+    <button type="submit" id="lever-submit">Submit application</button>
+  </form>
+  <script>
+    window.__submitEventCount = 0;
+    window.__submitButtonClickCount = 0;
+    window.__requestSubmitCount = 0;
+    const form = document.getElementById('lever-form');
+    const submitButton = document.getElementById('lever-submit');
+    form.addEventListener('submit', (event) => {
+      window.__submitEventCount += 1;
+      event.preventDefault();
+    });
+    submitButton.addEventListener('click', () => {
+      window.__submitButtonClickCount += 1;
+    });
+    const nativeRequestSubmit = HTMLFormElement.prototype.requestSubmit;
+    form.requestSubmit = function (...args) {
+      window.__requestSubmitCount += 1;
+      return nativeRequestSubmit.apply(this, args);
+    };
+  </script>
+</body>
+</html>

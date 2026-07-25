@@ -148,10 +148,17 @@
         '#phone_country_code': 'phone_country_code',
         '#job_application_phone_country_code': 'phone_country_code',
         'select[name="phone_country_code"]': 'phone_country_code',
-        '#job_application_location': 'location',
+        '#job_application_location': 'current_location',
+        'input[name="job_application[location]"]': 'current_location',
+        'input[name="location"]': 'current_location',
+        'input[autocomplete="address-level2"]': 'current_location',
         '#job_application_answers_attributes_0_text_value': 'linkedin_url',
-        '#resume_text': 'resume',
-        '#cover_letter_text': 'cover_letter',
+        'input[name="linkedin"]': 'linkedin_url',
+        '#resume': 'resume_file',
+        '#resume_text': 'resume_file',
+        'input[name="resume"]': 'resume_file',
+        '#cover_letter': 'cover_letter_file',
+        '#cover_letter_text': 'cover_letter_file',
         'input[name="job_application[first_name]"]': 'first_name',
         'input[name="job_application[last_name]"]': 'last_name',
         'input[name="job_application[email]"]': 'email',
@@ -162,7 +169,7 @@
         'input[name="preferred_name"]': 'preferred_name',
         'input[name="email"]': 'email',
         'input[name="phone"]': 'phone',
-        'input[name="resume"]': 'resume',
+        'input[name="resume"]': 'resume_file',
       };
     },
 
@@ -177,35 +184,79 @@
         if (field.id === 'resume' || field.id === 'resume_text'
             || (field.name && field.name.includes('resume'))) {
           field.atsHint = 'resume_upload';
+          field.semanticType = field.semanticType || 'resume_file';
         }
         if (field.id === 'cover_letter' || field.id === 'cover_letter_text'
             || (field.name && field.name.includes('cover_letter'))) {
           field.atsHint = 'cover_letter';
+          field.semanticType = field.semanticType || 'cover_letter_file';
+        }
+
+        const text = `${field.label || ''} ${field.name || ''} ${field.id || ''} ${field.placeholder || ''}`.toLowerCase();
+        // Location / city autocomplete (not phone country)
+        if (!field.semanticType
+            && /\blocation\b|\bcity\b/.test(text)
+            && !/\bphone\b|\bdial\b|\bcountry\s*code\b/.test(text)
+            && !/\bontario\b|\bwork\b.*\bcanada\b|\blegal\s+right\b/.test(text)) {
+          field.semanticType = 'current_location';
+          field.atsHint = field.atsHint || 'greenhouse_location';
+        }
+        if (!field.semanticType && /\blinkedin\b/.test(text)) {
+          field.semanticType = 'linkedin_url';
+        }
+        if (!field.semanticType && /\btime\s*zone\b|\btimezone\b/.test(text)) {
+          field.semanticType = 'timezone';
+        }
+        if (!field.semanticType && (
+          /\bhow\s+did\s+you\b.*\bhear\b/.test(text)
+          || /\binitially\s+hear\b/.test(text)
+        )) {
+          field.semanticType = 'how_heard';
+        }
+        // Open-ended / long-answer questions (inline AI later)
+        if (!field.semanticType
+            && (field.tag === 'textarea' || (field.type === 'text' && (field.label || '').length > 40))
+            && !/\blinkedin\b|\bgithub\b|\bportfolio\b|\bwebsite\b/.test(text)) {
+          if (/\btech\s*stack\b|\binternal\s+teams\b|\bbusiness\s+problems\b|\bwhy\b|\bproudest\b|\bfavorite\s+project\b/.test(text)
+              || (field.tag === 'textarea' && !/\bcover\b|\bresume\b/.test(text))) {
+            field.semanticType = 'open_ended_question';
+          }
+        }
+        // Legal / consent — never guess
+        if (/\bconsent\b|\backnowledge\b|\brecording\s+policy\b|\bnon-?compete\b|\bprivacy\s+policy\b|\bterms\b/.test(text)
+            || /\blegal\s+right\s+to\s+work\b|\bbased\s+in\s+ontario\b/.test(text)) {
+          field.semanticType = field.semanticType || 'legal_acknowledgment';
+          field.atsHint = field.atsHint || 'legal_or_consent';
         }
 
         // EEO / voluntary self-identification field tagging
-        const text = `${field.label || ''} ${field.name || ''} ${field.id || ''}`.toLowerCase();
         if (/\bgender\b/.test(text) && !field.atsHint) {
           field.atsHint = 'eeo_gender';
+          field.semanticType = field.semanticType || 'eeo';
         }
         if (/\b(race|ethnicity|ethnic)\b/.test(text) && !field.atsHint) {
           field.atsHint = 'eeo_race_ethnicity';
+          field.semanticType = field.semanticType || 'eeo';
         }
         if (/\bveteran\b/.test(text) && !field.atsHint) {
           field.atsHint = 'eeo_veteran_status';
+          field.semanticType = field.semanticType || 'eeo';
         }
         if (/\bdisabilit/.test(text) && !field.atsHint) {
           field.atsHint = 'eeo_disability_status';
+          field.semanticType = field.semanticType || 'eeo';
         }
         if (/\bhispanic\b|\blatino\b/.test(text) && !field.atsHint) {
           field.atsHint = 'eeo_hispanic_latino';
+          field.semanticType = field.semanticType || 'eeo';
         }
       }
       return fields;
     },
 
     getDropdownHandler() {
-      return null; // Greenhouse uses standard HTML selects
+      // Live Greenhouse location is a custom autocomplete — not a plain <select>.
+      return { locationAutocomplete: true };
     },
   };
 
@@ -234,13 +285,14 @@
         'input[name="email"]': 'email',
         'input[name="phone"]': 'phone',
         'input[name="org"]': 'current_company',
+        'input[name="location"]': 'current_location',
         'input[name="urls[LinkedIn]"]': 'linkedin_url',
         'input[name="urls[GitHub]"]': 'github_url',
-        'input[name="urls[Portfolio]"]': 'website',
+        'input[name="urls[Portfolio]"]': 'portfolio_url',
         'input[name="urls[Twitter]"]': 'twitter_url',
         'input[name="urls[Other]"]': 'website',
-        'textarea[name="comments"]': 'additional_info',
-        'input[name="resume"]': 'resume',
+        'textarea[name="comments"]': 'open_ended_question',
+        'input[name="resume"]': 'resume_file',
       };
     },
 
@@ -250,10 +302,40 @@
     },
 
     enhanceExtraction(fields) {
-      // Lever has a "Custom Questions" section that uses dynamic field names
       for (const field of fields) {
+        const text = `${field.label || ''} ${field.name || ''} ${field.id || ''}`.toLowerCase();
         if (field.name && field.name.startsWith('cards[')) {
           field.atsHint = 'lever_custom_question';
+          if (!field.semanticType) {
+            field.semanticType = /authori[sz]|sponsor|consent|privacy|opt\s*in|notetaker/i.test(text)
+              ? 'legal_acknowledgment'
+              : 'open_ended_question';
+          }
+        }
+        if (!field.semanticType && /\bcurrent\s+location\b|\blocation\b/.test(text)
+            && !/\bphone\b/.test(text)) {
+          field.semanticType = 'current_location';
+        }
+        if (!field.semanticType && /\bpreferred\s+name\b/.test(text)) {
+          field.semanticType = 'preferred_name';
+        }
+        if (!field.semanticType && /\buniversity\b|\bschool\b/.test(text)) {
+          field.semanticType = 'university';
+        }
+        if (!field.semanticType && /\blanguage\b/.test(text)) {
+          field.semanticType = 'languages';
+        }
+        if (!field.semanticType && /\bhow\s+did\s+you\s+hear\b|\bhear\s+about\b/.test(text)) {
+          field.semanticType = 'how_heard';
+        }
+        if (/\bauthori[sz]ed\s+to\s+work\b|\blegally\s+authorized\b/.test(text)) {
+          field.semanticType = 'work_authorization';
+        }
+        if (/\bsponsorship\b|\bvisa\b/.test(text)) {
+          field.semanticType = 'sponsorship';
+        }
+        if (/\bconsent\b|\bnotetaker\b|\bprivacy\b/.test(text)) {
+          field.semanticType = field.semanticType || 'consent';
         }
       }
       return fields;

@@ -194,6 +194,23 @@ describe('onMessage router', () => {
     expect(body.fields).toHaveLength(1);
   });
 
+  it('forwards ats_name, ats_field_map, and page_url to analyze', async () => {
+    mockFetchOk({ mappings: [] });
+    await sendMessage({
+      type: 'analyzeForm',
+      formHtml: '<form></form>',
+      structuredFields: [{ selector: '#li', label: 'LinkedIn', semanticType: 'linkedin_url' }],
+      atsName: 'Lever',
+      atsFieldMap: { 'input[name="urls[LinkedIn]"]': 'linkedin_url' },
+      pageUrl: 'https://jobs.lever.co/acme/abc',
+    });
+    const body = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
+    expect(body.ats_name).toBe('Lever');
+    expect(body.ats_field_map['input[name="urls[LinkedIn]"]']).toBe('linkedin_url');
+    expect(body.page_url).toBe('https://jobs.lever.co/acme/abc');
+    expect(body.fields[0].semanticType).toBe('linkedin_url');
+  });
+
   it('routes analyzeForm with adapter fields when no structured fields', async () => {
     mockFetchOk({ mappings: [] });
     const result = await sendMessage({

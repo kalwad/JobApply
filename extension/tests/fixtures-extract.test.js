@@ -89,6 +89,35 @@ describe('fixture adapter detect + extract', () => {
     expect(names).toContain('name');
     expect(names).toContain('email');
   });
+
+  it('Lever profile-links fixture stamps semanticTypes via extractWithAdapter', () => {
+    const html = readFileSync(join(FIXTURES, 'lever', 'profile-links.html'), 'utf-8');
+    const match = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    document.body.innerHTML = match ? match[1] : html;
+    const adapter = ctx.adapters.detectATS(FIXTURE_URLS.lever, document);
+    const fields = ctx.core.extractWithAdapter(adapter, document, (root) => ctx.api.extractFormData(root));
+    const byName = Object.fromEntries(fields.map(f => [f.name, f]));
+    expect(byName['urls[LinkedIn]']?.semanticType).toBe('linkedin_url');
+    expect(byName['urls[GitHub]']?.semanticType).toBe('github_url');
+    expect(byName['urls[Portfolio]']?.semanticType).toBe('portfolio_url');
+    expect(byName.org?.semanticType).toBe('current_company');
+    expect(byName.location?.semanticType).toBe('current_location');
+  });
+
+  it('Greenhouse location fixture tags location + resume + open-ended', () => {
+    const html = readFileSync(join(FIXTURES, 'greenhouse', 'location-autocomplete.html'), 'utf-8');
+    const match = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+    document.body.innerHTML = match ? match[1] : html;
+    const adapter = ctx.adapters.detectATS(FIXTURE_URLS.greenhouse, document);
+    let fields = ctx.core.extractWithAdapter(adapter, document, (root) => ctx.api.extractFormData(root));
+    fields = adapter.enhanceExtraction(fields);
+    const loc = fields.find(f => f.id === 'job_application_location');
+    expect(loc?.semanticType).toBe('current_location');
+    const resume = fields.find(f => f.id === 'resume');
+    expect(resume?.semanticType).toBe('resume_file');
+    const open = fields.filter(f => f.semanticType === 'open_ended_question');
+    expect(open.length).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe('fill report + safety invariants', () => {

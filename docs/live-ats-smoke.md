@@ -1,7 +1,7 @@
 # Live ATS supervised smoke test (Stage 1)
 
-**Status:** Greenhouse / Lever — **provisional** · Workday — **My Information passed. Same-URL section transition support is being corrected. Structured My Experience automation is not yet implemented.**  
-**Do not claim Workday fully passed.** Toolbar must always show a visible result; collapsed My Experience returns an explicit unsupported message until Stage 1.1.  
+**Status:** Greenhouse / Lever — **not passed** (basic contact only on last live test; location verify + links + custom Q&A outstanding) · Workday — **My Information passed. Same-URL section transition support corrected in extension; structured My Experience not implemented.** Live Workday re-test blocked by site maintenance.  
+**Do not claim any ATS fully passed** until same-HEAD live re-smoke.  
 Automated tests cover only synthetic fixtures under `fixtures/`. Do **not** claim full live ATS verification until Greenhouse, Lever, and Workday are all re-smoked on the **same frozen HEAD**.  
 **PR #1:** do not merge until that same-HEAD live verification completes and the owner explicitly confirms. Do not resume Stages 2–6.  
 **Phone-country:** Stage 1 keeps manual-review skip ([Issue #2](https://github.com/kalwad/JobApply/issues/2)). Do not re-automate in PR #1.  
