@@ -5,11 +5,18 @@ import { join } from 'path';
 function createPopupDOM() {
   document.body.innerHTML = `
     <div class="popup">
+      <div class="header">
+        <h1>JobApply</h1>
+        <span class="subtitle">AutoFill</span>
+      </div>
+      <div class="build-row" id="buildRow">JobApply build: …</div>
       <div class="status-row">
         <span class="status-dot" id="statusDot"></span>
         <span class="status-text" id="statusText">Checking...</span>
       </div>
       <button class="btn-primary" id="fillBtn" disabled>Fill Application</button>
+      <button class="btn-secondary" id="diagBtn" type="button">Copy sanitized diagnostics</button>
+      <p class="diag-hint" id="diagHint" hidden></p>
       <div class="settings-section">
         <label for="serverUrl">Server URL</label>
         <div class="input-row">
@@ -26,6 +33,12 @@ function loadPopup() {
   createPopupDOM();
   // Prevent window.close() from destroying the jsdom document
   window.close = vi.fn();
+  globalThis.__JA_BUILD_INFO__ = {
+    shortSha: 'testsha1',
+    sha: 'testsha1full',
+    branch: 'test',
+    committedAt: '',
+  };
   const code = readFileSync(join(__dirname, '..', 'popup.js'), 'utf-8');
   eval(code);
 }

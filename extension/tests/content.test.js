@@ -15,6 +15,8 @@ function loadScript() {
   window.__jaNormalize = undefined;
   window.__jaAtsAdapters = undefined;
 
+  eval(readFileSync(join(__dirname, '..', 'build-info.js'), 'utf-8'));
+
   // Load normalize.js first
   const normCode = readFileSync(join(__dirname, '..', 'normalize.js'), 'utf-8');
   eval(normCode);

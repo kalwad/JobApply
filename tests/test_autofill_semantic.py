@@ -6,6 +6,8 @@ from app.routers.autofill import (
     _compose_location,
     _current_company,
     _deterministic_fill,
+    _expand_language_mappings,
+    _match_language_option,
     _normalize_url,
     _semantic_mapping_for_field,
     _strip_blank_mappings,
@@ -16,6 +18,72 @@ def test_normalize_url_adds_https():
     assert _normalize_url("tanishkalwad.com") == "https://tanishkalwad.com"
     assert _normalize_url("https://github.com/x") == "https://github.com/x"
     assert _normalize_url("") == ""
+
+
+def test_match_language_option_english_code():
+    opts = [
+        {"value": "English", "label": "English (ENG)"},
+        {"value": "Spanish", "label": "Spanish (SPA)"},
+        {"value": "Other", "label": "Other"},
+    ]
+    assert _match_language_option("English", opts)["value"] == "English"
+    assert _match_language_option("ENG", opts)["value"] == "English"
+    assert _match_language_option("Hindi", opts) is None
+
+
+def test_expand_language_mappings_multi_checkbox():
+    field = {
+        "selector": 'input[name="cards[languages]"]',
+        "name": "cards[languages]",
+        "type": "checkbox",
+        "label": "Language Skill(s)",
+        "options": [
+            {"value": "English", "label": "English (ENG)"},
+            {"value": "Spanish", "label": "Spanish (SPA)"},
+            {"value": "Hindi", "label": "Hindi (HIN)"},
+            {"value": "Other", "label": "Other"},
+            {"value": "decline", "label": "Choose not to disclose"},
+        ],
+    }
+    profile = {
+        "languages": [
+            {"language": "English"},
+            {"language": "Hindi"},
+            {"language": "Klingon"},
+        ],
+    }
+    maps = _expand_language_mappings(field, profile)
+    assert len(maps) == 2
+    assert all(m["action"] == "check_checkbox" and m["value"] == "yes" for m in maps)
+    sels = {m["selector"] for m in maps}
+    assert 'input[name="cards[languages]"][value="English"]' in sels
+    assert 'input[name="cards[languages]"][value="Hindi"]' in sels
+    assert not any("Other" in m["selector"] or "disclose" in m["field_label"].lower() for m in maps)
+
+
+def test_deterministic_languages_emits_per_option():
+    profile = {
+        "languages": [{"language": "English"}, {"language": "Spanish"}],
+    }
+    mappings, _remaining = _deterministic_fill(
+        [{
+            "selector": 'input[name="cards[languages]"]',
+            "name": "cards[languages]",
+            "type": "checkbox",
+            "tag": "input",
+            "label": "Language Skill(s) (Check all that apply)",
+            "semanticType": "languages",
+            "currentValue": "",
+            "options": [
+                {"value": "English", "label": "English (ENG)"},
+                {"value": "Spanish", "label": "Spanish (SPA)"},
+                {"value": "Other", "label": "Other"},
+            ],
+        }],
+        profile,
+    )
+    fillable = [m for m in mappings if m.get("action") == "check_checkbox"]
+    assert len(fillable) == 2
 
 
 def test_compose_location_prefers_free_text():

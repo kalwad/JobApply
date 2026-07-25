@@ -90,6 +90,34 @@ body {
   cursor: not-allowed;
 }
 
+.build-row {
+  font-size: 11px;
+  color: #71717a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin-top: -6px;
+}
+
+.btn-secondary {
+  background: #18181b;
+  color: #e4e4e7;
+  border: 1px solid #3f3f46;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.btn-secondary:hover {
+  background: #27272a;
+}
+
+.diag-hint {
+  font-size: 11px;
+  color: #a1a1aa;
+  margin-top: -6px;
+}
+
 .settings-section {
   display: flex;
   flex-direction: column;

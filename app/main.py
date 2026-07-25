@@ -487,6 +487,16 @@ def create_app(db_path: str | None = None, testing: bool = False) -> FastAPI:
 
     @app.get("/api/meta")
     async def app_meta():
+        try:
+            from app import build_info as _build_info
+            build = {
+                "shortSha": getattr(_build_info, "SHORT_SHA", "unknown"),
+                "sha": getattr(_build_info, "SHA", "unknown"),
+                "branch": getattr(_build_info, "BRANCH", "unknown"),
+                "committedAt": getattr(_build_info, "COMMITTED_AT", ""),
+            }
+        except Exception:
+            build = {"shortSha": "unknown", "sha": "unknown", "branch": "unknown", "committedAt": ""}
         return {
             "name": "JobApply",
             "slim_mode": bool(getattr(app.state, "slim_mode", True)),
@@ -499,6 +509,8 @@ def create_app(db_path: str | None = None, testing: bool = False) -> FastAPI:
             },
             "bind_default": "127.0.0.1",
             "stage": 1,
+            "build": build,
+            "git_sha": build.get("shortSha"),
         }
 
     # --- Static files ---

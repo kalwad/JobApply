@@ -379,6 +379,17 @@ describe('Lever adapter', () => {
     const fields = [{ name: 'cards[abc123][field]' }];
     const enhanced = lever.enhanceExtraction(fields);
     expect(enhanced[0].atsHint).toBe('lever_custom_question');
+    expect(enhanced[0].semanticType).toBe('open_ended_question');
+  });
+
+  it('enhanceExtraction prefers preferred_name over open_ended for cards[]', () => {
+    const fields = [{
+      name: 'cards[preferred_name]',
+      label: 'Preferred Name | What would you like us to call you?',
+    }];
+    const enhanced = lever.enhanceExtraction(fields);
+    expect(enhanced[0].semanticType).toBe('preferred_name');
+    expect(enhanced[0].atsHint).toBe('lever_custom_question');
   });
 
   it('enhanceExtraction does not mark regular fields', () => {

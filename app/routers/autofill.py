@@ -275,6 +275,147 @@ def _most_recent_university(profile: dict) -> str:
     return (edu_sorted[0].get("school") or edu_sorted[0].get("institution") or "").strip()
 
 
+_LANGUAGE_SKIP = {
+    "other",
+    "choose not to disclose",
+    "prefer not to say",
+    "prefer not to disclose",
+    "decline",
+    "decline to answer",
+}
+
+
+def _profile_language_names(profile: dict) -> list[str]:
+    langs = profile.get("languages") or []
+    names = []
+    for lg in langs:
+        if isinstance(lg, dict):
+            n = (lg.get("language") or lg.get("name") or "").strip()
+        else:
+            n = str(lg).strip()
+        if n:
+            names.append(n)
+    return names
+
+
+def _match_language_option(name: str, options: list) -> dict | None:
+    """Match a saved language to a Lever-style checkbox option (value + label)."""
+    if not name or not options:
+        return None
+    needle = name.strip().lower()
+    # Strip trailing parenthetical codes from profile ("English (ENG)")
+    needle_base = _re.sub(r"\s*\([^)]*\)\s*$", "", needle).strip()
+    parsed = []
+    for opt in options:
+        if isinstance(opt, dict):
+            value = str(opt.get("value") or "")
+            label = str(opt.get("label") or opt.get("text") or value)
+        else:
+            value = str(opt)
+            label = value
+        blob = f"{value} {label}".strip().lower()
+        base = _re.sub(r"\s*\([^)]*\)\s*$", "", label.strip().lower()).strip()
+        code_m = _re.search(r"\(([a-z]{2,4})\)\s*$", label.strip(), _re.I)
+        code = (code_m.group(1).lower() if code_m else "")
+        parsed.append({
+            "value": value,
+            "label": label,
+            "blob": blob,
+            "base": base,
+            "code": code,
+        })
+
+    for p in parsed:
+        if p["base"] == needle_base or p["value"].lower() == needle or p["label"].lower() == needle:
+            return {"value": p["value"], "label": p["label"]}
+    for p in parsed:
+        if p["code"] and (p["code"] == needle_base or p["code"] == needle):
+            return {"value": p["value"], "label": p["label"]}
+    for p in parsed:
+        if len(needle_base) >= 3 and (
+            needle_base in p["base"] or p["base"] in needle_base or needle_base in p["blob"]
+        ):
+            return {"value": p["value"], "label": p["label"]}
+    return None
+
+
+def _expand_language_mappings(field: dict, profile: dict) -> list[dict]:
+    """One reviewed checkbox mapping per exact saved language match."""
+    label = field.get("label") or ""
+    names = _profile_language_names(profile)
+    if not names:
+        return [{
+            "selector": field["selector"],
+            "value": "",
+            "action": "skip",
+            "confidence": 0.0,
+            "field_label": label,
+            "reason": "languages_missing",
+            "inventoryCategory": "explicit_profile_value_missing",
+            "semanticType": "languages",
+            "supportingFactIds": [],
+        }]
+
+    options = field.get("options") or []
+    ftype = (field.get("type") or "").lower()
+    fname = field.get("name") or ""
+
+    if ftype == "checkbox" and options:
+        out = []
+        for name in names:
+            matched = _match_language_option(name, options)
+            if not matched:
+                continue
+            skip_blob = f"{matched['value']} {matched['label']}".strip().lower()
+            if any(s in skip_blob for s in _LANGUAGE_SKIP):
+                continue
+            # Never auto-select Other / Choose not to disclose
+            if _re.search(r"\bother\b|\bchoose not to disclose\b", skip_blob):
+                continue
+            val = matched["value"]
+            # Prefer value-qualified selector so each option is independent.
+            if fname and val:
+                selector = f'input[name="{fname}"][value="{val}"]'
+            else:
+                selector = field["selector"]
+            out.append({
+                "selector": selector,
+                "value": "yes",
+                "action": "check_checkbox",
+                "confidence": 0.95,
+                "field_label": f"{label}: {matched['label']}".strip(": "),
+                "inventoryCategory": "filled_from_profile",
+                "semanticType": "languages",
+                "supportingFactIds": [],
+            })
+        if out:
+            return out
+        return [{
+            "selector": field["selector"],
+            "value": "",
+            "action": "skip",
+            "confidence": 0.0,
+            "field_label": label,
+            "reason": "languages_no_exact_option_match",
+            "inventoryCategory": "explicit_profile_value_missing",
+            "semanticType": "languages",
+            "supportingFactIds": [],
+        }]
+
+    # Non-checkbox: fill first language as text / select (legacy path)
+    return [{
+        "selector": field["selector"],
+        "value": names[0],
+        "action": "select_dropdown" if field.get("options") else "fill_text",
+        "confidence": 0.9,
+        "field_label": label,
+        "inventoryCategory": "filled_from_profile",
+        "semanticType": "languages",
+        "languages": names,
+        "supportingFactIds": [],
+    }]
+
+
 def _infer_auth_country(searchable: str, page_url: str = "") -> str:
     blob = f"{searchable} {page_url}".lower()
     if _re.search(r"\bcanada\b|\bcanadian\b|\bontario\b|\bcad\b", blob):
@@ -472,37 +613,8 @@ def _semantic_mapping_for_field(
         }
 
     if st == "languages":
-        langs = profile.get("languages") or []
-        names = [
-            (lg.get("language") if isinstance(lg, dict) else str(lg))
-            for lg in langs
-        ]
-        names = [n for n in names if n]
-        if not names:
-            return {
-                "selector": field["selector"],
-                "value": "",
-                "action": "skip",
-                "confidence": 0.0,
-                "field_label": label,
-                "reason": "languages_missing",
-                "inventoryCategory": "explicit_profile_value_missing",
-                "semanticType": st,
-                "supportingFactIds": [],
-            }
-        # Checkbox groups are filled one option at a time by the fill engine;
-        # emit the first language as a hint — language multi-select is best-effort.
-        return {
-            "selector": field["selector"],
-            "value": names[0],
-            "action": "check_checkbox" if (field.get("type") or "").lower() == "checkbox" else "fill_text",
-            "confidence": 0.9,
-            "field_label": label,
-            "inventoryCategory": "filled_from_profile",
-            "semanticType": st,
-            "languages": names,
-            "supportingFactIds": [],
-        }
+        # Handled by _expand_language_mappings in _deterministic_fill (multi-checkbox).
+        return None
 
     if st == "current_company" and company_err == "ambiguous_multiple_current_jobs":
         return {
@@ -652,6 +764,19 @@ def _deterministic_fill(
                 "inventoryCategory": "legal_or_consent_manual",
                 "supportingFactIds": [],
             })
+            matched_selectors.add(field["selector"])
+            continue
+
+        # Languages: emit one checkbox mapping per exact saved-language match.
+        st_early = (field.get("semanticType") or field.get("semantic_type") or "").strip().lower()
+        if st_early == "languages":
+            for lang_map in _expand_language_mappings(field, profile):
+                if lang_map.get("action") == "select_dropdown" and field.get("options"):
+                    best = _match_option(lang_map.get("value") or "", field["options"])
+                    if best:
+                        lang_map["value"] = best
+                if not _is_blank_value(lang_map.get("value")) or lang_map.get("action") == "skip":
+                    mappings.append(lang_map)
             matched_selectors.add(field["selector"])
             continue
 

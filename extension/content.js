@@ -31,6 +31,27 @@
     return s[0] + '***' + s.slice(-1);
   }
 
+  function getBuildInfo() {
+    const info = (typeof globalThis !== 'undefined' && globalThis.__JA_BUILD_INFO__) || {};
+    return {
+      shortSha: info.shortSha || 'unknown',
+      sha: info.sha || 'unknown',
+      branch: info.branch || 'unknown',
+      committedAt: info.committedAt || '',
+    };
+  }
+
+  function sanitizePageOrigin() {
+    try {
+      return location.origin || '';
+    } catch {
+      return '';
+    }
+  }
+
+  /** Last analyze/fill snapshot for Copy sanitized diagnostics (no PII values). */
+  let lastDiagnosticsSnapshot = null;
+
   // Track original field values for undo support
   const originalValues = new Map(); // selector -> { originalValue, label, value, confidence, action }
   let overlayMode = 'status'; // status | compact | expanded
@@ -1535,8 +1556,16 @@
       }
 
       // Last resort: select first option if it seems reasonable
-      // Never for phone-country — virtualized lists often show Albania first.
-      if (wait >= 4 && options.length <= 3 && !hintsLookLikePhoneCountry(fieldHints)) {
+      // Never for phone-country or location — both clear / wrong-commit easily.
+      const locationLikeEarly = /\blocation\b|\bcity\b/.test(
+        `${fieldHints?.label || ''} ${fieldHints?.name || ''} ${fieldHints?.id || ''}`
+      );
+      if (
+        wait >= 4
+        && options.length <= 3
+        && !hintsLookLikePhoneCountry(fieldHints)
+        && !locationLikeEarly
+      ) {
         clickOption(options[0]);
         await sleep(200);
         closeOpenDropdowns();
@@ -1821,6 +1850,24 @@
     return { ok: false, reason: 'value did not stick', actual };
   }
 
+  function findLocationHiddenCompanion(el) {
+    try {
+      const scope = el?.closest?.('form, .autocomplete, [class*="autocomplete"], fieldset, div')
+        || document;
+      const scoped = scope.querySelector(
+        '#job_application_location_id, #selected-location, '
+        + 'input[name="selectedLocation"], input[name="job_application[location_id]"]'
+      );
+      if (scoped) return scoped;
+      return document.querySelector(
+        '#job_application_location_id, #selected-location, '
+        + 'input[name="selectedLocation"], input[name="job_application[location_id]"]'
+      );
+    } catch {
+      return null;
+    }
+  }
+
   async function withVerification(result, el, expected, action, opts = {}) {
     if (!result?.success || result.skipped) return result;
     const verifyOpts = {
@@ -1828,28 +1875,53 @@
       selectedValue: opts.selectedValue || result.selectedValue || result.selectedText,
     };
     // Greenhouse/Lever location: React often accepts a typed value then clears it.
-    // Re-check after settle delay when requireCommit is set.
+    // Once commit fails (missing place ID), never overwrite with visible-text success.
     if (opts.requireCommit) {
       await sleep(550);
-    }
-    let verified = verifyFilled(el, expected, action, verifyOpts);
-    if (verified.ok && opts.requireCommit) {
-      // Companion hidden IDs (Greenhouse location_id / Lever selectedLocation)
-      const hidden = document.querySelector(
-        '#job_application_location_id, #selected-location, input[name="selectedLocation"], '
-        + 'input[name="job_application[location_id]"]'
-      );
-      if (hidden && !String(hidden.value || '').trim()) {
-        // Visible text alone is not enough if the ATS stores a separate place ID.
-        const visibleOk = verifyFilled(el, expected, action, verifyOpts);
-        if (!visibleOk.ok || !String(el.value || '').trim()) {
-          verified = { ok: false, reason: 'location autocomplete not committed', actual: el.value || '' };
-        }
+      let verified = verifyFilled(el, expected, action, verifyOpts);
+      if (!verified.ok) {
+        return {
+          ...result,
+          success: false,
+          reason: verified.reason || 'verification failed',
+          inventoryCategory: 'failed_verification',
+          actualValue: verified.actual,
+        };
       }
-      // Re-read after another tick — catches delayed clears.
-      await sleep(200);
+      const hidden = findLocationHiddenCompanion(el);
+      if (hidden && !String(hidden.value || '').trim()) {
+        return {
+          ...result,
+          success: false,
+          reason: 'location autocomplete not committed — missing place ID',
+          inventoryCategory: 'failed_verification',
+          actualValue: el?.value || '',
+        };
+      }
+      await sleep(250);
       verified = verifyFilled(el, expected, action, verifyOpts);
+      if (!verified.ok || !String(el?.value || '').trim()) {
+        return {
+          ...result,
+          success: false,
+          reason: verified.reason || 'location cleared after settle',
+          inventoryCategory: 'failed_verification',
+          actualValue: verified.actual || el?.value || '',
+        };
+      }
+      if (hidden && !String(hidden.value || '').trim()) {
+        return {
+          ...result,
+          success: false,
+          reason: 'location autocomplete not committed — missing place ID after settle',
+          inventoryCategory: 'failed_verification',
+          actualValue: el?.value || '',
+        };
+      }
+      return result;
     }
+
+    const verified = verifyFilled(el, expected, action, verifyOpts);
     if (!verified.ok) {
       return {
         ...result,
@@ -1860,6 +1932,96 @@
       };
     }
     return result;
+  }
+
+  function isGreenhouseLocationControl(el) {
+    if (!el) return false;
+    const id = (el.id || '').toLowerCase();
+    const name = (el.name || '').toLowerCase();
+    return id === 'job_application_location'
+      || name === 'job_application[location]'
+      || (id.includes('location') && !!findLocationHiddenCompanion(el));
+  }
+
+  /**
+   * Greenhouse-specific location: type → owned listbox → click suggestion →
+   * verify visible + hidden place ID. Never first-option / keyboard fallback.
+   */
+  async function fillGreenhouseLocation(el, value) {
+    const query = String(value || '').trim();
+    if (!query) {
+      return { success: false, reason: 'empty location value' };
+    }
+    const listId = el.getAttribute('aria-controls') || el.getAttribute('aria-owns');
+    let listbox = null;
+    if (listId) {
+      try { listbox = document.getElementById(listId); } catch { /* skip */ }
+    }
+
+    setNativeValue(el, '');
+    dispatchEvents(el, ['focus', 'input']);
+    el.focus?.();
+    await sleep(50);
+    // Type city fragment (before comma) — Greenhouse filters on city name.
+    const typeQuery = query.split(',')[0].trim() || query;
+    simulateTyping(el, typeQuery);
+
+    let matched = null;
+    for (let wait = 0; wait < 8; wait++) {
+      await sleep(wait < 3 ? 200 : 350);
+      const dropdown = listbox && !listbox.hidden
+        ? listbox
+        : findTypeaheadDropdown(el);
+      if (!dropdown) continue;
+      // Unhide if Greenhouse still has hidden attr while aria-expanded
+      try {
+        if (dropdown.hasAttribute?.('hidden') && el.getAttribute('aria-expanded') === 'true') {
+          dropdown.hidden = false;
+        }
+      } catch { /* skip */ }
+      const options = getDropdownOptions(dropdown);
+      if (!options.length) continue;
+      matched = fuzzyMatchDropdownOption(options, query, { label: 'Location (City)', id: el.id })
+        || fuzzyMatchDropdownOption(options, typeQuery, { label: 'Location (City)', id: el.id });
+      // Exact substring on option text (city, state, country)
+      if (!matched) {
+        const q = query.toLowerCase();
+        const tq = typeQuery.toLowerCase();
+        matched = options.find((o) => {
+          const t = (o.textContent || '').trim().toLowerCase();
+          return t === q || t.startsWith(tq) || t.includes(tq);
+        }) || null;
+      }
+      if (matched) break;
+    }
+
+    if (!matched) {
+      dispatchEvents(el, ['blur']);
+      return { success: false, reason: 'no matching Greenhouse location suggestion' };
+    }
+
+    clickOption(matched);
+    await sleep(300);
+    const selectedText = (matched.textContent || '').trim() || query;
+    // Do not blur until we verify — blur clears uncommitted values.
+    const hidden = findLocationHiddenCompanion(el);
+    if (!hidden || !String(hidden.value || '').trim()) {
+      return {
+        success: false,
+        reason: 'location suggestion click did not set place ID',
+        selectedText,
+      };
+    }
+    dispatchEvents(el, ['blur']);
+    await sleep(350);
+    if (!String(hidden.value || '').trim() || !String(el.value || '').trim()) {
+      return {
+        success: false,
+        reason: 'Greenhouse cleared location after blur',
+        selectedText,
+      };
+    }
+    return { success: true, selectedText: el.value || selectedText };
   }
 
   async function fillField(selector, value, action, confidence, label) {
@@ -1987,6 +2149,25 @@
 
           // 5. Check if this is a typeahead/autocomplete field (has ARIA hints)
           const locationField = looksLikeLocationField(el, label || fieldHints.label);
+          // Greenhouse location: dedicated handler (listbox + hidden place ID).
+          if (locationField && isGreenhouseLocationControl(el)) {
+            const gh = await fillGreenhouseLocation(el, fillValue);
+            if (!gh.success) {
+              return {
+                selector,
+                success: false,
+                reason: gh.reason || 'Greenhouse location not committed',
+                inventoryCategory: 'failed_verification',
+              };
+            }
+            return withVerification(
+              { selector, success: true, action, selectedText: gh.selectedText },
+              el,
+              gh.selectedText || fillValue,
+              action,
+              { requireCommit: true },
+            );
+          }
           const isTypeahead = el.getAttribute('role') === 'combobox'
             || el.getAttribute('aria-autocomplete')
             || el.getAttribute('aria-owns')
@@ -2490,11 +2671,195 @@
     }
   }
 
+  function profileSourcePresentForSemantic(semanticType, presence) {
+    if (!presence || !semanticType) return null;
+    const st = String(semanticType).toLowerCase();
+    const map = {
+      current_location: presence.locationPresent,
+      location: presence.locationPresent,
+      address_city: presence.locationPresent,
+      current_company: presence.currentCompanyResolution === 'resolved'
+        || presence.currentCompanyResolution === 'resolved_fallback_most_recent',
+      preferred_name: presence.preferredNamePresent,
+      linkedin_url: presence.linkedinPresent,
+      github_url: presence.githubPresent,
+      portfolio_url: presence.portfolioPresent,
+      website: presence.portfolioPresent,
+      university: (presence.educationCount || 0) > 0,
+      languages: (presence.languageCount || 0) > 0,
+      timezone: presence.timezonePresent,
+    };
+    return Object.prototype.hasOwnProperty.call(map, st) ? !!map[st] : null;
+  }
+
+  function countCandidateControls(root) {
+    try {
+      return deepQuerySelectorAll(
+        root || document,
+        'input, select, textarea, [role="combobox"], [contenteditable="true"]',
+      ).filter((el) => {
+        const type = (el.type || '').toLowerCase();
+        return type !== 'hidden' && type !== 'submit' && type !== 'button' && type !== 'image';
+      }).length;
+    } catch {
+      return 0;
+    }
+  }
+
+  function buildSanitizedDiagnostics(opts = {}) {
+    const presence = opts.profilePresence || lastDiagnosticsSnapshot?.profilePresence || null;
+    const build = getBuildInfo();
+    const pageUrl = opts.pageUrl || (() => { try { return location.href; } catch { return ''; } })();
+    const atsAdapter = window.__jaAtsAdapters
+      ? window.__jaAtsAdapters.detectATS(pageUrl, document)
+      : null;
+    const formRoot = atsAdapter?.getFormRoot?.(document) || null;
+    const docCount = countCandidateControls(document);
+    const rootCount = countCandidateControls(formRoot || document);
+
+    let fields = [];
+    try {
+      if (atsAdapter && window.__jaAtsCore?.extractWithAdapter) {
+        fields = window.__jaAtsCore.extractWithAdapter(
+          atsAdapter,
+          document,
+          (root) => extractFormData(root || formRoot),
+        );
+      } else {
+        fields = extractFormData(formRoot);
+      }
+      try { fields = enrichFieldHints(fields); } catch { /* skip */ }
+    } catch (err) {
+      fields = [];
+    }
+
+    const inventoryBySel = {};
+    for (const item of (opts.inventory?.fields || lastDiagnosticsSnapshot?.inventory?.fields || [])) {
+      if (item?.selector) inventoryBySel[item.selector] = item;
+    }
+    const mappingBySel = {};
+    for (const m of (opts.mappings || lastDiagnosticsSnapshot?.mappings || [])) {
+      if (m?.selector) mappingBySel[m.selector] = m;
+    }
+    const verifyBySel = {};
+    for (const r of (opts.fillResults || lastDiagnosticsSnapshot?.fillResults || [])) {
+      if (r?.selector) verifyBySel[r.selector] = r;
+    }
+
+    const fieldRows = fields.map((f) => {
+      const st = f.semanticType || null;
+      const m = mappingBySel[f.selector] || {};
+      const inv = inventoryBySel[f.selector] || {};
+      const vr = verifyBySel[f.selector] || {};
+      let mappingSource = 'none';
+      if (st && atsAdapter?.getFieldMap) {
+        const map = atsAdapter.getFieldMap() || {};
+        const mapHit = Object.entries(map).some(([, sem]) => sem === st)
+          && (f.name || f.id);
+        if (mapHit && (f.name || f.id)) mappingSource = 'ats_exact_map_or_label';
+      }
+      if (f.atsHint) mappingSource = mappingSource === 'none' ? 'ats_hint' : mappingSource;
+      if (st) mappingSource = mappingSource === 'none' ? 'semantic_classified' : mappingSource;
+
+      return {
+        label: (f.label || '').slice(0, 80) || null,
+        nearbyHeading: (f.nearbyHeading || '').slice(0, 80) || null,
+        name: f.name || null,
+        id: f.id || null,
+        tag: f.tag || null,
+        type: f.type || null,
+        role: f.role || null,
+        required: !!f.required,
+        selector: f.selector || null,
+        semanticType: st,
+        atsHint: f.atsHint || null,
+        insideAdapterRoot: !!(formRoot && formRoot !== document
+          ? (() => {
+            try {
+              const el = document.querySelector(f.selector);
+              return !!(el && formRoot.contains(el));
+            } catch { return null; }
+          })()
+          : true),
+        mappingSource,
+        profileSourcePresent: profileSourcePresentForSemantic(st, presence),
+        proposedAction: m.action || null,
+        inventoryCategory: inv.category || m.inventoryCategory || null,
+        verification: vr.success === false
+          ? { ok: false, reason: vr.reason || 'failed' }
+          : (vr.success === true
+            ? { ok: true, skipped: !!vr.skipped }
+            : null),
+        // Never include values / currentValue / URLs / emails
+      };
+    });
+
+    const classified = fieldRows.filter((r) => r.semanticType).length;
+    const mapped = fieldRows.filter((r) => r.proposedAction && r.proposedAction !== 'skip').length;
+    const skipped = fieldRows.filter((r) => r.proposedAction === 'skip').length;
+
+    let rootDescription = 'document';
+    if (formRoot && formRoot !== document) {
+      rootDescription = formRoot.id
+        ? `#${formRoot.id}`
+        : (formRoot.className ? `.${String(formRoot.className).split(/\s+/).filter(Boolean).join('.')}` : formRoot.tagName);
+    }
+
+    return {
+      build: {
+        extension: build,
+        note: 'Compare with backend /api/meta.build.shortSha — must match after reload.',
+      },
+      page: {
+        origin: sanitizePageOrigin(),
+        // Path/query identifiers stripped where practical
+        host: (() => { try { return location.hostname; } catch { return ''; } })(),
+      },
+      adapter: {
+        name: atsAdapter?.name || null,
+        root: rootDescription,
+      },
+      summary: {
+        fieldsInDocument: docCount,
+        fieldsInsideAdapterRoot: rootCount,
+        fieldsExtracted: fields.length,
+        fieldsSemanticallyClassified: classified,
+        fieldsMappedFillable: mapped,
+        fieldsSkipped: skipped,
+      },
+      profilePresence: presence,
+      fields: fieldRows,
+    };
+  }
+
+  async function collectAndCopySanitizedDiagnostics(profilePresence) {
+    let presence = profilePresence || null;
+    if (!presence) {
+      try {
+        const resp = await chrome.runtime.sendMessage({ type: 'getProfilePresence' });
+        if (resp?.ok) presence = resp.presence;
+      } catch { /* skip */ }
+    }
+    const report = buildSanitizedDiagnostics({ profilePresence: presence });
+    lastDiagnosticsSnapshot = {
+      ...(lastDiagnosticsSnapshot || {}),
+      profilePresence: presence,
+      report,
+    };
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+      return { ok: true, report, copied: true };
+    } catch {
+      return { ok: true, report, copied: false };
+    }
+  }
+
   function createOverlay() {
     if (overlayIsLive()) return overlayEl;
     // Workday SPA swaps can detach the previous overlay node — recreate.
     overlayEl = null;
 
+    const build = getBuildInfo();
     overlayEl = document.createElement('div');
     overlayEl.id = `${PREFIX}-overlay`;
     overlayEl.innerHTML = `
@@ -2505,6 +2870,7 @@
           <button type="button" class="${PREFIX}-overlay-close" title="Close" aria-label="Close">&#x2715;</button>
         </div>
       </div>
+      <div class="${PREFIX}-overlay-build">JobApply build: ${build.shortSha}</div>
       <div class="${PREFIX}-overlay-body">
         <span class="${PREFIX}-overlay-status">Initializing...</span>
       </div>
@@ -3209,11 +3575,14 @@
       const reviewCount = fillable.filter(m => (m.confidence || 1) < 0.8).length;
       const shown = fillable.slice(0, 25);
       const extra = fillable.length - shown.length;
+      const build = getBuildInfo();
       // Actions sit outside the scrollable list so Fill/Cancel stay visible.
       body.innerHTML = `
         <div class="${PREFIX}-review-panel">
           <p><strong>Review ${fillable.length} proposed fill${fillable.length === 1 ? '' : 's'}</strong></p>
+          <p class="${PREFIX}-review-meta">JobApply build: ${build.shortSha}</p>
           <p class="${PREFIX}-review-meta">${reviewCount} need review (confidence &lt; 0.8). Nonempty fields stay protected.</p>
+          <button type="button" class="${PREFIX}-diag-btn">Copy sanitized diagnostics</button>
           <label class="${PREFIX}-review-overwrite">
             <input type="checkbox" class="${PREFIX}-overwrite-toggle" ${overwriteExistingFields ? 'checked' : ''}/>
             Overwrite existing field values
@@ -3239,6 +3608,23 @@
       overwriteToggle?.addEventListener('change', (e) => {
         overwriteExistingFields = !!e.target.checked;
         try { chrome.storage.local.set({ overwriteExistingFields }); } catch { /* ignore */ }
+      });
+
+      body.querySelector(`.${PREFIX}-diag-btn`)?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        const prev = btn.textContent;
+        btn.textContent = 'Copying…';
+        btn.disabled = true;
+        try {
+          const result = await collectAndCopySanitizedDiagnostics();
+          btn.textContent = result.copied ? 'Copied (no PII)' : 'Ready — paste failed';
+        } catch {
+          btn.textContent = 'Copy failed';
+        }
+        setTimeout(() => {
+          btn.textContent = prev;
+          btn.disabled = false;
+        }, 2000);
       });
 
       const finish = (result) => {
@@ -3458,6 +3844,19 @@
 
         mappings = response.data?.mappings || [];
         const analyzeError = response.data?.error || '';
+        lastDiagnosticsSnapshot = {
+          ...(lastDiagnosticsSnapshot || {}),
+          mappings: (mappings || []).map((m) => ({
+            selector: m.selector,
+            action: m.action,
+            inventoryCategory: m.inventoryCategory || null,
+            semanticType: m.semanticType || null,
+            field_label: (m.field_label || '').slice(0, 80),
+            // intentionally omit value
+          })),
+          inventory: response.data?.inventory || null,
+          atsName: atsAdapter?.name || null,
+        };
 
         if (!mappings.length) {
           updateOverlay(
@@ -4176,6 +4575,24 @@
           sendResponse({ ok: true, state: currentState, queueActive: !!queueContext });
           return false;
 
+        case 'getSanitizedDiagnostics': {
+          const report = buildSanitizedDiagnostics({
+            profilePresence: message.profilePresence || null,
+          });
+          sendResponse({ ok: true, report });
+          return false;
+        }
+
+        case 'writeClipboardText': {
+          const text = message.text || '';
+          navigator.clipboard.writeText(text).then(() => {
+            sendResponse({ ok: true });
+          }).catch(() => {
+            sendResponse({ ok: false, error: 'clipboard write failed' });
+          });
+          return true;
+        }
+
         default:
           return false;
       }
@@ -4540,6 +4957,13 @@
       reviewMappingsBeforeFill,
       sanitizeMappings,
       verifyFilled,
+      withVerification,
+      fillGreenhouseLocation,
+      isGreenhouseLocationControl,
+      findLocationHiddenCompanion,
+      buildSanitizedDiagnostics,
+      collectAndCopySanitizedDiagnostics,
+      getBuildInfo,
       looksLikeLocationField,
       getNearbyHeading,
       matchPhoneCountryCodeOption,

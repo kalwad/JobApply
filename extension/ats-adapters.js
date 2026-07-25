@@ -271,9 +271,31 @@
 
     getFormRoot(doc) {
       try {
-        return doc.querySelector('.application-form')
-          || doc.querySelector('[class*="application"]')
-          || doc;
+        // Prefer the container that holds canonical Lever application controls.
+        // Do NOT use bare [class*="application"] — it matches header chrome.
+        const anchor = doc.querySelector(
+          'input[name="urls[LinkedIn]"], input[name="urls[Github]"], '
+          + 'input[name="urls[GitHub]"], input[name="org"], #location-input, '
+          + 'input[name="name"], input[name="email"]'
+        );
+        if (anchor) {
+          const form = anchor.closest('form');
+          if (form) return form;
+          const app = anchor.closest('.application-form, [class*="application-form"]');
+          if (app) return app;
+        }
+        const appForm = doc.querySelector('form.application-form, .application-form');
+        if (appForm) return appForm;
+        const forms = Array.from(doc.querySelectorAll('form'));
+        if (forms.length === 1) return forms[0];
+        if (forms.length > 1) {
+          forms.sort((a, b) => (
+            b.querySelectorAll('input, textarea, select').length
+            - a.querySelectorAll('input, textarea, select').length
+          ));
+          return forms[0];
+        }
+        return doc;
       } catch {
         return doc;
       }
@@ -308,16 +330,9 @@
 
     enhanceExtraction(fields) {
       for (const field of fields) {
-        const text = `${field.label || ''} ${field.name || ''} ${field.id || ''}`.toLowerCase();
-        if (field.name && field.name.startsWith('cards[')) {
-          field.atsHint = 'lever_custom_question';
-          if (!field.semanticType) {
-            field.semanticType = /authori[sz]|sponsor|consent|privacy|opt\s*in|notetaker/i.test(text)
-              ? 'legal_acknowledgment'
-              : 'open_ended_question';
-          }
-        }
-        // Label-based URL tagging (covers custom Lever link titles)
+        const text = `${field.label || ''} ${field.name || ''} ${field.id || ''} ${field.nearbyHeading || ''}`.toLowerCase();
+        // Label / name semantic stamps FIRST. cards[...] defaults must not
+        // overwrite preferred_name / university / languages as open_ended_question.
         if (!field.semanticType && /\blinkedin\b/.test(text)) field.semanticType = 'linkedin_url';
         if (!field.semanticType && /\bgithub\b|\bgit\s*hub\b/.test(text)) field.semanticType = 'github_url';
         if (!field.semanticType && /\bportfolio\b/.test(text)) field.semanticType = 'portfolio_url';
@@ -352,6 +367,15 @@
         }
         if (/\bconsent\b|\bnotetaker\b|\bprivacy\b/.test(text)) {
           field.semanticType = field.semanticType || 'consent';
+        }
+        // Unknown Lever custom cards only — after label rules.
+        if (field.name && field.name.startsWith('cards[') && !field.semanticType) {
+          field.atsHint = 'lever_custom_question';
+          field.semanticType = /authori[sz]|sponsor|consent|privacy|opt\s*in|notetaker/i.test(text)
+            ? 'legal_acknowledgment'
+            : 'open_ended_question';
+        } else if (field.name && field.name.startsWith('cards[')) {
+          field.atsHint = field.atsHint || 'lever_custom_question';
         }
       }
       return fields;

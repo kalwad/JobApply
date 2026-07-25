@@ -2,6 +2,8 @@
   "name": "jobapply-extension",
   "private": true,
   "scripts": {
+    "build-info": "python3 ../scripts/write_build_info.py",
+    "pretest": "python3 ../scripts/write_build_info.py",
     "test": "vitest run",
     "test:watch": "vitest"
   },

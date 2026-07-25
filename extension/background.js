@@ -55,6 +55,90 @@ async function getFullProfile() {
   }
 }
 
+/** Booleans / counts only — never profile values. */
+function profilePresenceFrom(profile) {
+  if (!profile || typeof profile !== 'object') return null;
+  const jobs = Array.isArray(profile.work_history) ? profile.work_history : [];
+  const current = jobs.filter((j) => {
+    const v = j?.is_current;
+    return v === 1 || v === true || v === '1' || String(v).toLowerCase() === 'true' || String(v).toLowerCase() === 'yes';
+  });
+  let currentCompanyResolution = 'current_company_missing';
+  if (current.length > 1) currentCompanyResolution = 'ambiguous_multiple_current_jobs';
+  else if (current.length === 1 && String(current[0]?.company || '').trim()) {
+    currentCompanyResolution = 'resolved';
+  } else if (jobs.some((j) => String(j?.company || '').trim())) {
+    currentCompanyResolution = 'resolved_fallback_most_recent';
+  }
+  return {
+    locationPresent: !!(String(profile.location || '').trim() || String(profile.address_city || '').trim()),
+    preferredNamePresent: !!String(profile.preferred_name || '').trim(),
+    linkedinPresent: !!String(profile.linkedin_url || '').trim(),
+    githubPresent: !!String(profile.github_url || '').trim(),
+    portfolioPresent: !!(
+      String(profile.portfolio_url || '').trim() || String(profile.website_url || '').trim()
+    ),
+    workHistoryCount: jobs.length,
+    currentWorkHistoryCount: current.length,
+    currentCompanyResolution,
+    educationCount: Array.isArray(profile.education) ? profile.education.length : 0,
+    languageCount: Array.isArray(profile.languages) ? profile.languages.length : 0,
+    timezonePresent: !!(String(profile.timezone || '').trim() || String(profile.time_zone || '').trim()),
+  };
+}
+
+async function getProfilePresence() {
+  const result = await getFullProfile();
+  if (!result.ok) return result;
+  return { ok: true, presence: profilePresenceFrom(result.data) };
+}
+
+async function copySanitizedDiagnostics(tabId) {
+  if (!tabId) return { ok: false, error: 'No tab id' };
+  let frames = [{ frameId: 0 }];
+  try {
+    const all = await chrome.webNavigation.getAllFrames({ tabId });
+    if (all?.length) frames = all;
+  } catch { /* top only */ }
+
+  const presenceResult = await getProfilePresence();
+  const presence = presenceResult.ok ? presenceResult.presence : { error: presenceResult.error };
+
+  let best = null;
+  for (const f of frames) {
+    try {
+      const resp = await chrome.tabs.sendMessage(
+        tabId,
+        { type: 'getSanitizedDiagnostics', profilePresence: presence },
+        { frameId: f.frameId },
+      );
+      if (resp?.ok && resp.report) {
+        const extracted = resp.report?.summary?.fieldsExtracted ?? 0;
+        if (!best || extracted > (best.report?.summary?.fieldsExtracted ?? 0)) {
+          best = resp;
+        }
+      }
+    } catch { /* frame without content script */ }
+  }
+  if (!best?.report) {
+    return { ok: false, error: 'No application frame returned diagnostics. Open the job form and reload the extension.' };
+  }
+
+  const text = JSON.stringify(best.report, null, 2);
+  // Prefer writing clipboard from the page context (popup may lose focus).
+  for (const f of frames) {
+    try {
+      const written = await chrome.tabs.sendMessage(
+        tabId,
+        { type: 'writeClipboardText', text },
+        { frameId: f.frameId },
+      );
+      if (written?.ok) return { ok: true, report: best.report, copied: true };
+    } catch { /* try next */ }
+  }
+  return { ok: true, report: best.report, copied: false, text };
+}
+
 async function analyzeForm(formHtml, adapterFields, structuredFields, meta = {}) {
   try {
     const payload = { form_html: formHtml };
@@ -391,6 +475,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return await checkConnection();
         case 'getFullProfile':
           return await getFullProfile();
+        case 'getProfilePresence':
+          return await getProfilePresence();
+        case 'copySanitizedDiagnostics':
+          return await copySanitizedDiagnostics(message.tabId || sender.tab?.id);
         case 'analyzeForm':
           return await analyzeForm(
             message.formHtml,

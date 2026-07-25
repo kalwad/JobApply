@@ -12,6 +12,7 @@
       <h1>JobApply</h1>
       <span class="subtitle">AutoFill</span>
     </div>
+    <div class="build-row" id="buildRow">JobApply build: …</div>
 
     <div class="status-row">
       <span class="status-dot" id="statusDot"></span>
@@ -19,6 +20,8 @@
     </div>
 
     <button class="btn-primary" id="fillBtn" disabled>Fill Application</button>
+    <button class="btn-secondary" id="diagBtn" type="button">Copy sanitized diagnostics</button>
+    <p class="diag-hint" id="diagHint" hidden></p>
 
     <div class="settings-section">
       <label for="serverUrl">Server URL</label>
@@ -31,6 +34,7 @@
     <a class="settings-link" id="settingsLink" href="#">Open JobApply Settings</a>
   </div>
 
+  <script src="build-info.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
