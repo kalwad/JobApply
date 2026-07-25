@@ -27,9 +27,13 @@ def _is_excluded(pattern: str, searchable: str, field_id: str = "", field: dict 
     fid = field_id.lower()
     kind = ((field or {}).get("fieldKind") or (field or {}).get("atsHint") or "").lower()
     if "phone" in pattern and "country" not in pattern:
-        if _re.search(r"country|code|device.?type|extension", fid):
+        if _re.search(r"country|code|device.?type|extension|sms|opt[-_]?in|consent|marketing", fid):
             return True
-        if _re.search(r"country\s*(?:phone\s*)?code|phone\s*country|phone\s*ext|device\s*type", s):
+        if _re.search(
+            r"country\s*(?:phone\s*)?code|phone\s*country|phone\s*ext|device\s*type|"
+            r"sms|opt[-_]?in|text\s*me|marketing|consent",
+            s,
+        ):
             return True
         if kind == "phone_country":
             return True

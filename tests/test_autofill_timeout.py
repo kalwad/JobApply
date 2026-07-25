@@ -288,6 +288,21 @@ def test_deterministic_fill_three_part_name():
     assert by_sel["#last_name"] == "Kalwad"
 
 
+def test_phone_sms_opt_in_not_filled_with_phone_number():
+    fields = [
+        {"selector": "#phone", "name": "phone", "id": "phone", "label": "Phone Number",
+         "tag": "input", "type": "tel", "placeholder": "", "currentValue": ""},
+        {"selector": "[data-automation-id='phone-sms-opt-in']", "name": "phone-sms-opt-in",
+         "id": "phone-sms-opt-in", "label": "phone-sms-opt-in",
+         "tag": "input", "type": "checkbox", "placeholder": "", "currentValue": ""},
+    ]
+    mappings, remaining = _deterministic_fill(fields, PROFILE)
+    phone = next(m for m in mappings if m["selector"] == "#phone")
+    assert phone["value"] == PROFILE["phone"]
+    assert not any(m["selector"] == "[data-automation-id='phone-sms-opt-in']" for m in mappings)
+    assert any(f.get("id") == "phone-sms-opt-in" for f in remaining)
+
+
 def test_work_auth_not_filled_with_country_name():
     profile = {
         **PROFILE,
